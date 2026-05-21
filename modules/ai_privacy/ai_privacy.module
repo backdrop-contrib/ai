@@ -1,0 +1,263 @@
+<?php
+
+
+/**
+ * @file
+ * Privacy and data handling controls for the AI ecosystem.
+ *
+ * Provides:
+ *   - A global kill switch for all external AI processing.
+ *   - Per content-type / bundle opt-out (surfaced on the content type edit form).
+ *   - Role-based opt-out (content being processed while the triggering user
+ *     belongs to a denied role will be blocked).
+ *   - Log redaction: strip request/response content from ai_log entries,
+ *     storing only metadata (module, operation, model, duration, status).
+ *   - hook_ai_privacy_check() for custom opt-out logic in other modules.
+ *
+ * Usage:
+ * @code
+ *   if (!ai_privacy_entity_allowed('node', 'article')] {
+ *     return; // skip AI processing for this entity
+ *   }
+ * @endcode
+ */
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_config_info().
+ */
+function ai_privacy_config_info() {
+  return [
+    'ai_privacy.settings' => [
+      'label' => t('AI Privacy settings'),
+      'group' => t('AI'),
+    ],
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Menu / admin
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_menu().
+ */
+function ai_privacy_menu() {
+  $items = [];
+
+  $items['admin/config/ai/ai-privacy'] = [
+    'title'            => 'AI Privacy & Data Handling',
+    'description'      => 'Control which content types and roles may have content sent to external AI providers.',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_privacy_settings_form'],
+    'access arguments' => ['administer site configuration'],
+    'parent' => 'admin/config/ai',
+    'type'             => MENU_NORMAL_ITEM,
+  ];
+
+  return $items;
+}
+
+/**
+ * Settings form: global toggle, denied roles, log redaction.
+ */
+function ai_privacy_settings_form($form, &$form_state) {
+  $config = config('ai_privacy.settings');
+
+  $form['#config'] = 'ai_privacy.settings';
+
+  $form['global_enabled'] = [
+    '#type'          => 'checkbox',
+    '#title'         => t('Allow external AI processing'),
+    '#description'   => t('When unchecked, <strong>all</strong> AI processing across every module in the AI ecosystem is disabled site-wide. This is a hard kill switch.'),
+    '#default_value' => $config->get('global_enabled'),
+  ];
+
+  // Build role options excluding anonymous and authenticated base roles.
+  $roles = user_roles(TRUE);
+  unset($roles[BACKDROP_AUTHENTICATED_ROLE]);
+  $form['denied_roles'] = [
+    '#type'          => 'checkboxes',
+    '#title'         => t('Deny AI processing for content associated with these roles'),
+    '#description'   => t('When a user belonging to any of these roles triggers AI processing (e.g. saves a node or clicks "Generate with AI"], the request will be blocked. This does not affect automated background processing unless the triggering account is also in a denied role.'),
+    '#options'       => $roles,
+    '#default_value' => $config->get('denied_roles') ?: [],
+  ];
+
+  $form['log_redact_content'] = [
+    '#type'          => 'checkbox',
+    '#title'         => t('Redact prompt and response content from AI logs'),
+    '#description'   => t('When enabled, the <em>Request Data</em> and <em>Response Data</em> columns in the AI log will be replaced with <code>[redacted]</code>. Only metadata (module, operation, model, provider, duration, status] is stored. Enable this if storing full prompts in the database is a compliance concern.'),
+    '#default_value' => $config->get('log_redact_content'),
+  ];
+
+  $form['actions'] = ['#type' => 'actions'];
+  $form['actions']['submit'] = [
+    '#type'  => 'submit',
+    '#value' => t('Save configuration'),
+  ];
+
+  return $form;
+}
+
+/**
+ * Submit handler for ai_privacy_settings_form.
+ */
+function ai_privacy_settings_form_submit($form, &$form_state) {
+  $config = config('ai_privacy.settings');
+  $config->set('global_enabled', (bool) $form_state['values']['global_enabled']);
+  $config->set('log_redact_content', (bool) $form_state['values']['log_redact_content']);
+
+  $denied_roles = array_keys(array_filter($form_state['values']['denied_roles']));
+  $config->set('denied_roles', $denied_roles);
+
+  $config->save();
+  backdrop_set_message(t('Privacy settings saved.'));
+}
+
+// ---------------------------------------------------------------------------
+// Per-bundle opt-out on content type edit form
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_form_node_type_form_alter().
+ *
+ * Adds an "Allow external AI processing" checkbox to the content type edit
+ * form. The setting is stored in ai_privacy.settings as
+ * denied_entity_bundles.node[].
+ */
+function ai_privacy_form_node_type_form_alter(&$form, &$form_state) {
+  $bundle = isset($form['#node_type']->type) ? $form['#node_type']->type : NULL;
+  if (!$bundle) {
+    return;
+  }
+
+  $denied = config_get('ai_privacy.settings', 'denied_entity_bundles');
+  $denied_node_bundles = isset($denied['node']) ? (array) $denied['node'] : [];
+  $currently_denied = in_array($bundle, $denied_node_bundles, TRUE);
+
+  $form['ai_privacy'] = [
+    '#type'        => 'fieldset',
+    '#title'       => t('AI Privacy'),
+    '#collapsible' => TRUE,
+    '#collapsed'   => TRUE,
+    '#group'       => 'additional_settings',
+    '#weight'      => 20,
+  ];
+
+  $form['ai_privacy']['ai_privacy_allowed'] = [
+    '#type'          => 'checkbox',
+    '#title'         => t('Allow external AI processing for this content type'),
+    '#description'   => t('When unchecked, no AI provider calls will be made for nodes of this type — neither on save nor via the "Generate with AI" widget buttons. Individual field-level automator settings are still saved; only execution is blocked.'),
+    '#default_value' => !$currently_denied,
+  ];
+
+  $form['#submit'][] = 'ai_privacy_node_type_form_submit';
+}
+
+/**
+ * Submit handler: saves per-bundle opt-out from the content type form.
+ */
+function ai_privacy_node_type_form_submit($form, &$form_state) {
+  $bundle = isset($form['#node_type']->type) ? $form['#node_type']->type : NULL;
+  if (!$bundle) {
+    return;
+  }
+
+  $allowed = !empty($form_state['values']['ai_privacy_allowed']);
+
+  $denied = config_get('ai_privacy.settings', 'denied_entity_bundles');
+  if (!is_array($denied)) {
+    $denied = [];
+  }
+  if (!isset($denied['node']) || !is_array($denied['node'])) {
+    $denied['node'] = [];
+  }
+
+  if ($allowed) {
+    $denied['node'] = array_values(array_diff($denied['node'], [$bundle]));
+  }
+  else {
+    if (!in_array($bundle, $denied['node'], TRUE)) {
+      $denied['node'][] = $bundle;
+    }
+  }
+
+  config_set('ai_privacy.settings', 'denied_entity_bundles', $denied);
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns TRUE if external AI processing is permitted for this entity.
+ *
+ * Checks, in order:
+ *  1. Global kill switch.
+ *  2. Per-bundle deny list.
+ *  3. Denied roles for the triggering account.
+ *  4. hook_ai_privacy_check() implementations.
+ *
+ * @param string $entity_type
+ *   The entity type (e.g. 'node').
+ * @param string $bundle
+ *   The bundle machine name (e.g. 'article').
+ * @param object|null $account
+ *   The user account to check roles against. Defaults to the global $user.
+ *
+ * @return bool
+ *   TRUE if processing is allowed, FALSE if it should be blocked.
+ */
+function ai_privacy_entity_allowed($entity_type, $bundle, $account = NULL) {
+  $config = config('ai_privacy.settings');
+
+  // 1. Global kill switch.
+  if (!$config->get('global_enabled')) {
+    return FALSE;
+  }
+
+  // 2. Per-bundle deny list.
+  $denied_bundles = $config->get('denied_entity_bundles') ?: [];
+  if (!empty($denied_bundles[$entity_type]) && in_array($bundle, (array) $denied_bundles[$entity_type], TRUE)) {
+    return FALSE;
+  }
+
+  // 3. Role-based deny list.
+  $denied_roles = $config->get('denied_roles') ?: [];
+  if (!empty($denied_roles)) {
+    if ($account === NULL) {
+      global $user;
+      $account = $user;
+    }
+    if ($account && !empty($account->roles)) {
+      foreach ($denied_roles as $rid) {
+        if (array_key_exists($rid, $account->roles)) {
+          return FALSE;
+        }
+      }
+    }
+  }
+
+  // 4. Custom check hook — any FALSE return blocks processing.
+  $results = module_invoke_all('ai_privacy_check', $entity_type, $bundle, $account);
+  foreach ($results as $result) {
+    if ($result === FALSE) {
+      return FALSE;
+    }
+  }
+
+  return TRUE;
+}
+
+/**
+ * Returns TRUE if AI log content should be redacted.
+ *
+ * Called by AIApi::log() when ai_privacy is enabled.
+ */
+function ai_privacy_log_redact() {
+  return (bool) config_get('ai_privacy.settings', 'log_redact_content');
+}

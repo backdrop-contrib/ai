@@ -1,0 +1,9 @@
+name = AI Alt
+type = module
+description = Provides alt text generation using AI.
+backdrop = 1.x
+package = AI
+configure = admin/config/ai/ai-alt
+dependencies[] = ai
+dependencies[] = image_effects
+dependencies[] = image_effects_coloractions

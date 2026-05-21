@@ -1,0 +1,128 @@
+<?php
+
+/**
+ * Test class for the AI AIStringHelper utility.
+ */
+class AIStringHelperTestCase extends BackdropUnitTestCase {
+
+  /**
+   * Sets up the test environment.
+   */
+  public function setUp() {
+    parent::setUp();
+    require_once backdrop_get_path('module', 'ai') . '/includes/AIStringHelper.php';
+  }
+
+  /**
+   * Test that a string of HTML comes back with no HTML.
+   */
+  public function testStringWithHtml() {
+    $text = "<h1>Foo </h1><p>Foo bar baz, test? Good!</p>";
+    $result = AIStringHelper::prepareText($text);
+    $this->assertEqual(
+      'Foo Foo bar baz, test? Good!',
+      $result,
+      'HTML tags removed correctly.'
+    );
+  }
+
+  /**
+   * A string of HTML with restricted tags should be removed.
+   */
+  public function testStringWithRestrictedTags() {
+    $text = "<h1>Foo </h1><p>Foo test? Good!</p><pre>bar baz</pre>";
+    $result = AIStringHelper::prepareText($text);
+    $this->assertEqual(
+      'Foo Foo test? Good!',
+      $result,
+      'Restricted tags removed correctly.'
+    );
+
+    $text
+      = "<h1>Foo </h1><pre><code><script type='text/javascript'>alert('Hello');</script></code></pre><p>Foo bar baz, test? Good!</p>";
+    $result = AIStringHelper::prepareText($text);
+    $this->assertEqual(
+      'Foo Foo bar baz, test? Good!',
+      $result,
+      'JavaScript and code tags removed correctly.'
+    );
+  }
+
+  /**
+   * Test that a string of HTML has the element(s) removed.
+   */
+  public function testStringWithHtmlElementOption() {
+    $text = "<h1>Foo </h1><p>Foo test? Good!</p>";
+    $result = AIStringHelper::prepareText($text, ['h1'], 1000);
+    $this->assertEqual(
+      'Foo test? Good!',
+      $result,
+      'Specific HTML element removed correctly.'
+    );
+
+    $text = "<h1>Foo </h1><p>Foo test? Good!</p>";
+    $result = AIStringHelper::prepareText($text, ['h1', 'p'], 1000);
+    $this->assertEqual(
+      '',
+      $result,
+      'Multiple specific HTML elements removed correctly.'
+    );
+  }
+
+  /**
+   * Test that the string returned does not exceed the set length.
+   */
+  public function testStringDoesNotExceedLength() {
+    $text = "<p>Dinosaurs roamed the earth millions of years ago.</p>";
+    $result = AIStringHelper::prepareText($text, [], 27);
+    $this->assertEqual(
+      'Dinosaurs roamed the earth',
+      $result,
+      'String truncated to the correct length.'
+    );
+
+    $text = "<p>Dinosaurs roamed the earth millions of years ago.</p>";
+    $result = AIStringHelper::prepareText($text, [], 10);
+    $this->assertEqual(
+      'Dinosaurs',
+      $result,
+      'String truncated correctly to avoid spaces.'
+    );
+
+    $text = "<p>Dinosaurs roamed the earth millions of years ago.</p>";
+    $result = AIStringHelper::prepareText($text, [], 12);
+    $this->assertEqual(
+      'Dinosaurs ro',
+      $result,
+      'String truncated correctly for minimal length.'
+    );
+  }
+
+  /**
+   * Test that a string with Unicode characters retains those characters.
+   */
+  public function testStringWithUnicodeCharacters() {
+    $text
+      = "<p>En ø er et landområde helt omgivet af vand ved normalvandstand, der er mindre end et kontinent og større end en sten eller et skær. En lille ø kaldes for en holm eller småø.</p>";
+    $result = AIStringHelper::prepareText($text);
+    $this->assertEqual(
+      'En ø er et landområde helt omgivet af vand ved normalvandstand, der er mindre end et kontinent og større end en sten eller et skær. En lille ø kaldes for en holm eller småø.',
+      $result,
+      'Unicode characters retained correctly.'
+    );
+  }
+
+  /**
+   * Test that common percentage symbols are preserved.
+   */
+  public function testStringPreservesPercentCharacter() {
+    $text = "<p>Walk of Fame bricks 10% in honor of Veteran's Day.</p>";
+    $result = AIStringHelper::prepareText($text);
+    $this->assertEqual(
+      "Walk of Fame bricks 10% in honor of Veteran's Day.",
+      $result,
+      'Percent characters retained correctly.'
+    );
+  }
+
+}

@@ -1,0 +1,6 @@
+name = AI Agent Test Support
+description = Hidden test helper module for deterministic AI provider and tool behavior.
+backdrop = 1.x
+type = module
+hidden = TRUE
+files[] = includes/AITestSupportAdapter.php

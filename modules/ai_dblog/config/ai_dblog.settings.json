@@ -1,0 +1,10 @@
+{
+  "_config_name": "ai_dblog.settings",
+  "levels": [
+    "Emergency",
+    "Alert",
+    "Critical",
+    "Error"
+  ],
+  "model": ""
+}

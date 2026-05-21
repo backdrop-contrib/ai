@@ -1,0 +1,6 @@
+name = AI Alt Tools
+description = Tools for AI-powered image alt text generation.
+backdrop = 1.x
+type = module
+package = AI
+dependencies[] = ai_tools

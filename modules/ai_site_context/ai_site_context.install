@@ -1,0 +1,44 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the ai_site_context module.
+ */
+
+/**
+ * Implements hook_install().
+ */
+function ai_site_context_install() {
+  if (!module_load_install('ai_upgrade')) { return []; }
+  ai_upgrade_module_install('ai_site_context');
+}
+
+/**
+ * Migrate configuration from openai_site_context to ai_site_context.
+ */
+function ai_site_context_update_1000() {
+  // Migrate config.
+  $old = config('openai_site_context.settings');
+  $new = config('ai_site_context.settings');
+  if ($old->get()) {
+    $new->setData($old->get());
+    $new->set('_config_name', 'ai_site_context.settings');
+    $new->save();
+    $old->delete();
+  }
+
+  // Disable legacy module.
+  if (module_exists('openai_site_context')) {
+    module_disable(['openai_site_context']);
+  }
+
+  return t('Migrated legacy Site Context configuration to AI Site Context.');
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function ai_site_context_requirements($phase) {
+  if (!module_load_install('ai_upgrade')) { return []; }
+  return ai_upgrade_module_requirements($phase, 'ai_site_context');
+}

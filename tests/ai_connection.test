@@ -1,0 +1,77 @@
+<?php
+
+/**
+ * @file
+ * Test class for AI module integration.
+ */
+
+/**
+ * Defines a test case for the AI module.
+ */
+class AITestCase extends BackdropWebTestCase {
+
+  /**
+   * A user object for the privileged user.
+   *
+   * @var object
+   */
+  protected $privilegedUser;
+
+  /**
+   * Sets up the test environment.
+   */
+  public function setUp() {
+    // Load the AI module plus the deterministic test provider.
+    parent::setUp(['ai', 'ai_agent_test']);
+
+    $providers = config('ai.settings');
+    $providers->set('providers', [
+      'agent_test' => [
+        'enabled' => 1,
+      ],
+    ]);
+    $providers->save();
+
+    // Create a user with the necessary permissions.
+    $this->privilegedUser = $this->backdropCreateUser([
+      'administer site configuration'
+    ]);
+    $this->backdropLogin($this->privilegedUser);
+  }
+
+  /**
+   * Test the API key configuration form.
+   */
+  public function testAPIKeyConfiguration() {
+    // Navigate to the AI settings form.
+    $this->backdropGet('admin/config/ai/settings');
+
+    // Verify the built-in AI provider settings are present.
+    $this->assertFieldByName('providers[enabled_providers_openai]', '', 'AI enable checkbox found.');
+    $this->assertFieldByName('providers[ai_settings][api_key_openai]', '', 'AI API key field found.');
+
+    // Save a harmless settings change without enabling live API calls.
+    $edit = [
+      'ai_log_enabled' => 1,
+      'ai_log_max_age' => 3600,
+    ];
+    $this->backdropPost(NULL, $edit, t('Save configuration'));
+
+    // Verify that the form submission is successful.
+    $this->assertText('Provider settings saved successfully.', 'Configuration saved message shown.');
+    $this->assertTrue((bool) config_get('ai.settings', 'ai_log_enabled'), 'Logging setting persisted.');
+  }
+
+  /**
+   * Test provider connectivity using the deterministic test provider.
+   */
+  public function testAPIConnectivity() {
+    $api = ai_get_api('agent_test');
+    $this->assertTrue(is_object($api), 'Deterministic provider API was created.');
+
+    $models = $api->getModels();
+
+    // Verify that models are retrieved without calling the live API.
+    $this->assertEqual(['gpt-4o-mini' => 'GPT-4o Mini'], $models, 'Models retrieved from deterministic provider.');
+  }
+}

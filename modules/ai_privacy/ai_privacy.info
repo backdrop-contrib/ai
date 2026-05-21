@@ -1,0 +1,7 @@
+name = AI Privacy
+description = Controls which content types, bundles, and roles are allowed to have content sent to external AI providers. Provides a log redaction option to prevent prompt/response content from being stored in the AI log.
+package = AI
+backdrop = 1.x
+type = module
+dependencies[] = ai
+configure = admin/config/ai/ai-privacy

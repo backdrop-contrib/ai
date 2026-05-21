@@ -1,0 +1,7 @@
+name = AI Upgrade UI
+description = Optional admin UI for migrating legacy openai_* modules to ai_* modules.
+backdrop = 1.x
+type = module
+package = AI
+configure = admin/config/ai/upgrade
+

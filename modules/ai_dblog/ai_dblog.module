@@ -1,0 +1,228 @@
+<?php
+
+/**
+ * Implements hook_config_info().
+ */
+function ai_dblog_config_info() {
+  $prefixes['ai_dblog.settings'] = [
+    'label' => t('AI dblog Settings'),
+    'group' => t('AI'),
+  ];
+  return $prefixes;
+}
+
+/**
+ * Implements hook_autoload_info().
+ */
+function ai_dblog_autoload_info() {
+  return [
+    'AIDbLog' => 'includes/AIDbLog.inc',
+  ];
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ai_dblog_menu() {
+  $items = [];
+
+  $items['admin/config/ai/ai-dblog/settings'] = [
+    'title' => 'AI Error Log Analyzer',
+    'description' => 'Manage AI log analyzer settings.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_dblog_settings_form'],
+    'access arguments' => ['administer site configuration'],
+    'weight' => -5,
+  ];
+
+  return $items;
+}
+
+/**
+ * Form builder function for AI log analyzer settings.
+ */
+function ai_dblog_settings_form($form, &$form_state) {
+  // Load the AI dblog settings.
+  $config = config_get('ai_dblog.settings');
+
+  // Watchdog severity levels.
+  $levels = watchdog_severity_levels();
+  $options = [];
+  foreach ($levels as $key => $label) {
+    $options[$label] = $label; // Use the name of the level as both key and label.
+  }
+
+  // Prepare default values for the levels.
+  $selected_levels = $config['levels'] ?? [];
+  $default_levels = [];
+  foreach ($options as $key => $label) {
+    $default_levels[$key] = in_array($key, $selected_levels) ? $key : 0;
+  }
+
+  $form['levels'] = [
+    '#type' => 'checkboxes',
+    '#title' => t('Log level(s] to analyze'),
+    '#options' => $options,
+    '#default_value' => $default_levels,
+    '#description' => t('Select which log levels should be analyzed when viewed. Non-error levels like notice and debug may cause wasted API usage.'),
+  ];
+
+  // Get all chat models from all enabled providers.
+  $model_options = ai_get_all_chat_models();
+
+  if (empty($model_options)) {
+    backdrop_set_message(t('No chat models are available from your configured providers. Please <a href="@url">configure a provider</a> in AI settings.', ['@url' => url('admin/config/ai/settings')]), 'warning');
+  }
+
+  // Backward compatibility: normalize legacy saved values like "gpt-4o-mini".
+  $default_model = !empty($config['model']) ? $config['model'] : '';
+  if (!empty($default_model) && strpos($default_model, '/') === FALSE) {
+    $default_model = ai_default_provider_id() . '/' . $default_model;
+  }
+
+  $form['model'] = [
+    '#type' => 'select',
+    '#title' => t('Model to use'),
+    '#options' => $model_options,
+    '#default_value' => $default_model,
+    '#description' => t('Select which model to use to analyze text from any enabled provider. See the <a href="@link">model overview</a> for details.', ['@link' => 'https://platform.ai.com/docs/models/overview']),
+  ];
+
+  // Add the submit button.
+  $form['actions'] = [
+    '#type' => 'actions',
+  ];
+  $form['actions']['submit'] = [
+    '#type' => 'submit',
+    '#value' => t('Save configuration'),
+  ];
+
+  // Add the submit callback.
+  $form['#submit'][] = 'ai_dblog_settings_form_submit';
+
+  return $form;
+}
+
+/**
+ * Form submission handler for ai_dblog_settings_form.
+ */
+function ai_dblog_settings_form_submit($form, &$form_state) {
+  // Get the selected levels by filtering the form values.
+  $selected_levels = array_filter($form_state['values']['levels']);
+
+  // Save the selected levels as names.
+  config_set('ai_dblog.settings', 'levels', array_keys($selected_levels));
+
+  // Save the selected model.
+  config_set('ai_dblog.settings', 'model', $form_state['values']['model']);
+
+  backdrop_set_message(t('The configuration options have been saved.'));
+}
+
+/**
+ * Implements hook_menu_alter().
+ */
+function ai_dblog_menu_alter(&$items) {
+  // Override the dblog event page callback.
+  if (isset($items['admin/reports/event/%'])) {
+    $items['admin/reports/event/%']['page callback'] = 'ai_dblog_event_details';
+  }
+}
+
+/**
+ * Backward-compatibility wrapper for stale menu router callbacks.
+ *
+ * During openai_dblog -> ai_dblog migration, a cached router entry can still
+ * point at the old callback name until caches are fully rebuilt. Only define
+ * the alias once the legacy module is no longer enabled to avoid redeclaring
+ * the original callback during the upgrade request.
+ */
+if (!module_exists('openai_dblog') && !function_exists('openai_dblog_event_details')) {
+  function openai_dblog_event_details($id) {
+    return ai_dblog_event_details($id);
+  }
+}
+
+function ai_dblog_event_details($id) {
+  // No need for require_once if autoload is set up correctly
+  // require_once BACKDROP_ROOT . '/' . drupal_get_path('module', 'ai_dblog') . '/includes/AIDbLog.inc';
+
+  $severity = watchdog_severity_levels();
+  $result = db_query('SELECT w.*, u.name, w.uid FROM {watchdog} w LEFT JOIN {users} u ON w.uid = u.uid WHERE w.wid = :id', [':id' => $id])->fetchObject();
+  if ($dblog = $result) {
+    if (!empty($dblog->uid) && empty($dblog->name)) {
+      $user_label = t('User ID (deleted]');
+      $user_info = $dblog->uid;
+    }
+    else {
+      $user_label = t('User');
+      $user_info = theme('username', ['account' => $dblog]);
+    }
+
+    $rows = [
+      [
+        ['data' => t('Type'), 'header' => TRUE],
+        t($dblog->type),
+      ],
+      [
+        ['data' => t('Date'), 'header' => TRUE],
+        format_date($dblog->timestamp, 'long'),
+      ],
+      [
+        ['data' => $user_label, 'header' => TRUE],
+        $user_info,
+      ],
+      [
+        ['data' => t('Location'), 'header' => TRUE],
+        l($dblog->location, $dblog->location),
+      ],
+      [
+        ['data' => t('Referrer'), 'header' => TRUE],
+        l($dblog->referer, $dblog->referer),
+      ],
+      [
+        ['data' => t('Message'), 'header' => TRUE],
+        dblog_format_message($dblog),
+      ],
+      [
+        ['data' => t('Severity'), 'header' => TRUE],
+        $severity[$dblog->severity],
+      ],
+      [
+        ['data' => t('Hostname'), 'header' => TRUE],
+        check_plain($dblog->hostname),
+      ],
+      [
+        ['data' => t('Operations'), 'header' => TRUE],
+        $dblog->link,
+      ],
+    ];
+
+    // Instantiate the AIDbLog class
+    $ai_dblog = new AIDbLog();
+    $explanation = $ai_dblog->processExplanation($dblog);
+
+    // Add the AI explanation row
+    $rows[] = [
+      [
+        'data' => t('Explanation<br><span style="font-size: smaller;">powered by <a href="@link">AI</a></span>', ['@link' => 'https://ai.com']),
+        'header' => TRUE,
+      ],
+      ['data' => $explanation],
+    ];
+
+    $build['dblog_table'] = [
+      '#theme' => 'table',
+      '#rows' => $rows,
+      '#attributes' => ['class' => ['dblog-event']],
+    ];
+
+    return $build;
+  }
+  else {
+    return '';
+  }
+}
+
+
+

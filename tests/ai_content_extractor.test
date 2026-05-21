@@ -1,0 +1,133 @@
+<?php
+
+/**
+ * @file
+ * Regression tests for AI-ready content extraction.
+ */
+
+require_once backdrop_get_path('module', 'ai_field_automator') . '/includes/AIFieldAutomatorBase.inc';
+
+use ai_field_automator\includes\AIFieldAutomatorBase;
+
+class AIFieldAutomatorPromptProbe extends AIFieldAutomatorBase {
+
+  public function build(array $config, $entity) {
+    return $this->buildPrompts($entity, $config);
+  }
+
+  public function allowedFieldTypes() {
+    return [];
+  }
+
+  public function generate($entity, $field_name, array $config) {
+    return [];
+  }
+}
+
+class AIContentExtractorTestCase extends BackdropWebTestCase {
+
+  protected $bundle = 'extractor_post';
+
+  public function setUp() {
+    parent::setUp(['ai', 'ai_field_automator', 'node', 'field', 'text', 'image']);
+
+    $this->backdropCreateContentType([
+      'type' => $this->bundle,
+      'name' => 'Extractor Post',
+    ]);
+
+    $this->createField('field_article_body', 'text_long', 'text_textarea');
+    $this->createField('field_summary', 'text_long', 'text_textarea');
+    $this->createField('field_photo', 'image', 'image_image');
+  }
+
+  protected function createField($field_name, $type, $widget_type) {
+    field_create_field([
+      'field_name' => $field_name,
+      'type' => $type,
+    ]);
+    field_create_instance([
+      'field_name' => $field_name,
+      'entity_type' => 'node',
+      'bundle' => $this->bundle,
+      'label' => $field_name,
+      'widget' => [
+        'type' => $widget_type,
+      ],
+    ]);
+  }
+
+  public function testNodeFormPreviewSkipsTargetFieldAndImageNoise() {
+    $values = [
+      'title' => 'Ashton, a veteran',
+      'field_article_body' => [
+        LANGUAGE_NONE => [
+          ['value' => '<p>Main article content about veterans and service.</p>'],
+        ],
+      ],
+      'field_summary' => [
+        LANGUAGE_NONE => [
+          ['value' => 'Old generated summary should not feed the new summary.'],
+        ],
+      ],
+      'field_photo' => [
+        LANGUAGE_NONE => [
+          [
+            'fid' => 7008,
+            'alt' => 'Upload Remove Select existing file Generate with AI Generate Alt Text Crop Collapse',
+          ],
+        ],
+      ],
+    ];
+
+    $text = AIContentExtractor::extractNodeFormValuesText($values, $this->bundle, [
+      'exclude_fields' => ['field_summary'],
+    ]);
+
+    $this->assertTrue(strpos($text, 'Ashton, a veteran') !== FALSE, 'Preview includes the title.');
+    $this->assertTrue(strpos($text, 'Main article content about veterans and service.') !== FALSE, 'Preview includes main text content.');
+    $this->assertTrue(strpos($text, 'Old generated summary') === FALSE, 'Preview excludes the target/generated field.');
+    $this->assertTrue(strpos($text, 'Generate with AI') === FALSE, 'Preview excludes image widget UI strings.');
+    $this->assertTrue(strpos($text, '7008') === FALSE, 'Preview excludes image file metadata.');
+  }
+
+  public function testRenderedEntityPromptExcludesTargetField() {
+    $entity = entity_create('node', [
+      'type' => $this->bundle,
+      'title' => 'Prompt Test',
+      'field_article_body' => [
+        LANGUAGE_NONE => [
+          ['value' => '<p>Fresh body text used for summarization.</p>'],
+        ],
+      ],
+      'field_summary' => [
+        LANGUAGE_NONE => [
+          ['value' => 'Existing summary must not be summarized again.'],
+        ],
+      ],
+    ]);
+
+    $probe = new AIFieldAutomatorPromptProbe();
+    $prompts = $probe->build([
+      'mode' => 'base',
+      'base_field' => '_rendered_entity',
+      'prompt' => 'Summarize this: {context}',
+      'entity_type' => 'node',
+      'field_name' => 'field_summary',
+    ], $entity);
+
+    $this->assertEqual(1, count($prompts), 'One rendered-entity prompt was built.');
+    $this->assertTrue(strpos($prompts[0], 'Fresh body text used for summarization.') !== FALSE, 'Prompt context includes source body text.');
+    $this->assertTrue(strpos($prompts[0], 'Existing summary must not be summarized again.') === FALSE, 'Prompt context excludes the target field.');
+  }
+
+  public function testHtmlToMarkdownStripsMediaAndPreservesStructure() {
+    $html = '<h2>Heading</h2><figure><img src="x.jpg" alt="Noise"></figure><p>Hello <strong>world</strong>.</p><ul><li>One</li><li>Two</li></ul>';
+    $text = AIContentExtractor::htmlToMarkdown($html);
+
+    $this->assertTrue(strpos($text, '## Heading') !== FALSE, 'Headings are preserved as Markdown.');
+    $this->assertTrue(strpos($text, 'Hello **world**.') !== FALSE, 'Inline emphasis is preserved as Markdown.');
+    $this->assertTrue(strpos($text, '- One') !== FALSE && strpos($text, '- Two') !== FALSE, 'Lists are preserved as Markdown.');
+    $this->assertTrue(strpos($text, 'Noise') === FALSE, 'Image and figure content is stripped.');
+  }
+}

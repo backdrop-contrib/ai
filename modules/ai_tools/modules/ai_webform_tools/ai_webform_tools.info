@@ -1,0 +1,7 @@
+name = AI Webform Tools
+description = Integration of AI tools with Backdrop webforms.
+backdrop = 1.x
+type = module
+package = AI
+dependencies[] = ai_tools
+dependencies[] = webform

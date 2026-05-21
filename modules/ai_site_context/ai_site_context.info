@@ -1,0 +1,7 @@
+name = AI Site Context
+description = Context and metadata system for AI-aware site integration.
+backdrop = 1.x
+type = module
+package = AI
+configure = 'admin/config/ai/ai-site-context'
+dependencies[] = ai

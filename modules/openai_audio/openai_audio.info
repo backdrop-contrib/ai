@@ -1,7 +1,0 @@
-name = OpenAI Speech to Text
-type = module
-description = Adds capability to interact with the OpenAI audio (speech to text) endpoints.
-package = OpenAI
-backdrop = 1.x
-configure = admin/config/openai/audio
-dependencies[] = openai

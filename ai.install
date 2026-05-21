@@ -1,0 +1,248 @@
+<?php
+
+/**
+ * @file
+ * Install, update, and uninstall functions for the AI module.
+ *
+ * Upgrade helpers (ai_upgrade_*) live in
+ * modules/ai_upgrade/ai_upgrade.install. Load them via
+ * module_load_install('ai_upgrade') when needed here.
+ */
+
+/**
+ * Implements hook_install().
+ */
+function ai_install() {
+  // Config migration and legacy module disabling are intentionally NOT done
+  // here. Use the AI Upgrade UI at admin/config/ai/upgrade to migrate from
+  // openai_* modules — that way the operator controls when the cutover happens.
+}
+
+/**
+ * Implements hook_schema().
+ */
+function ai_schema() {
+  $schema['ai_log'] = [
+    'description' => 'Stores logs of AI API requests and responses.',
+    'fields' => [
+      'id' => [
+        'description' => 'The primary identifier for a log entry.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ],
+      'timestamp' => [
+        'description' => 'The Unix timestamp when the log entry was created.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'uid' => [
+        'description' => 'The user ID who performed the operation.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'module' => [
+        'description' => 'The module that initiated the request.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ],
+      'operation' => [
+        'description' => 'The operation being performed (e.g., chat, completions).',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ],
+      'model' => [
+        'description' => 'The model used for the request.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ],
+      'provider' => [
+        'description' => 'The provider used for the request.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ],
+      'request_data' => [
+        'description' => 'The data sent in the request (JSON).',
+        'type' => 'text',
+        'size' => 'big',
+      ],
+      'response_data' => [
+        'description' => 'The data received in the response (JSON).',
+        'type' => 'text',
+        'size' => 'big',
+      ],
+      'status' => [
+        'description' => 'The status of the request (1 for success, 0 for failure).',
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'duration' => [
+        'description' => 'The duration of the request in seconds.',
+        'type' => 'float',
+        'size' => 'big',
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'error_message' => [
+        'description' => 'The error message if the request failed.',
+        'type' => 'text',
+      ],
+    ],
+    'primary key' => ['id'],
+    'indexes' => [
+      'timestamp' => ['timestamp'],
+      'module' => ['module'],
+      'operation' => ['operation'],
+    ],
+  ];
+
+  return $schema;
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function ai_requirements($phase) {
+  $requirements = [];
+
+  if ($phase == 'runtime') {
+    // Create a default container entry.
+    $requirements['ai'] = [
+      'title' => t('AI Integration'),
+    ];
+
+    $config = config_get('ai.settings');
+    $providers_config = isset($config['providers']) ? $config['providers'] : [];
+
+    // If Key module is not available, it's required for most use cases.
+    if (!module_exists('key')) {
+      $requirements['ai']['value'] = t('Key module not enabled');
+      $requirements['ai']['severity'] = REQUIREMENT_ERROR;
+      $requirements['ai']['description'] = t(
+        'The AI module requires the Key module to securely manage API keys. Enable the Key module from the <a href="@modules">modules page</a>.',
+        ['@modules' => url('admin/modules')]
+      );
+      return $requirements;
+    }
+
+    // Check if any provider is enabled and working.
+    $working_providers = [];
+    $failed_providers = [];
+
+    if (!empty($providers_config) && is_array($providers_config)) {
+      foreach ($providers_config as $provider_id => $provider_cfg) {
+        // Skip providers that are not enabled.
+        if (empty($provider_cfg['enabled'])) {
+          continue;
+        }
+
+        // Try to get a working API instance for this provider.
+        try {
+          $api = ai_get_api($provider_id);
+          if ($api) {
+            $working_providers[] = $provider_id;
+          }
+          else {
+            $failed_providers[] = $provider_id;
+          }
+        }
+        catch (Exception $e) {
+          $failed_providers[] = $provider_id;
+        }
+      }
+    }
+
+    // If at least one provider is working, report OK.
+    if (!empty($working_providers)) {
+      $provider_labels = array_map('ai_get_provider_label', $working_providers);
+      $requirements['ai']['value'] = t('Providers configured and working: @providers', [
+        '@providers' => implode(', ', $provider_labels),
+      ]);
+      $requirements['ai']['severity'] = REQUIREMENT_OK;
+      return $requirements;
+    }
+
+    // If providers are configured but none are working, report ERROR.
+    if (!empty($failed_providers)) {
+      $provider_labels = array_map('ai_get_provider_label', $failed_providers);
+      $requirements['ai']['value'] = t('Provider configuration incomplete');
+      $requirements['ai']['severity'] = REQUIREMENT_ERROR;
+      $requirements['ai']['description'] = t(
+        'The following providers are enabled but could not be initialized: @providers. Verify that API keys are configured and valid on the <a href="@settings">AI settings</a> page.',
+        [
+          '@providers' => implode(', ', $provider_labels),
+          '@settings' => url('admin/config/ai/settings'),
+        ]
+      );
+      return $requirements;
+    }
+
+    // No providers enabled: warn but don't error.
+    $requirements['ai']['value'] = t('No providers configured');
+    $requirements['ai']['severity'] = REQUIREMENT_WARNING;
+    $requirements['ai']['description'] = t(
+      'No AI providers are currently enabled. The AI module can be installed without active providers; features requiring an API will remain disabled. Configure providers on the <a href="@settings">AI settings</a> page.',
+      ['@settings' => url('admin/config/ai/settings')]
+    );
+  }
+
+  return $requirements;
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function ai_uninstall() {
+  // Delete configuration on uninstall.
+  config('ai.settings')->delete();
+}
+
+/**
+ * Add the ai_log table for API logging.
+ */
+function ai_update_1000() {
+  $schema = ai_schema();
+  if (!db_table_exists('ai_log')) {
+    db_create_table('ai_log', $schema['ai_log']);
+  }
+}
+
+/**
+ * Migrate legacy config objects into the AI namespace.
+ */
+function ai_update_1001() {
+  module_load_install('ai_upgrade');
+  $migrated = _ai_migrate_legacy_suite_config();
+  return t('Migrated @count legacy OpenAI config object(s) into the AI namespace.', ['@count' => $migrated]);
+}
+
+/**
+ * Disable legacy OpenAI modules that have AI replacements.
+ */
+function ai_update_1002() {
+  module_load_install('ai_upgrade');
+  _ai_disable_legacy_suite_modules();
+  return t('Disabled legacy OpenAI modules that have AI replacements.');
+}
+
+/**
+ * Disable all remaining legacy OpenAI modules that have AI replacements.
+ */
+function ai_update_1003() {
+  module_load_install('ai_upgrade');
+  _ai_disable_legacy_suite_modules();
+  return t('Disabled all remaining legacy OpenAI modules that have AI replacements.');
+}

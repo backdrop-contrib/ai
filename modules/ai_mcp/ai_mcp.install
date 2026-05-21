@@ -1,0 +1,31 @@
+<?php
+
+/**
+ * Implements hook_install().
+ */
+function ai_mcp_install() {
+  if (!module_load_install('ai_upgrade')) { return []; }
+  ai_upgrade_module_install('ai_mcp');
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function ai_mcp_requirements($phase) {
+  if (!module_load_install('ai_upgrade')) { return []; }
+  return ai_upgrade_module_requirements($phase, 'ai_mcp');
+}
+
+/**
+ * Move MCP settings link from AI config to Web services.
+ */
+function ai_mcp_update_1000() {
+  db_delete('menu_links')
+    ->condition('link_path', 'admin/config/ai/mcp')
+    ->execute();
+
+  menu_rebuild();
+
+  return t('Moved MCP settings to the Web services configuration section.');
+}
+

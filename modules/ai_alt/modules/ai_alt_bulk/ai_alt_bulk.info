@@ -1,0 +1,8 @@
+name = AI Alt Text Bulk
+type = module
+description = Bulk generate global alt text for image file entities using AI.
+backdrop = 1.x
+package = AI
+dependencies[] = ai_alt
+dependencies[] = image_entity_alt
+dependencies[] = ai_alt_tools

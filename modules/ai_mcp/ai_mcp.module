@@ -1,0 +1,182 @@
+<?php
+
+/**
+ * @file
+ * AI MCP Server module.
+ *
+ * Exposes the ai_tools registry as an MCP-compatible HTTP endpoint
+ * using Streamable HTTP transport and JSON-RPC 2.0 protocol.
+ */
+
+// ---------------------------------------------------------------------------
+// Core hooks
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_permission().
+ */
+function ai_mcp_permission() {
+  return [
+    'administer ai mcp' => [
+      'title'       => t('Administer AI MCP'),
+      'description' => t('Configure MCP server instances and manage auth keys.'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ai_mcp_menu() {
+  $items = [];
+
+  // MCP endpoint — GET (SSE probe) and POST (JSON-RPC) handled in one callback.
+  $items['ai/mcp'] = [
+    'title'           => 'MCP endpoint',
+    'page callback'   => 'ai_mcp_http_handler',
+    'access callback' => TRUE,
+    'type'            => MENU_CALLBACK,
+    'file'            => 'includes/ai_mcp.http.inc',
+  ];
+
+  // Admin listing.
+  $items['admin/config/services/mcp'] = [
+    'title'            => 'MCP Servers',
+    'description'      => 'Manage MCP server configurations that expose ai_tools via JSON-RPC.',
+    'page callback'    => 'ai_mcp_admin_page',
+    'access callback'  => 'ai_mcp_admin_access',
+    'file'             => 'includes/ai_mcp.admin.inc',
+    'parent'           => 'admin/config/services',
+    'type'             => MENU_NORMAL_ITEM,
+  ];
+
+  // Legacy path kept as redirect for backward compatibility.
+  $items['admin/config/ai/mcp'] = [
+    'page callback'    => 'ai_mcp_legacy_admin_redirect',
+    'access callback'  => 'ai_mcp_admin_access',
+    'type'             => MENU_CALLBACK,
+  ];
+
+  // Add server form.
+  $items['admin/config/services/mcp/add'] = [
+    'title'            => 'Add MCP Server',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_mcp_server_form'],
+    'access callback'  => 'ai_mcp_admin_access',
+    'type'             => MENU_LOCAL_ACTION,
+    'file'             => 'includes/ai_mcp.admin.inc',
+  ];
+
+  // Edit server form.
+  $items['admin/config/services/mcp/%ai_mcp_server'] = [
+    'title'            => 'Edit MCP Server',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_mcp_server_form', 4],
+    'access callback'  => 'ai_mcp_admin_access',
+    'file'             => 'includes/ai_mcp.admin.inc',
+  ];
+
+  // Delete confirm form.
+  $items['admin/config/services/mcp/%ai_mcp_server/delete'] = [
+    'title'            => 'Delete MCP Server',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_mcp_server_delete_form', 4],
+    'access callback'  => 'ai_mcp_admin_access',
+    'file'             => 'includes/ai_mcp.admin.inc',
+  ];
+
+  return $items;
+}
+
+/**
+ * Access callback for MCP admin routes.
+ */
+function ai_mcp_admin_access() {
+  return user_access('administer ai mcp') || user_access('administer site configuration');
+}
+
+/**
+ * Redirect legacy AI config MCP path to Web services path.
+ */
+function ai_mcp_legacy_admin_redirect() {
+  backdrop_goto('admin/config/services/mcp');
+}
+
+/**
+ * Implements hook_config_info().
+ */
+function ai_mcp_config_info() {
+  return [
+    'ai_mcp_server' => [
+      'name_key' => 'id',
+      'label_key' => 'label',
+      'group'    => t('AI'),
+    ],
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Server config CRUD
+// ---------------------------------------------------------------------------
+
+/**
+ * Loads a single MCP server config by ID.
+ *
+ * Used as the %ai_mcp_server wildcard loader in hook_menu().
+ *
+ * @param string $id
+ *   The machine name of the server.
+ *
+ * @return array|FALSE
+ *   Server config array or FALSE if not found.
+ */
+function ai_mcp_server_load($id) {
+  $data = config_get('ai_mcp_server.' . $id);
+  if (empty($data) || empty($data['id'])) {
+    return FALSE;
+  }
+  return $data;
+}
+
+/**
+ * Loads all MCP server configs.
+ *
+ * @return array
+ *   Array of server config arrays, keyed by server ID.
+ */
+function ai_mcp_server_load_all() {
+  $names = config_get_names_with_prefix('ai_mcp_server.');
+  $servers = [];
+  foreach ($names as $config_name) {
+    $id = substr($config_name, strlen('ai_mcp_server.'));
+    $data = config_get($config_name);
+    if (!empty($data['id'])) {
+      $servers[$id] = $data;
+    }
+  }
+  return $servers;
+}
+
+/**
+ * Saves an MCP server config.
+ *
+ * @param array $server
+ *   Server config array. Must contain an 'id' key.
+ */
+function ai_mcp_server_save(array $server) {
+  $id = $server['id'];
+  $config = config('ai_mcp_server.' . $id);
+  $config->setData($server);
+  $config->save();
+}
+
+/**
+ * Deletes an MCP server config.
+ *
+ * @param string $id
+ *   The machine name of the server to delete.
+ */
+function ai_mcp_server_delete($id) {
+  $config = config('ai_mcp_server.' . $id);
+  $config->delete();
+}

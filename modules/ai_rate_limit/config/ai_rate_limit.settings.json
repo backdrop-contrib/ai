@@ -1,0 +1,7 @@
+{
+  "_config_name": "ai_rate_limit.settings",
+  "enabled": false,
+  "global_limit": 60,
+  "global_window": 60,
+  "provider_limits": {}
+}

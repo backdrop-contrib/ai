@@ -1,56 +1,57 @@
-# OpenAI Provider Module Guide
+# AI Provider Module Guide
 
-This document explains how to create a pluggable provider module for the `openai` Backdrop module (examples: `openai_openrouter`, `openai_ollama`, `openai_litellm`). Drop this file into `modules/contrib/openai/` so it's shipped with the main module.
+This document explains how to create a pluggable provider module for the `ai` Backdrop module (examples: `ai_openrouter`, `ai_ollama`, `ai_litellm`). Drop this file into `modules/contrib/ai/` so it's shipped with the main module.
 
 Goal
-- Build a small provider module that registers itself with `openai` via `hook_openai_provider_info()` and implements an adapter class (in `includes/`) exposing methods the `openai` core expects.
+- Build a small provider module that registers itself with `ai` via `hook_ai_provider_info()` and implements an adapter class (in `includes/`) exposing methods the `ai` core expects.
+- Follow the current error contract: adapters should throw on unsupported capabilities and provider/runtime failures so `AIApi` can normalize those into shared `AIException` types.
 
 Checklist
-- [ ] Create module folder `modules/contrib/openai_<provider>/`
+- [ ] Create module folder `modules/contrib/ai_<provider>/`
 - [ ] Add `<module>.info` with metadata
 - [ ] Implement `hook_autoload_info()` to register the adapter class
-- [ ] Implement `hook_openai_provider_info()` with provider metadata
-- [ ] Implement `hook_openai_provider_settings_alter()` to add provider settings to central OpenAI settings form
+- [ ] Implement `hook_ai_provider_info()` with provider metadata
+- [ ] Implement `hook_ai_provider_settings_alter()` to add provider settings to central AI settings form
 - [ ] Add an adapter class in `includes/` implementing the required methods (see skeleton)
-- [ ] Enable module, configure provider in OpenAI settings, and test
+- [ ] Enable module, configure provider in AI settings, and test
 
 Design notes
-- Providers register metadata (id, label, adapter class) so `openai` can list and use them.
+- Providers register metadata (id, label, adapter class) so `ai` can list and use them.
 - The Key module should store API keys; use `#type => 'key_select'` in provider settings to avoid storing secrets in plaintext.
-- The `openai` core expects provider adapters to provide specific helper methods (see adapter skeleton).
+- The `ai` core expects provider adapters to provide specific helper methods (see adapter skeleton).
 
 Files & structure
 
-modules/contrib/openai_myprovider/
-- openai_myprovider.info
-- openai_myprovider.module
+modules/contrib/ai_myprovider/
+- ai_myprovider.info
+- ai_myprovider.module
 - includes/MyProviderAdapter.php
 - README.md (optional)
 
-Minimal `openai_myprovider.info` (Backdrop) - replace myprovider with your id
+Minimal `ai_myprovider.info` (Backdrop) - replace myprovider with your id
 
 ```ini
-name = OpenAI MyProvider
-description = Integrates MyProvider with the OpenAI module
+name = AI MyProvider
+description = Integrates MyProvider with the AI module
 core = 1.x
-package = OpenAI
+package = AI
 version = "1.0"
 ```
 
 Add `hook_autoload_info()` so Backdrop can load the adapter class automatically:
 
 ```php
-function openai_myprovider_autoload_info() {
+function ai_myprovider_autoload_info() {
   return [
     'MyProviderAdapter' => 'includes/MyProviderAdapter.php',
   ];
 }
 ```
 
-Register the provider with `openai` via `hook_openai_provider_info()`:
+Register the provider with `ai` via `hook_ai_provider_info()`:
 
 ```php
-function openai_myprovider_openai_provider_info() {
+function ai_myprovider_ai_provider_info() {
   return [
     'myprovider' => [
       'label' => t('MyProvider'),
@@ -64,10 +65,10 @@ function openai_myprovider_openai_provider_info() {
 }
 ```
 
-Provider settings: add fields into the central OpenAI settings form so admins can enable/configure the provider without leaving OpenAI settings.
+Provider settings: add fields into the central AI settings form so admins can enable/configure the provider without leaving AI settings.
 
 ```php
-function openai_myprovider_openai_provider_settings_alter(&$settings, $context) {
+function ai_myprovider_ai_provider_settings_alter(&$settings, $context) {
   if ($context['provider'] !== 'myprovider') {
     return;
   }
@@ -77,7 +78,7 @@ function openai_myprovider_openai_provider_settings_alter(&$settings, $context) 
   $settings['api_key_myprovider'] = [
     '#type' => 'key_select',
     '#title' => t('MyProvider API Key'),
-    '#default_value' => config_get('openai.settings', 'api_key_myprovider') ?: '',
+    '#default_value' => config_get('ai.settings', 'api_key_myprovider') ?: '',
     '#options' => $available_keys,
     '#key_filters' => ['type' => 'authentication'],
     '#description' => t('Add your API key via the Key module and select it here.'),
@@ -87,19 +88,19 @@ function openai_myprovider_openai_provider_settings_alter(&$settings, $context) 
   $settings['myprovider_base_url'] = [
     '#type' => 'textfield',
     '#title' => t('MyProvider Base URL'),
-    '#default_value' => config_get('openai_myprovider.settings', 'base_url') ?: 'http://localhost:11434',
+    '#default_value' => config_get('ai_myprovider.settings', 'base_url') ?: 'http://localhost:11434',
     '#description' => t('Base URL of the local MyProvider server.'),
   ];
 
   // Save provider-specific settings via a submit handler if needed
   if (isset($context['form'])) {
-    $context['form']['#submit'][] = 'openai_myprovider_settings_submit';
+    $context['form']['#submit'][] = 'ai_myprovider_settings_submit';
   }
 }
 
-function openai_myprovider_settings_submit($form, &$form_state) {
+function ai_myprovider_settings_submit($form, &$form_state) {
   if (!empty($form_state['values']['myprovider_base_url'])) {
-    $c = config('openai_myprovider.settings');
+    $c = config('ai_myprovider.settings');
     $c->set('base_url', $form_state['values']['myprovider_base_url']);
     $c->save();
   }
@@ -108,17 +109,22 @@ function openai_myprovider_settings_submit($form, &$form_state) {
 
 Adapter class skeleton - implement provider-specific calls
 
-Place `includes/MyProviderAdapter.php` and define the adapter class. The central `openai` code expects adapter instances to expose methods such as `getModels()`, `getChatModels()`, `getImageModels()`, `getVisionModels()`, `getEmbeddingModels()`, `getModerationModels()`, and operational methods `chat()`, `images()`, `moderation()`, `embed()`.
+Place `includes/MyProviderAdapter.php` and define the adapter class. The central `ai` code expects adapter instances to expose methods such as `getModels()`, `getChatModels()`, `getImageModels()`, `getVisionModels()`, `getEmbeddingModels()`, `getModerationModels()`, `getSpeechToTextModels()`, and operational methods `completions()`, `chat()`, `chatWithTools()`, `images()`, `textToSpeech()`, `speechToText()`, `moderation()`, and `embedding()`.
 
 ```php
 <?php
-class MyProviderAdapter {
-  protected $api_key;
+class MyProviderAdapter extends AIAdapterBase {
   protected $provider_id;
 
-  public function __construct($api_key = NULL, $provider_id = 'myprovider') {
-    $this->api_key = $api_key;
+  public function __construct($api_key = NULL, ?AIApi $api = NULL, $provider_id = 'myprovider') {
+    parent::__construct($api_key, $api);
     $this->provider_id = $provider_id;
+  }
+
+  protected function getDefaultHeaders(): array {
+    return [
+      'Authorization' => 'Bearer ' . $this->apiKey,
+    ];
   }
 
   // Model discovery - return arrays: model_id => friendly name
@@ -188,7 +194,7 @@ class MyProviderAdapter {
 
     // Allow site-specific overrides via Backdrop's alter hook system
     // This lets site admins override capability detection in custom modules
-    backdrop_alter('openai_model_capabilities', $filtered, $capability, $this->provider_id);
+    backdrop_alter('ai_model_capabilities', $filtered, $capability, $this->provider_id);
 
     return $filtered;
   }
@@ -213,52 +219,83 @@ class MyProviderAdapter {
     return $this->getModelsByCapability('moderation');
   }
 
+  public function getSpeechToTextModels() {
+    return [];
+  }
+
+  public function completions(string $model, string $prompt, $temperature = 0.7, $max_tokens = 512, bool $stream_response = FALSE) {
+    return $this->chat($model, [['role' => 'user', 'content' => $prompt]], $temperature, $max_tokens, $stream_response);
+  }
+
   // Operations
-  public function chat($model, array $messages, $temperature = 0.7, $max_tokens = 1024, $stream_response = FALSE) {
-    // Implement chat request; return text or structured as openai core expects
-    return '';
+  public function chat(string $model, array $messages, $temperature = 0.7, $max_tokens = 1024, bool $stream_response = FALSE, array $context_extra = []) {
+    try {
+      // Implement provider request here.
+      return 'provider response';
+    }
+    catch (\Exception $e) {
+      watchdog('ai_myprovider', 'Chat error: @message', ['@message' => $e->getMessage()], WATCHDOG_ERROR);
+      throw $e;
+    }
   }
 
-  public function images($model, $prompt, $options = []) {
-    // Implement image generation; return array with data or URLs
-    return [];
+  public function images(string $model, string $prompt, string $size, string $response_format, string $quality = 'standard', string $style = 'natural', ?string $output_format = NULL) {
+    throw new \RuntimeException('Image generation is not supported by MyProvider.');
   }
 
-  public function moderation($input, $model = NULL) {
-    // Implement moderation call
-    return [];
+  public function textToSpeech(string $model, string $input, string $voice, string $response_format) {
+    throw new \RuntimeException('Text-to-speech is not supported by MyProvider.');
   }
 
-  public function embed($model, $input) {
-    // Implement embedding call
-    return [];
+  public function speechToText(string $model, string $file, string $task = 'transcribe', $temperature = 0.4, string $response_format = 'verbose_json') {
+    throw new \RuntimeException('Speech-to-text is not supported by MyProvider.');
+  }
+
+  public function moderation(string $input, string $model = 'myprovider-moderation'): array {
+    throw new \RuntimeException('Moderation is not supported by MyProvider.');
+  }
+
+  public function embedding(string $input, string $model, bool $log = TRUE): array {
+    throw new \RuntimeException('Embeddings are not supported by MyProvider.');
+  }
+
+  public function chatWithTools(string $model, array $messages, array $tools, $temperature, $max_tokens = 1024, string $tool_choice = 'auto', array $context_extra = []): array {
+    throw new \RuntimeException('Tool calling is not supported by MyProvider.');
   }
 }
 ```
+
+Error-handling rules
+
+- Do not swallow provider failures and return `''`, `[]`, or fake error arrays for core operations.
+- If provider/network request fails, log and `throw`.
+- If capability is unsupported, `throw new \RuntimeException('... not supported ...')`.
+- `AIApi` normalizes thrown adapter errors into shared AI exceptions for callers.
+- Use empty arrays only for true successful empty results, not as failure sentinels.
 
 ## Model Capability Detection
 
 Different providers handle model capabilities differently:
 
-### OpenAI
-OpenAI's API returns capability metadata, so the adapter can reliably detect which models support which features.
+### AI
+AI's API returns capability metadata, so the adapter can reliably detect which models support which features.
 
 ### Ollama
 Ollama provides some capability metadata via its native API (e.g., 'families' array), but it's not always complete. The adapter uses a combination of:
 - API metadata when available
 - Pattern matching on model names (e.g., 'llava' for vision, 'embed' for embeddings)
-- The `backdrop_alter('openai_model_capabilities')` hook for site-specific overrides
+- The `backdrop_alter('ai_model_capabilities')` hook for site-specific overrides
 
 ### OpenRouter
 OpenRouter doesn't provide reliable capability metadata, so the adapter primarily relies on:
 - Pattern matching on model names
-- The `backdrop_alter('openai_model_capabilities')` hook for site-specific overrides
+- The `backdrop_alter('ai_model_capabilities')` hook for site-specific overrides
 
 ### Best Practices
 
 1. **Use `getModelsByCapability()`**: This helper method centralizes capability detection logic
-2. **Support the alter hook**: Always call `backdrop_alter('openai_model_capabilities')` to allow site admins to override your detection
+2. **Support the alter hook**: Always call `backdrop_alter('ai_model_capabilities')` to allow site admins to override your detection
 3. **Document limitations**: If your provider doesn't reliably report capabilities, document this and provide examples of using the alter hook
 4. **Provide fallbacks**: When in doubt, return all models and let users filter via the alter hook
 
-See `modules/contrib/openai/examples/model_capability_override.php` for examples of using the alter hook.
+See `modules/contrib/ai/examples/model_capability_override.php` for examples of using the alter hook.

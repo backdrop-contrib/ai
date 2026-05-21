@@ -1,9 +1,0 @@
-name = OpenAI Alt
-type = module
-description = Provides alt text generation using OpenAI.
-backdrop = 1.x
-package = OpenAI
-configure = admin/config/openai/openai-alt
-dependencies[] = openai
-dependencies[] = image_effects
-dependencies[] = image_effects_coloractions

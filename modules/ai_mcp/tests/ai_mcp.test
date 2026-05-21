@@ -1,0 +1,286 @@
+<?php
+
+/**
+ * @file
+ * Tests for the AI MCP Server module.
+ */
+
+class AIMcpTestCase extends BackdropWebTestCase {
+
+  /**
+   * {@inheritdoc}
+   */
+  public function setUp() {
+    parent::setUp(['ai', 'ai_tools', 'ai_mcp']);
+
+    // Load includes needed for direct function calls.
+    module_load_include('inc', 'ai_mcp', 'includes/ai_mcp.');
+    module_load_include('inc', 'ai_mcp', 'includes/ai_mcp.');
+    module_load_include('inc', 'ai_mcp', 'includes/ai_mcp.');
+  }
+
+  // ---------------------------------------------------------------------------
+  // testToolsSchemaMapping
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Tests that _ai_mcp_tool_to_mcp_schema() produces the expected keys.
+   */
+  public function testToolsSchemaMapping() {
+    $tool_key = 'test_tool';
+    $tool = [
+      'definition' => [
+        'function' => [
+          'name'        => 'test_tool',
+          'description' => 'A test tool for unit testing.',
+          'parameters'  => [
+            'type'       => 'object',
+            'properties' => [
+              'query' => ['type' => 'string', 'description' => 'The query'],
+            ],
+            'required'   => ['query'],
+          ],
+        ],
+      ],
+      'operation'   => 'read',
+      'destructive' => FALSE,
+    ];
+
+    $schema = _ai_mcp_tool_to_mcp_schema($tool_key, $tool);
+
+    $this->assertTrue(isset($schema['name']),        'Schema has name key.');
+    $this->assertTrue(isset($schema['description']), 'Schema has description key.');
+    $this->assertTrue(isset($schema['inputSchema']), 'Schema has inputSchema key.');
+    $this->assertTrue(isset($schema['annotations']), 'Schema has annotations key.');
+
+    $this->assertEqual('test_tool', $schema['name'], 'Schema name matches tool name.');
+    $this->assertEqual('A test tool for unit testing.', $schema['description'], 'Schema description matches.');
+
+    $this->assertTrue(isset($schema['inputSchema']['type']),       'inputSchema has type key.');
+    $this->assertTrue(isset($schema['inputSchema']['properties']), 'inputSchema has properties key.');
+
+    $this->assertTrue(isset($schema['annotations']['readOnlyHint']),    'Annotations has readOnlyHint.');
+    $this->assertTrue(isset($schema['annotations']['destructiveHint']), 'Annotations has destructiveHint.');
+    $this->assertTrue($schema['annotations']['readOnlyHint'],   'readOnlyHint is TRUE for read operation.');
+    $this->assertFalse($schema['annotations']['destructiveHint'], 'destructiveHint is FALSE for non-destructive tool.');
+  }
+
+  /**
+   * Tests destructiveHint annotation for destructive tools.
+   */
+  public function testToolsSchemaDestructiveAnnotation() {
+    $tool = [
+      'definition' => [
+        'function' => [
+          'name'        => 'dangerous_tool',
+          'description' => 'Deletes everything.',
+        ],
+      ],
+      'operation'   => 'write',
+      'destructive' => TRUE,
+    ];
+
+    $schema = _ai_mcp_tool_to_mcp_schema('dangerous_tool', $tool);
+
+    $this->assertFalse($schema['annotations']['readOnlyHint'],  'readOnlyHint is FALSE for write operation.');
+    $this->assertTrue($schema['annotations']['destructiveHint'], 'destructiveHint is TRUE for destructive tool.');
+  }
+
+  // ---------------------------------------------------------------------------
+  // testJsonRpcToolsList
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Tests that ai_mcp_method_tools_list returns a tools array.
+   */
+  public function testJsonRpcToolsList() {
+    $server = ['id' => 'test', 'label' => 'Test', 'tools' => [], 'auth_key' => 'x'];
+    $response = ai_mcp_method_tools_list('1', [], $server);
+
+    $this->assertEqual('2.0', $response['jsonrpc'], 'Response has jsonrpc 2.0.');
+    $this->assertEqual('1', $response['id'], 'Response id matches request id.');
+    $this->assertTrue(isset($response['result']), 'Response has result key.');
+    $this->assertTrue(isset($response['result']['tools']), 'Result has tools key.');
+    $this->assertTrue(is_array($response['result']['tools']), 'Tools is an array.');
+    $this->assertTrue(count($response['result']['tools']) > 0, 'Tools array is non-empty (ai_tools provides built-ins).');
+
+    // Verify each tool has the required MCP schema keys.
+    $first = reset($response['result']['tools']);
+    $this->assertTrue(isset($first['name']),        'First tool has name key.');
+    $this->assertTrue(isset($first['description']), 'First tool has description key.');
+    $this->assertTrue(isset($first['inputSchema']), 'First tool has inputSchema key.');
+    $this->assertTrue(isset($first['annotations']), 'First tool has annotations key.');
+  }
+
+  /**
+   * Tests that tools/list respects server tool allowlist.
+   */
+  public function testJsonRpcToolsListFiltered() {
+    $all_tools = ai_tools_get_tools();
+    if (empty($all_tools)) {
+      return;
+    }
+
+    $first_key = key($all_tools);
+    $server    = ['id' => 'test', 'label' => 'Test', 'tools' => [$first_key], 'auth_key' => 'x'];
+    $response  = ai_mcp_method_tools_list('2', [], $server);
+
+    $this->assertEqual(1, count($response['result']['tools']), 'Filtered list returns exactly one tool.');
+    $this->assertEqual($all_tools[$first_key]['definition']['function']['name'], $response['result']['tools'][0]['name'], 'Filtered tool matches the allowed key.');
+  }
+
+  // ---------------------------------------------------------------------------
+  // testJsonRpcInitialize
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Tests that ai_mcp_method_initialize returns expected protocol fields.
+   */
+  public function testJsonRpcInitialize() {
+    $server   = ['id' => 'test', 'label' => 'My MCP', 'tools' => [], 'auth_key' => 'x'];
+    $response = ai_mcp_method_initialize('1', [], $server);
+
+    $this->assertEqual('2.0', $response['jsonrpc'], 'Response has jsonrpc 2.0.');
+    $this->assertTrue(isset($response['result']), 'Response has result.');
+
+    $result = $response['result'];
+    $this->assertTrue(isset($result['protocolVersion']), 'Result has protocolVersion.');
+    $this->assertTrue(isset($result['capabilities']),   'Result has capabilities.');
+    $this->assertTrue(isset($result['serverInfo']),     'Result has serverInfo.');
+
+    $this->assertEqual('2024-11-05', $result['protocolVersion'], 'Protocol version matches spec.');
+    $this->assertTrue(isset($result['capabilities']['tools']), 'Capabilities includes tools.');
+    $this->assertTrue(isset($result['serverInfo']['name']),    'ServerInfo has name.');
+    $this->assertTrue(isset($result['serverInfo']['version']), 'ServerInfo has version.');
+    $this->assertEqual('My MCP', $result['serverInfo']['name'], 'ServerInfo name matches server label.');
+  }
+
+  // ---------------------------------------------------------------------------
+  // testServerSaveLoad
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Tests that server configs can be saved and loaded back correctly.
+   */
+  public function testServerSaveLoad() {
+    $server = [
+      'id'           => 'test_save_load_' . mt_rand(100, 999),
+      'label'        => 'Test Save/Load Server',
+      'auth_key'     => 'test-bearer-token-abc123',
+      'tools'        => ['get_node_info', 'list_nodes'],
+      'oauth_enabled'=> FALSE,
+    ];
+
+    ai_mcp_server_save($server);
+
+    $loaded = ai_mcp_server_load($server['id']);
+
+    $this->assertTrue(is_array($loaded), 'Loaded server is an array.');
+    $this->assertEqual($server['id'],       $loaded['id'],       'Loaded id matches saved id.');
+    $this->assertEqual($server['label'],    $loaded['label'],    'Loaded label matches saved label.');
+    $this->assertEqual($server['auth_key'], $loaded['auth_key'], 'Loaded auth_key matches saved auth_key.');
+    $this->assertEqual($server['tools'],    $loaded['tools'],    'Loaded tools array matches saved tools.');
+
+    // Verify it appears in load_all().
+    $all = ai_mcp_server_load_all();
+    $this->assertTrue(isset($all[$server['id']]), 'Server appears in load_all() results.');
+
+    // Clean up.
+    ai_mcp_server_delete($server['id']);
+    $deleted = ai_mcp_server_load($server['id']);
+    $this->assertFalse($deleted, 'Server is gone after delete.');
+  }
+
+  // ---------------------------------------------------------------------------
+  // testAuthenticateRequestFailsWithNoToken
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Tests that authenticate_request returns FALSE when no Authorization header present.
+   */
+  public function testAuthenticateRequestFailsWithNoToken() {
+    // Ensure no Authorization header is set.
+    unset($_SERVER['HTTP_AUTHORIZATION']);
+    unset($_SERVER['REDIRECT_HTTP_AUTHORIZATION']);
+
+    $result = ai_mcp_authenticate_request();
+    $this->assertFalse($result, 'Authentication returns FALSE when no Bearer token is present.');
+  }
+
+  /**
+   * Tests that a valid Bearer token matches the correct server.
+   */
+  public function testAuthenticateRequestSucceedsWithValidToken() {
+    $token  = 'valid-test-token-' . mt_rand(10000, 99999);
+    $server = [
+      'id'           => 'auth_test_server_' . mt_rand(100, 999),
+      'label'        => 'Auth Test Server',
+      'auth_key'     => $token,
+      'tools'        => [],
+      'oauth_enabled'=> FALSE,
+    ];
+    ai_mcp_server_save($server);
+
+    // Inject the Authorization header into $_SERVER.
+    $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $token;
+
+    $result = ai_mcp_authenticate_request();
+
+    // Clean up header immediately.
+    unset($_SERVER['HTTP_AUTHORIZATION']);
+
+    $this->assertTrue(is_array($result), 'Authentication returns a server array for a valid token.');
+    $this->assertEqual($server['id'], $result['id'], 'Authenticated server id matches expected server.');
+
+    // Clean up config.
+    ai_mcp_server_delete($server['id']);
+  }
+
+  /**
+   * Tests that an invalid Bearer token fails authentication.
+   */
+  public function testAuthenticateRequestFailsWithWrongToken() {
+    $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer totally-invalid-token-xyz';
+
+    $result = ai_mcp_authenticate_request();
+
+    unset($_SERVER['HTTP_AUTHORIZATION']);
+
+    $this->assertFalse($result, 'Authentication returns FALSE for an invalid token.');
+  }
+
+  // ---------------------------------------------------------------------------
+  // testJsonRpcDispatch
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Tests that the dispatcher routes unknown methods to a -32601 error.
+   */
+  public function testJsonRpcDispatchUnknownMethod() {
+    $server = ['id' => 'test', 'label' => 'Test', 'tools' => [], 'auth_key' => 'x'];
+    $body   = [
+      'jsonrpc' => '2.0',
+      'id'      => '99',
+      'method'  => 'nonexistent/method',
+      'params'  => [],
+    ];
+
+    $response = ai_mcp_jsonrpc_dispatch($body, $server);
+
+    $this->assertTrue(isset($response['error']), 'Dispatch returns error for unknown method.');
+    $this->assertEqual(-32601, $response['error']['code'], 'Error code is -32601 (Method not found).');
+  }
+
+  /**
+   * Tests that tools/call returns isError TRUE for unknown tool names.
+   */
+  public function testJsonRpcToolsCallUnknownTool() {
+    $server = ['id' => 'test', 'label' => 'Test', 'tools' => [], 'auth_key' => 'x'];
+    $params = ['name' => 'nonexistent_tool_xyz', 'arguments' => []];
+
+    $response = ai_mcp_method_tools_call('3', $params, $server);
+
+    $this->assertTrue(isset($response['result']), 'Response has result.');
+    $this->assertTrue($response['result']['isError'], 'isError is TRUE for unknown tool.');
+  }
+}

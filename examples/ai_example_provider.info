@@ -1,0 +1,8 @@
+name = AI Example Provider
+description = Example provider module.
+backdrop = 1.x
+package = AI (Examples)
+
+; This example module is intended as documentation and a copy-from template.
+; To enable it as a real module, copy the folder to modules/contrib/ai_example_provider/ or similar.
+

@@ -1,0 +1,24 @@
+<?php
+
+/**
+ * Implements hook_install().
+ */
+function ai_guardrails_install() {
+  module_load_install('ai_upgrade');
+  ai_upgrade_module_install('ai_guardrails');
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function ai_guardrails_uninstall() {
+  config('ai_guardrails.settings')->delete();
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function ai_guardrails_requirements($phase) {
+  module_load_install('ai_upgrade');
+  return ai_upgrade_module_requirements($phase, 'ai_guardrails');
+}

@@ -1,0 +1,15 @@
+<?php
+
+/**
+ * @file
+ * Tool-driven alt text helpers.
+ */
+
+/**
+ * Implements hook_ai_tools().
+ */
+function ai_alt_tools_ai_tools() {
+  module_load_include('inc', 'ai_alt_tools', 'includes/alt.tools');
+  return ai_alt_tools_definitions();
+}
+

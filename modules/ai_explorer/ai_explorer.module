@@ -1,0 +1,1054 @@
+<?php
+
+/**
+ * @file
+ * Combined AI explorer for speech-to-text and text-to-speech tools.
+ */
+
+/**
+ * Implements hook_permission().
+ */
+function ai_explorer_permission() {
+  return [
+    'access ai explorer' => [
+      'title' => t('Use the AI explorer module.'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ai_explorer_menu() {
+  $items = [];
+
+  $items['admin/config/ai/ai-explorer'] = [
+    'title' => 'AI Explorer',
+    'description' => 'Combined entry point for AI testing tools.',
+    'page callback' => 'ai_explorer_overview_page',
+    'access arguments' => ['access ai explorer'],
+    'type' => MENU_NORMAL_ITEM,
+    'weight' => -4,
+  ];
+
+  $items['admin/config/ai/ai-explorer/chat'] = [
+    'title' => 'Chat',
+    'description' => 'Test AI chat and completion endpoints.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_explorer_chat_form'],
+    'access arguments' => ['access ai explorer'],
+    'type' => MENU_NORMAL_ITEM,
+    'weight' => -6,
+  ];
+
+  $items['admin/config/ai/ai-explorer/image'] = [
+    'title' => 'Image',
+    'description' => 'Test AI image generation endpoints.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_explorer_image_form'],
+    'access arguments' => ['access ai explorer'],
+    'type' => MENU_NORMAL_ITEM,
+    'weight' => -5,
+  ];
+
+  $items['admin/config/ai/ai-explorer/audio'] = [
+    'title' => 'Speech to Text',
+    'description' => 'Test AI speech-to-text endpoints.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_explorer_audio_form'],
+    'access arguments' => ['access ai explorer'],
+    'type' => MENU_NORMAL_ITEM,
+    'weight' => -3,
+  ];
+
+  $items['admin/config/ai/ai-explorer/tts'] = [
+    'title' => 'Text to Speech',
+    'description' => 'Test AI text-to-speech endpoints.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_explorer_tts_form'],
+    'access arguments' => ['access ai explorer'],
+    'type' => MENU_NORMAL_ITEM,
+    'weight' => -2,
+  ];
+
+  return $items;
+}
+
+/**
+ * Ensure form storage exists and return it by reference.
+ */
+function &_ai_explorer_get_storage(array &$form_state) {
+  if (!isset($form_state['storage']) || !is_array($form_state['storage'])) {
+    $form_state['storage'] = [];
+  }
+  return $form_state['storage'];
+}
+
+/**
+ * Landing page for the explorer.
+ */
+function ai_explorer_overview_page() {
+  backdrop_add_css(backdrop_get_path('module', 'ai') . '/css/ai.admin-overview.css');
+
+  $cards = [
+    [
+      'title' => t('Chat'),
+      'path' => 'admin/config/ai/ai-explorer/chat',
+      'description' => t('Test AI chat and completion endpoints.'),
+    ],
+    [
+      'title' => t('Image'),
+      'path' => 'admin/config/ai/ai-explorer/image',
+      'description' => t('Test AI image generation endpoints.'),
+    ],
+    [
+      'title' => t('Speech to Text'),
+      'path' => 'admin/config/ai/ai-explorer/audio',
+      'description' => t('Test AI speech-to-text endpoints.'),
+    ],
+    [
+      'title' => t('Text to Speech'),
+      'path' => 'admin/config/ai/ai-explorer/tts',
+      'description' => t('Test AI text-to-speech endpoints.'),
+    ],
+  ];
+
+  // Allow other modules to add their explorers.
+  backdrop_alter('ai_explorer_explorers', $cards);
+
+  $output = '<div class="ai-admin-overview-grid">';
+  $output .= '<section class="ai-admin-overview-section">';
+  $output .= '<h2>' . t('Explorer Tools') . '</h2>';
+  $output .= '<div class="ai-admin-overview-cards">';
+
+  foreach ($cards as $card) {
+    $output .= '<article class="ai-admin-overview-card">';
+    $output .= '<h3>' . l($card['title'], $card['path']) . '</h3>';
+    $output .= '<p>' . check_plain($card['description']) . '</p>';
+    $output .= '</article>';
+  }
+
+  $output .= '</div>';
+  $output .= '</section>';
+  $output .= '</div>';
+
+  return ['#markup' => $output];
+}
+
+/**
+ * Form constructor for speech-to-text testing.
+ */
+function ai_explorer_audio_form($form, &$form_state) {
+  $models = ai_get_all_stt_models();
+  if (empty($models)) {
+    form_set_error('', t('No speech-to-text models are available from enabled providers.'));
+    return $form;
+  }
+
+  $default_model = ai_default_model($models, config_get('ai.settings', 'default_stt_model'), ['whisper-1']);
+
+  $form['audio'] = [
+    '#type' => 'textarea',
+    '#title' => t('Audio file path'),
+    '#rows' => 1,
+    '#description' => t('The absolute path to the audio file. Maximum file size 25 MB. Allowed file types: mp3, mp4, mpeg, mpga, m4a, wav, and webm.'),
+    '#required' => TRUE,
+  ];
+
+  $form['task'] = [
+    '#type' => 'select',
+    '#title' => t('Task'),
+    '#options' => [
+      'transcribe' => 'Transcribe',
+      'translate' => 'Translate',
+    ],
+    '#default_value' => 'transcribe',
+    '#description' => t('The task to use to process the audio file. "Transcribe" keeps the original language. "Translate" converts to English. See the <a href=":link">speech to text guide</a> for details.', [
+      ':link' => 'https://platform.ai.com/docs/guides/speech-to-text',
+    ]),
+  ];
+
+  $form['model'] = [
+    '#type' => 'select',
+    '#title' => t('Model'),
+    '#options' => $models,
+    '#default_value' => $default_model,
+    '#description' => t('Provider-prefixed model IDs route the request to the matching enabled provider.'),
+  ];
+
+  $form['response'] = [
+    '#type' => 'textarea',
+    '#title' => t('Response'),
+    '#attributes' => [
+      'readonly' => 'readonly',
+    ],
+    '#prefix' => '<div id="ai-explorer-audio-response">',
+    '#suffix' => '</div>',
+    '#description' => t('The response from AI will appear in the textarea above.'),
+  ];
+
+  $form['actions'] = [
+    '#type' => 'actions',
+  ];
+
+  $form['actions']['submit'] = [
+    '#type' => 'submit',
+    '#value' => t('Submit'),
+    '#ajax' => [
+      'callback' => 'ai_explorer_audio_get_response',
+      'wrapper' => 'ai-explorer-audio-response',
+      'progress' => [
+        'type' => 'throbber',
+      ],
+    ],
+  ];
+
+  return $form;
+}
+
+/**
+ * Form constructor for chat testing.
+ */
+function ai_explorer_chat_form($form, &$form_state) {
+  $models = ai_get_all_chat_models();
+  if (empty($models)) {
+    form_set_error('', t('No chat models are available from enabled providers.'));
+    return $form;
+  }
+
+  $form['text'] = [
+    '#type' => 'textarea',
+    '#title' => t('Ask the AI Assistant'),
+    '#rows' => 5,
+    '#description' => t('Enter your question or prompt below. Response times vary by provider and model.'),
+    '#required' => TRUE,
+  ];
+
+  $form['options'] = [
+    '#type' => 'fieldset',
+    '#title' => t('Options'),
+    '#description' => t('Adjust settings for how the AI generates its response.'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  ];
+
+  $default_model = ai_default_model($models, config_get('ai.settings', 'default_chat_model'), ['gpt-4o-mini', 'gpt-3.5-turbo']);
+
+  $form['options']['model'] = [
+    '#type' => 'select',
+    '#title' => t('Model'),
+    '#options' => $models,
+    '#default_value' => $default_model,
+    '#description' => t('Select a model from any enabled AI provider.'),
+  ];
+
+  $form['options']['temperature'] = [
+    '#type' => 'number',
+    '#title' => t('Temperature'),
+    '#min' => 0,
+    '#max' => 2,
+    '#step' => .1,
+    '#default_value' => '0.4',
+    '#description' => t('Controls randomness.'),
+  ];
+
+  $form['options']['max_tokens'] = [
+    '#type' => 'number',
+    '#title' => t('Max tokens'),
+    '#min' => 1000,
+    '#step' => 1,
+    '#default_value' => '1000',
+    '#description' => t('Maximum tokens to generate.'),
+  ];
+
+  $form['options']['system'] = [
+    '#type' => 'textarea',
+    '#title' => t('System / Profile'),
+    '#default_value' => 'You are a helpful assistant integrated into a Backdrop website. Be clear, concise, and polite. Ask follow-up questions when appropriate.',
+    '#description' => t('Sets the assistant behavior or personality.'),
+    '#required' => TRUE,
+  ];
+
+  $form['response'] = [
+    '#type' => 'textarea',
+    '#title' => t('Response'),
+    '#attributes' => [
+      'readonly' => 'readonly',
+    ],
+    '#prefix' => '<div id="ai-explorer-chat-response">',
+    '#suffix' => '</div>',
+    '#description' => t('The AI response will appear above after submission.'),
+  ];
+
+  $form['actions'] = [
+    '#type' => 'actions',
+  ];
+
+  $form['actions']['submit'] = [
+    '#type' => 'submit',
+    '#value' => t('Submit'),
+    '#ajax' => [
+      'callback' => 'ai_explorer_chat_get_response',
+      'wrapper' => 'ai-explorer-chat-response',
+      'progress' => [
+        'type' => 'throbber',
+      ],
+    ],
+  ];
+
+  return $form;
+}
+
+/**
+ * Chat form validation.
+ */
+function ai_explorer_chat_form_validate($form, &$form_state) {
+  $model = !empty($form_state['values']['model']) ? $form_state['values']['model'] : '';
+  if (!empty($model)) {
+    list(, $model) = ai_parse_model_id($model);
+  }
+  $max_tokens = (int) $form_state['values']['max_tokens'];
+
+  switch ($model) {
+    case 'gpt-4':
+    case 'gpt-4-0314':
+      if ($max_tokens > 8192) {
+        form_set_error('options][max_tokens', t('The model you selected only supports up to 8192 tokens.'));
+      }
+      break;
+
+    case 'gpt-3.5-turbo':
+    case 'gpt-3.5-turbo-0301':
+      if ($max_tokens > 4096) {
+        form_set_error('options][max_tokens', t('The model you selected only supports up to 4096 tokens.'));
+      }
+      break;
+
+    case 'gpt-3.5-turbo-16k':
+      if ($max_tokens > 16384) {
+        form_set_error('options][max_tokens', t('The model you selected only supports up to 16384 tokens.'));
+      }
+      break;
+  }
+}
+
+/**
+ * Chat AJAX callback.
+ */
+function ai_explorer_chat_get_response($form, &$form_state) {
+  $errors = form_get_errors();
+  if (empty($errors)) {
+    $storage = !empty($form_state['storage']) && is_array($form_state['storage']) ? $form_state['storage'] : [];
+    $last_response = !empty($storage['messages']) ? end($storage['messages']) : [];
+    $form['response']['#value'] = !empty($last_response['content']) ? trim($last_response['content']) : t('No answer was provided.');
+  }
+  return $form['response'];
+}
+
+/**
+ * Chat submit handler.
+ */
+function ai_explorer_chat_form_submit($form, &$form_state) {
+  $text = $form_state['values']['text'];
+  $system = $form_state['values']['system'];
+  $model = $form_state['values']['model'];
+  $temperature = $form_state['values']['temperature'];
+  $max_tokens = $form_state['values']['max_tokens'];
+
+  $stripped_model = '';
+  $api = ai_get_api_for_model($model, $stripped_model);
+  if (!$api) {
+    form_set_error('', t('Unable to load API for the selected model.'));
+    return;
+  }
+
+  if (!isset($form_state['storage']) || !is_array($form_state['storage'])) {
+    $form_state['storage'] = [];
+  }
+
+  if (!empty($form_state['storage']['messages'])) {
+    $messages = $form_state['storage']['messages'];
+    $messages[] = ['role' => 'user', 'content' => trim($text)];
+  }
+  else {
+    $messages = [
+      ['role' => 'system', 'content' => trim($system)],
+      ['role' => 'user', 'content' => trim($text)],
+    ];
+  }
+
+  try {
+    $result = $api->chat($stripped_model, $messages, $temperature, $max_tokens, FALSE, ['operation' => 'chat_explorer']);
+    $messages[] = ['role' => 'assistant', 'content' => $result];
+    $form_state['storage']['messages'] = $messages;
+    $form_state['rebuild'] = TRUE;
+  }
+  catch (\Exception $e) {
+    watchdog('ai_explorer', 'Chat explorer request failed: @message <pre>@context</pre>', [
+      '@message' => $e->getMessage(),
+      '@context' => check_plain(json_encode(function_exists('ai_exception_context') ? ai_exception_context($e) : ['type' => get_class($e), 'message' => $e->getMessage()], JSON_PRETTY_PRINT)),
+    ], WATCHDOG_ERROR);
+    form_set_error('', t('@message', ['@message' => function_exists('ai_exception_user_message') ? ai_exception_user_message($e, $e->getMessage()) : $e->getMessage()]));
+  }
+}
+
+/**
+ * Form constructor for image generation testing.
+ */
+function ai_explorer_image_form($form, &$form_state) {
+  $_ = &_ai_explorer_get_storage($form_state);
+
+  $form['prompt'] = [
+    '#type' => 'textarea',
+    '#title' => t('Prompt'),
+    '#description' => t('Describe the image you want to generate.'),
+    '#required' => TRUE,
+  ];
+
+  $models = ai_get_all_image_models();
+  if (empty($models)) {
+    backdrop_set_message(t('No image generation models are available from your configured providers.'), 'warning');
+  }
+
+  $default_model = ai_default_model($models, config_get('ai.settings', 'default_image_model'), ['dall-e-3']);
+
+  $form['model'] = [
+    '#type' => 'select',
+    '#title' => t('Model'),
+    '#options' => $models,
+    '#default_value' => $default_model,
+    '#description' => t('Choose an image generation model.'),
+  ];
+
+  $form['filename'] = [
+    '#type' => 'textfield',
+    '#title' => t('Filename'),
+    '#default_value' => 'dalle_image',
+    '#required' => TRUE,
+  ];
+
+  $form['response'] = [
+    '#markup' => t('The generated image will be displayed below and saved to your file system.'),
+  ];
+
+  $form['file'] = [
+    '#prefix' => '<div id="ai-explorer-image-response">',
+    '#suffix' => '</div>',
+  ];
+
+  $form['actions'] = [
+    '#type' => 'actions',
+  ];
+
+  $form['actions']['submit'] = [
+    '#type' => 'submit',
+    '#value' => t('Submit'),
+    '#ajax' => [
+      'callback' => 'ai_explorer_image_get_response',
+      'wrapper' => 'ai-explorer-image-response',
+      'progress' => [
+        'type' => 'throbber',
+      ],
+    ],
+  ];
+
+  return $form;
+}
+
+/**
+ * Image form validation.
+ */
+function ai_explorer_image_form_validate($form, &$form_state) {
+  $prompt = !empty($form_state['values']['prompt']) ? $form_state['values']['prompt'] : '';
+  $model = !empty($form_state['values']['model']) ? $form_state['values']['model'] : '';
+
+  list(, $model) = ai_parse_model_id($model);
+
+  if ($model === 'dall-e-2' && mb_strlen($prompt) > 1000) {
+    form_set_error('prompt', t('The input cannot exceed 1000 characters for the dall-e-2 model.'));
+  }
+
+  if ($model === 'dall-e-3' && mb_strlen($prompt) > 4000) {
+    form_set_error('prompt', t('The input cannot exceed 4000 characters for the dall-e-3 model.'));
+  }
+}
+
+/**
+ * Image AJAX callback.
+ */
+function ai_explorer_image_get_response($form, &$form_state) {
+  $storage = &_ai_explorer_get_storage($form_state);
+  $alt_text = '';
+
+  if (!empty($storage['prompt'])) {
+    $alt_source = trim((string) $storage['prompt']);
+    if (function_exists('truncate_utf8')) {
+      $alt_source = truncate_utf8($alt_source, 160, TRUE, TRUE);
+    }
+    $alt_text = check_plain($alt_source);
+  }
+
+  if (!empty($storage['fid'])) {
+    $file = file_load($storage['fid']);
+    if ($file) {
+      $file_url = file_create_url($file->uri);
+      $form['file']['#markup'] = t('<div class="ai-explorer-image-result"><p><strong>Generated Image:</strong></p><img src="@file_url" alt="@alt_text" style="max-width: 100%; border: 1px solid #ccc; padding: 10px; display: block;" /><p><a href="@file_url" target="_blank" download>@filename</a></p></div>', [
+        '@file_url' => $file_url,
+        '@alt_text' => $alt_text,
+        '@filename' => $file->filename,
+      ]);
+    }
+    else {
+      $form['file']['#markup'] = t('The file could not be loaded.');
+    }
+  }
+  else {
+    $form['file']['#markup'] = t('No image generated yet.');
+  }
+
+  return $form['file'];
+}
+
+/**
+ * Image form submit handler.
+ */
+function ai_explorer_image_form_submit($form, &$form_state) {
+  $storage = &_ai_explorer_get_storage($form_state);
+  $model_with_prefix = !empty($form_state['values']['model']) ? $form_state['values']['model'] : (config_get('ai.settings', 'default_image_model') ?: 'dall-e-3');
+
+  $stripped_model = '';
+  $api = ai_get_api_for_model($model_with_prefix, $stripped_model);
+  if (!$api) {
+    form_set_error('', t('Unable to find provider for the selected model.'));
+    return;
+  }
+
+  list($provider_prefix) = ai_parse_model_id($model_with_prefix);
+  $storage['provider'] = $provider_prefix ?: ai_default_provider_id();
+
+  $model = $stripped_model;
+  $prompt = !empty($form_state['values']['prompt']) ? $form_state['values']['prompt'] : '';
+  $storage['prompt'] = $prompt;
+  $filename_base = !empty($form_state['values']['filename']) ? $form_state['values']['filename'] : 'dalle_image';
+  $file_scheme = file_default_scheme();
+  $timestamp = defined('REQUEST_TIME') ? REQUEST_TIME : time();
+
+  try {
+    $is_gpt_image = (bool) preg_match('/^gpt-image/i', $model);
+    $preferred_response_format = $is_gpt_image ? 'b64_json' : 'url';
+    $result = $api->images($model, $prompt, '1024x1024', $preferred_response_format);
+
+    if (!is_array($result) || empty($result['data']) || !isset($result['data'][0])) {
+      watchdog('ai_explorer', 'Image API returned unexpected response for provider @provider (shape: @shape).', ['@provider' => $storage['provider'], '@shape' => ai_explorer_image_response_shape($result)], WATCHDOG_ERROR);
+      form_set_error('', t('Unexpected response from image API. No image data returned.'));
+      return;
+    }
+
+    $data_item = $result['data'][0];
+    $ext = 'png';
+
+    if (!empty($data_item['url'])) {
+      $url = $data_item['url'];
+      if (is_string($url) && strpos($url, 'data:image/') === 0) {
+        $parsed = ai_explorer_parse_data_url($url);
+        if (!$parsed) {
+          form_set_error('', t('Could not parse the image data URL returned by the provider.'));
+          return;
+        }
+        $image_contents = $parsed['data'];
+        $ext = $parsed['ext'];
+      }
+      else {
+        $image_contents = @file_get_contents($url);
+        if ($image_contents === FALSE || $image_contents === NULL) {
+          watchdog('ai_explorer', 'Failed to download image from URL: @url (response shape: @shape).', ['@url' => $url, '@shape' => ai_explorer_image_response_shape($result)], WATCHDOG_ERROR);
+          form_set_error('', t('Failed to download the generated image from the returned URL.'));
+          return;
+        }
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime_type = $finfo->buffer($image_contents);
+        if ($mime_type === 'image/jpeg') {
+          $ext = 'jpg';
+        }
+        elseif ($mime_type === 'image/png') {
+          $ext = 'png';
+        }
+        elseif ($mime_type === 'image/webp') {
+          $ext = 'webp';
+        }
+      }
+    }
+    elseif (!empty($data_item['b64_json'])) {
+      $image_contents = base64_decode($data_item['b64_json']);
+      if ($image_contents === FALSE) {
+        watchdog('ai_explorer', 'Failed to decode base64 image payload for model @model (data shape: @shape).', ['@model' => $model, '@shape' => ai_explorer_image_response_shape($data_item)], WATCHDOG_ERROR);
+        form_set_error('', t('Failed to decode the Base64 image data returned by the model.'));
+        return;
+      }
+      $finfo = new finfo(FILEINFO_MIME_TYPE);
+      $mime_type = $finfo->buffer($image_contents);
+      if ($mime_type === 'image/jpeg') {
+        $ext = 'jpg';
+      }
+      elseif ($mime_type === 'image/png') {
+        $ext = 'png';
+      }
+      elseif ($mime_type === 'image/webp') {
+        $ext = 'webp';
+      }
+    }
+    else {
+      $url = ai_explorer_find_url_in_response($result);
+      if (!empty($url)) {
+        if (strpos($url, 'data:image/') === 0) {
+          $parsed = ai_explorer_parse_data_url($url);
+          if (!$parsed) {
+            form_set_error('', t('Could not parse the image data URL returned by the provider.'));
+            return;
+          }
+          $image_contents = $parsed['data'];
+          $ext = $parsed['ext'];
+        }
+        else {
+          $image_contents = @file_get_contents($url);
+          if ($image_contents === FALSE || $image_contents === NULL) {
+            watchdog('ai_explorer', 'Failed to download image from discovered URL: @url (response shape: @shape).', ['@url' => $url, '@shape' => ai_explorer_image_response_shape($result)], WATCHDOG_ERROR);
+            form_set_error('', t('Failed to download the generated image from the returned URL.'));
+            return;
+          }
+          $finfo = new finfo(FILEINFO_MIME_TYPE);
+          $mime_type = $finfo->buffer($image_contents);
+          if ($mime_type === 'image/jpeg') {
+            $ext = 'jpg';
+          }
+          elseif ($mime_type === 'image/png') {
+            $ext = 'png';
+          }
+          elseif ($mime_type === 'image/webp') {
+            $ext = 'webp';
+          }
+        }
+      }
+      else {
+        watchdog('ai_explorer', 'Image API returned no URL and no supported base64 payload (shape: @shape).', ['@shape' => ai_explorer_image_response_shape($result)], WATCHDOG_ERROR);
+        form_set_error('', t('Unexpected response from image API. The provider did not return an image.'));
+        return;
+      }
+    }
+
+    $unique_filename = $filename_base . '-' . $timestamp . '.' . $ext;
+    $destination = $file_scheme . '://ai_explorer/' . $unique_filename;
+
+    $directory = backdrop_dirname($destination);
+    file_prepare_directory($directory, FILE_CREATE_DIRECTORY | FILE_MODIFY_PERMISSIONS);
+
+    $file = file_save_data($image_contents, $destination, FILE_EXISTS_RENAME);
+    if ($file) {
+      file_usage_add($file, 'ai_explorer', 'module', $file->fid);
+      $storage['filename'] = $file->filename;
+      $storage['filepath'] = file_create_url($file->uri);
+      $storage['fid'] = $file->fid;
+      backdrop_set_message(t('Image generated and saved successfully!'));
+    }
+    else {
+      watchdog('ai_explorer', 'file_save_data failed when saving image to @dest', ['@dest' => $destination], WATCHDOG_ERROR);
+      form_set_error('', t('Failed to save the image to the file system.'));
+    }
+  }
+  catch (\Exception $e) {
+    watchdog('ai_explorer', 'Image generation exception: @msg <pre>@context</pre>', [
+      '@msg' => $e->getMessage(),
+      '@context' => check_plain(json_encode(function_exists('ai_exception_context') ? ai_exception_context($e) : ['type' => get_class($e), 'message' => $e->getMessage()], JSON_PRETTY_PRINT)),
+    ], WATCHDOG_ERROR);
+    form_set_error('', t('@message', ['@message' => function_exists('ai_exception_user_message') ? ai_exception_user_message($e, $e->getMessage()) : $e->getMessage()]));
+  }
+
+  $form_state['rebuild'] = TRUE;
+}
+
+/**
+ * Summarize image provider response shape.
+ */
+function ai_explorer_image_response_shape($data) {
+  if (is_array($data)) {
+    $keys = array_slice(array_keys($data), 0, 8);
+    return 'array keys=' . implode(',', $keys) . '; count=' . count($data);
+  }
+  if (is_object($data)) {
+    return 'object class=' . get_class($data);
+  }
+  if (is_string($data)) {
+    return 'string length=' . strlen($data);
+  }
+  return gettype($data);
+}
+
+/**
+ * Search a response for the first image URL.
+ */
+function ai_explorer_find_url_in_response($data) {
+  if (is_string($data)) {
+    if (filter_var(trim($data), FILTER_VALIDATE_URL)) {
+      return trim($data);
+    }
+    if (preg_match('/https?:\/\/[^\s\]\"]+\.(png|jpg|jpeg|webp|gif)/i', $data, $m)) {
+      return $m[0];
+    }
+    if (strpos($data, 'data:image/') === 0) {
+      return $data;
+    }
+    return NULL;
+  }
+
+  if (is_array($data)) {
+    foreach ($data as $item) {
+      $found = ai_explorer_find_url_in_response($item);
+      if (!empty($found)) {
+        return $found;
+      }
+    }
+  }
+
+  return NULL;
+}
+
+/**
+ * Parse a data URL into binary image data.
+ */
+function ai_explorer_parse_data_url($data_url) {
+  if (!is_string($data_url) || strpos($data_url, 'data:image/') !== 0) {
+    return NULL;
+  }
+  $semi = strpos($data_url, ';');
+  $comma = strpos($data_url, ',');
+  if ($semi === FALSE || $comma === FALSE || $comma <= $semi) {
+    return NULL;
+  }
+  $mime = substr($data_url, 5, $semi - 5);
+  $b64 = substr($data_url, $comma + 1);
+
+  $binary = base64_decode($b64);
+  if ($binary === FALSE) {
+    return NULL;
+  }
+
+  $ext = 'png';
+  if ($mime === 'image/jpeg' || $mime === 'image/jpg') {
+    $ext = 'jpg';
+  }
+  elseif ($mime === 'image/png') {
+    $ext = 'png';
+  }
+  elseif ($mime === 'image/webp') {
+    $ext = 'webp';
+  }
+
+  return ['ext' => $ext, 'data' => $binary];
+}
+
+/**
+ * Ajax callback for speech-to-text submission.
+ */
+function ai_explorer_audio_get_response($form, &$form_state) {
+  if (!empty($form_state['storage']['text'])) {
+    $response_text = $form_state['storage']['text'];
+  }
+  else {
+    $response_text = t('No response was provided.');
+  }
+
+  $form['response']['#value'] = filter_xss($response_text);
+  return $form['response'];
+}
+
+/**
+ * Form submission handler for speech-to-text.
+ */
+function ai_explorer_audio_form_submit($form, &$form_state) {
+  $stripped_model = '';
+  $selected_model = $form_state['values']['model'];
+  $api = ai_get_api_for_model($selected_model, $stripped_model);
+  if (!$api) {
+    form_set_error('', t('No API provider is configured for model @model.', ['@model' => $selected_model]));
+    return $form;
+  }
+
+  $audio = $form_state['values']['audio'];
+  $task = $form_state['values']['task'];
+
+  watchdog('ai_explorer', 'Attempting speech-to-text conversion for audio file.', [], WATCHDOG_INFO);
+
+  try {
+    $model_to_use = !empty($stripped_model) ? $stripped_model : $selected_model;
+    $result = $api->speechToText($model_to_use, $audio, $task);
+    $form_state['storage']['text'] = $result;
+
+    watchdog('ai_explorer', 'Speech-to-text conversion completed.', [], WATCHDOG_INFO);
+  }
+  catch (\Exception $e) {
+    watchdog('ai_explorer', 'Error in processing audio: @message <pre>@context</pre>', [
+      '@message' => $e->getMessage(),
+      '@context' => check_plain(json_encode(function_exists('ai_exception_context') ? ai_exception_context($e) : ['type' => get_class($e), 'message' => $e->getMessage()], JSON_PRETTY_PRINT)),
+    ], WATCHDOG_ERROR);
+    form_set_error('', t('@message', ['@message' => function_exists('ai_exception_user_message') ? ai_exception_user_message($e, $e->getMessage()) : $e->getMessage()]));
+  }
+
+  $form_state['rebuild'] = TRUE;
+}
+
+/**
+ * Form constructor for text-to-speech testing.
+ */
+function ai_explorer_tts_form($form, &$form_state) {
+  $models = ai_get_all_tts_models();
+  if (empty($models)) {
+    form_set_error('', t('No text-to-speech models are available from enabled providers.'));
+    return $form;
+  }
+
+  $default_model = ai_default_model($models, config_get('ai.settings', 'default_tts_model'), ['tts-1']);
+
+  $form['text'] = [
+    '#type' => 'textarea',
+    '#title' => t('Text to convert'),
+    '#description' => t('The text to turn into speech.'),
+    '#required' => TRUE,
+  ];
+
+  $form['model'] = [
+    '#type' => 'select',
+    '#title' => t('Model'),
+    '#options' => $models,
+    '#default_value' => $default_model,
+    '#description' => t('The model to use to turn text into speech. See the <a href=":link">model guide</a> for more information.', [
+      ':link' => 'https://platform.ai.com/docs/models/tts',
+    ]),
+    '#ajax' => [
+      'callback' => 'ai_explorer_tts_voice_selector_callback',
+      'wrapper' => 'ai-explorer-tts-voice-selector',
+      'progress' => [
+        'type' => 'throbber',
+      ],
+    ],
+  ];
+
+  $selected_model = !empty($form_state['values']['model']) ? $form_state['values']['model'] : $default_model;
+  $form['voice_selector'] = ai_explorer_tts_build_voice_selector($selected_model, $form_state);
+
+  $form['response_format'] = [
+    '#type' => 'select',
+    '#title' => t('Response Format'),
+    '#options' => [
+      'mp3' => 'MP3',
+      'opus' => 'Opus',
+      'aac' => 'AAC',
+      'flac' => 'FLAC',
+    ],
+    '#default_value' => 'mp3',
+    '#description' => t('The audio format of the result. See the <a href=":link">format guide</a> for more information.', [
+      ':link' => 'https://platform.ai.com/docs/guides/text-to-speech/supported-output-formats',
+    ]),
+  ];
+
+  $form['response'] = [
+    '#markup' => t('The response will create a file link to the audio file below.'),
+  ];
+
+  $form['file'] = [
+    '#prefix' => '<div id="ai-explorer-tts-response">',
+    '#suffix' => '</div>',
+  ];
+
+  $form['actions'] = [
+    '#type' => 'actions',
+  ];
+
+  $form['actions']['submit'] = [
+    '#type' => 'submit',
+    '#value' => t('Submit'),
+    '#ajax' => [
+      'callback' => 'ai_explorer_tts_get_response',
+      'wrapper' => 'ai-explorer-tts-response',
+      'progress' => [
+        'type' => 'throbber',
+      ],
+    ],
+  ];
+
+  return $form;
+}
+
+/**
+ * Build the provider-aware voice selector area.
+ */
+function ai_explorer_tts_build_voice_selector($selected_model, array &$form_state) {
+  $wrapper = [
+    '#type' => 'container',
+    '#prefix' => '<div id="ai-explorer-tts-voice-selector">',
+    '#suffix' => '</div>',
+  ];
+
+  $voice_options = [
+    'alloy' => 'Alloy',
+    'echo' => 'Echo',
+    'fable' => 'Fable',
+    'onyx' => 'Onyx',
+    'nova' => 'Nova',
+    'shimmer' => 'Shimmer',
+  ];
+  $voice_description = t('The voice to use to turn text into speech. See the <a href=":link">voice guide</a> for details.', [
+    ':link' => 'https://platform.ai.com/docs/guides/text-to-speech/voice-options',
+  ]);
+  $custom_description = t('Optional. For providers such as ElevenLabs, enter a provider-specific voice ID here. When set, this overrides the select list above.');
+
+  $stripped_model = '';
+  $provider_id = ai_default_provider_id();
+  if (!empty($selected_model) && strpos($selected_model, '/') !== FALSE) {
+    list($provider_id, $stripped_model) = explode('/', $selected_model, 2);
+  }
+  else {
+    $stripped_model = $selected_model;
+  }
+
+  if ($provider_id === 'elevenlabs') {
+    $api = ai_get_api_for_model($selected_model, $stripped_model);
+    if ($api && method_exists($api, 'getVoices')) {
+      try {
+        $provider_voices = $api->getVoices($stripped_model);
+        if (!empty($provider_voices)) {
+          $voice_options = $provider_voices;
+          $voice_description = t('Available ElevenLabs voices for the selected model. If your preferred voice is missing, paste its voice ID below.');
+          $custom_description = t('Optional override. Paste any ElevenLabs voice ID here to bypass the dropdown.');
+        }
+      }
+      catch (\Exception $e) {
+        watchdog('ai_explorer', 'Failed to fetch ElevenLabs voices for model @model: @message', [
+          '@model' => $selected_model,
+          '@message' => $e->getMessage(),
+        ], WATCHDOG_WARNING);
+        $voice_description = t('Unable to load ElevenLabs voices right now. Paste a voice ID below or configure a default ElevenLabs voice ID in provider settings.');
+      }
+    }
+  }
+
+  $default_voice = !empty($form_state['values']['voice']) ? $form_state['values']['voice'] : key($voice_options);
+  if (!isset($voice_options[$default_voice])) {
+    reset($voice_options);
+    $default_voice = key($voice_options);
+  }
+
+  $wrapper['voice'] = [
+    '#type' => 'select',
+    '#title' => t('Voice'),
+    '#options' => $voice_options,
+    '#default_value' => $default_voice,
+    '#description' => $voice_description,
+  ];
+
+  if ($provider_id === 'elevenlabs') {
+    $wrapper['custom_voice'] = [
+      '#type' => 'textfield',
+      '#title' => t('Custom Voice ID'),
+      '#default_value' => !empty($form_state['values']['custom_voice']) ? $form_state['values']['custom_voice'] : '',
+      '#description' => $custom_description,
+    ];
+  }
+
+  return $wrapper;
+}
+
+/**
+ * AJAX callback to rebuild the voice selector.
+ */
+function ai_explorer_tts_voice_selector_callback($form, &$form_state) {
+  return $form['voice_selector'];
+}
+
+/**
+ * Form validation for text-to-speech.
+ */
+function ai_explorer_tts_form_validate($form, &$form_state) {
+  $text = $form_state['values']['text'];
+
+  if (mb_strlen($text) > 4096) {
+    form_set_error('text', t('The input cannot exceed 4096 characters.'));
+  }
+}
+
+/**
+ * AJAX callback for the text-to-speech response.
+ */
+function ai_explorer_tts_get_response($form, &$form_state) {
+  if (!empty($form_state['storage']['filepath']) && !empty($form_state['storage']['filename'])) {
+    $file_url = file_create_url($form_state['storage']['filepath']);
+    $form['file']['#markup'] = t('Download the file: <a href="@url" target="_blank">@filename</a>', [
+      '@url' => $file_url,
+      '@filename' => $form_state['storage']['filename'],
+    ]);
+  }
+  else {
+    $form['file']['#markup'] = t('File link is unavailable.');
+  }
+
+  return $form['file'];
+}
+
+/**
+ * Form submission handler for text-to-speech.
+ */
+function ai_explorer_tts_form_submit($form, &$form_state) {
+  $stripped_model = '';
+  $api = ai_get_api_for_model($form_state['values']['model'], $stripped_model);
+  if (!$api) {
+    form_set_error('', t('No API provider is configured for model @model.', ['@model' => $form_state['values']['model']]));
+    return $form;
+  }
+
+  $file_system = file_default_scheme();
+  $timestamp = REQUEST_TIME;
+
+  $text = $form_state['values']['text'];
+  $model = $form_state['values']['model'];
+  $voice = !empty($form_state['values']['custom_voice']) ? trim($form_state['values']['custom_voice']) : $form_state['values']['voice'];
+  $format = $form_state['values']['response_format'];
+
+  global $user;
+
+  try {
+    $model_to_use = !empty($stripped_model) ? $stripped_model : $model;
+    $response = $api->textToSpeech($model_to_use, $text, $voice, $format);
+    $filename = 'tts_result-' . $timestamp . '.' . $format;
+    $file_uri = file_unmanaged_save_data($response, $file_system . '://' . $filename, FILE_EXISTS_REPLACE);
+
+    if ($file_uri) {
+      $file = entity_create('file', [
+        'uri' => $file_uri,
+        'filename' => $filename,
+        'filemime' => file_get_mimetype($file_uri),
+        'status' => 1,
+        'uid' => $user->uid,
+        'timestamp' => $timestamp,
+      ]);
+
+      file_save($file);
+
+      $form_state['storage'] = [
+        'filepath' => $file->uri,
+        'filename' => $file->filename,
+        'fid' => $file->fid,
+      ];
+    }
+    else {
+      form_set_error('', t('Failed to save the audio data to a file.'));
+    }
+  }
+  catch (\Exception $e) {
+    watchdog('ai_explorer', 'Text-to-speech processing failed: @message <pre>@context</pre>', [
+      '@message' => $e->getMessage(),
+      '@context' => check_plain(json_encode(function_exists('ai_exception_context') ? ai_exception_context($e) : ['type' => get_class($e), 'message' => $e->getMessage()], JSON_PRETTY_PRINT)),
+    ], WATCHDOG_ERROR);
+    form_set_error('', t('@message', ['@message' => function_exists('ai_exception_user_message') ? ai_exception_user_message($e, $e->getMessage()) : $e->getMessage()]));
+  }
+
+  $form_state['rebuild'] = TRUE;
+}

@@ -1,66 +1,73 @@
-# OpenAI / ChatGPT / AI Search Integration
+# AI Module Suite
 
-The Backdrop CMS OpenAI module makes it possible to interact with the
-[OpenAI API](https://openai.com/) to implement features using
-various API services.
-
-The OpenAI module aims to provide a suite of modules and an API foundation
-for OpenAI integration in Backdrop CMS for generating text content, images, content
-analysis and more. OpenAI is the company behind artificial generational
-intelligence products that powers applications like ChatGPT, GPT-3, GitHub
-CoPilot, and more. Our goal is to find ways of augmenting and adding assistive
-AI tech leveraging OpenAI API services in Backdrop CMS.
+The Backdrop CMS AI module provides a provider-agnostic foundation for AI
+features in Backdrop CMS. It supports multiple providers, shared APIs, and
+feature modules for text generation, embeddings, moderation, assistants, and
+search.
 
 ## Requirements
 
-You are required to provide an OpenAI key before you can use
-any of the provided services.
+You must configure at least one AI provider before you can use the provided
+services.
 
 ## Documentation
 
-Please review and contribute to documentation for this module in our [wiki](https://github.com/backdrop-contrib/openai/wiki). 
+Please review the bundled documentation in this module family and the project
+issue queue for updates.
 
 ## Installation
 
 - Install this module using the official [Backdrop CMS instructions](https://backdropcms.org/user-guide/modules).
 
-- Enable the core OpenAI module and one or more submodules that meet your needs.
+- Enable the core `ai` module and the feature modules that meet your needs.
 
 ## Included Submodules
 
-### **openai_audio**  
-Adds capability to interact with the OpenAI audio (speech-to-text) endpoints.
+### **ai_alt**
+Generates alt text for images using AI.
 
-### **openai_chatgpt**  
-Enables interaction with the Chat endpoint via the ChatGPT API.
+### **ai_ckeditor**
+Adds an AI prompt action to CKEditor editing workflows.
 
-### **openai_ckeditor**  
-Provides a button for CKEditor 5 to send a prompt to OpenAI and receive generated text back.
+### **ai_content**
+Provides assistive tools for tone adjustment, summaries, title suggestions,
+and content analysis during the editing process.
 
-### **openai_content**  
-Adds assistive tools for different areas of the content editing process. This includes functionality to adjust the tone of the content, summarize body text, suggest taxonomy terms for nodes, and check content for [moderation violations](https://platform.openai.com/docs/guides/moderation/overview).
+### **ai_dblog**
+Uses AI to help analyze watchdog errors and suggest likely explanations.
 
-### **openai_dalle**  
-Adds capability to interact with the OpenAI DALL·E (image generation) endpoint, supporting both the new DALL·E 3 model and DALL·E 2 model.
+### **ai_devel**
+Adds AI-powered realistic content generation to Devel Generate commands.
 
-### **openai_devel**  
-Adds GPT content generation capability to Devel Generate. This provides Devel a way of generating realistic content (not lorem ipsum) using GPT and ChatGPT models. Users can generate sample content from the Drupal UI or via Drush. This is useful for filling out your site with realistic content for client demonstrations, layout, theming, or QA.
+### **ai_explorer**
+Interactive UI for testing chat, image, audio, and speech AI capabilities.
 
-### **openai_dblog**  
-Demonstrates log analysis using OpenAI to find potential solutions or explanations for error logs. Responses from OpenAI are saved and persist for common error messages, allowing you to review them.
+### **ai_guardrails**
+Active input and output guardrails that block prompt injection attacks, PII
+leakage, and configurable content violations.
 
-### **openai_prompt**  
-Adds an area in the admin interface to explore OpenAI text generation capabilities and ask it (prompt) for whatever you'd like.
+### **ai_moderation**
+Interface for testing AI content moderation with model selection.
 
-### **openai_embeddings**  
-Analyzes nodes and generates vectors and text embeddings of your nodes, taxonomy, media, and paragraph entities from OpenAI. Responses from OpenAI are saved and could augment search, ranking, automatically suggest taxonomy terms for content, and [improve search relevancy without expensive search backends. Content personalization and recommendation](https://www.pinecone.io/) may also be possible with this approach.
+### **ai_privacy**
+Controls which content types, bundles, and roles may send content to external
+AI providers. Includes log redaction to prevent prompt and response storage.
 
-### **openai_tts**  
-Adds capability to interact with the OpenAI TTS (text-to-speech) endpoints.
+### **ai_rate_limit**
+Enforces per-provider request rate limits to prevent runaway costs and respect
+upstream provider limits.
+
+### **ai_tools**
+Function-calling framework used by agents and integrations to register and
+dispatch tools to AI providers.
+
+### **ai_upgrade**
+Optional admin UI for migrating legacy `openai_*` modules to their `ai_*`
+replacements.
 
 ## Issues
 
-Bugs and feature requests should be reported in the [Issue Queue](https://github.com/backdrop-contrib/openai/issues).
+Bugs and feature requests should be reported in the project issue queue.
 
 ## Current Maintainer
 
@@ -68,16 +75,10 @@ Bugs and feature requests should be reported in the [Issue Queue](https://github
 
 ## Credits
 
-- Ported to Backdrop CMS by [Justin Keiser](https://github.com/keiserjb).
-- Created for Drupal by [Kevin Quillen](https://www.drupal.org/u/kevinquillen).
-
-### Drupal Maintainers
-
-- Kevin Quillen - [kevinquillen](https://www.drupal.org/u/kevinquillen)
-- Laurence Mercer - [laurencemercer](https://www.drupal.org/u/laurencemercer)
-- Raffaele Chiocca - [rafuel92](https://www.drupal.org/u/rafuel92)
-- Julien Alombert - [Julien Alombert](https://www.drupal.org/u/julien-alombert)
-- Scott Euser - [scott_euser](https://www.drupal.org/u/scott_euser)
+- Created for Backdrop CMS by [Justin Keiser](https://github.com/keiserjb).
+- Inspired by the Drupal [OpenAI module](https://www.drupal.org/project/openai)
+  and the Drupal [AI module](https://www.drupal.org/project/ai).
+- Developed with AI assistance.
 
 ## License
 

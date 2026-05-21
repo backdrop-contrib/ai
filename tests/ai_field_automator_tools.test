@@ -1,0 +1,63 @@
+<?php
+
+/**
+ * @file
+ * Integration test for the tool-aware Field Automator helper.
+ *
+ * Plugin-routing unit tests live in ai_field_automator_tools_unit.test.
+ * This file covers the real dispatch path through the fake provider adapter,
+ * which needs ai / ai_tools / ai_agent_test hooks installed.
+ */
+
+require_once backdrop_get_path('module', 'ai_field_automator') . '/includes/AIFieldAutomatorBase.inc';
+
+use ai_field_automator\includes\AIFieldAutomatorBase;
+
+class AIFieldAutomatorToolProbe extends AIFieldAutomatorBase {
+
+  public function runToolChat(array $messages, array $tools, array $config, $max_rounds = 3) {
+    return $this->callAIWithTools($messages, $tools, $config, $max_rounds);
+  }
+
+  public function allowedFieldTypes() {
+    return [];
+  }
+
+  public function generate($entity, $field_name, array $config) {
+    return [];
+  }
+}
+
+class AIFieldAutomatorToolsTestCase extends BackdropWebTestCase {
+
+  public function setUp($added_modules = []) {
+    parent::setUp(array_merge(['ai', 'ai_tools', 'ai_agent_test', 'ai_field_automator'], $added_modules));
+
+    $providers = config('ai.settings');
+    $providers->set('providers', [
+      'agent_test' => [
+        'enabled' => 1,
+      ],
+    ]);
+    $providers->save();
+  }
+
+  public function testCallAIWithToolsRunsToolLoop() {
+    $probe = new AIFieldAutomatorToolProbe();
+
+    $result = $probe->runToolChat(
+      [
+        ['role' => 'user', 'content' => 'Hello world'],
+      ],
+      ['test_echo_message'],
+      [
+        'model' => 'agent_test/gpt-4o-mini',
+        'temperature' => 0.0,
+        'max_tokens' => 64,
+      ]
+    );
+
+    $this->assertEqual('Final answer: {"echo":"Hello world"}', $result, 'Tool-aware helper executes tool calls and returns the final answer.');
+    $this->assertTrue(!empty(AITestSupportAdapter::$chatWithToolsCalls), 'Tool-aware helper used the provider chatWithTools path.');
+  }
+}

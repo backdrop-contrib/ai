@@ -1,0 +1,67 @@
+<?php
+
+/**
+ * Implements hook_install().
+ */
+function ai_dblog_install() {
+  module_load_install('ai_upgrade');
+  ai_upgrade_module_install('ai_dblog');
+}
+
+/**
+ * Implements hook_schema().
+ */
+function ai_dblog_schema() {
+  $schema['ai_dblog'] = [
+    'description' => 'Stores AI responses returned for log messages.',
+    'fields'      => [
+      'id'          => [
+        'type'        => 'serial',
+        'not null'    => TRUE,
+        'description' => 'The ai_dblog record ID.',
+      ],
+      'hash'        => [
+        'type'        => 'varchar',
+        'length'      => 256,
+        'not null'    => TRUE,
+        'description' => 'Hash value of the original log message for comparison.',
+      ],
+      'message'     => [
+        'type'        => 'text',
+        'not null'    => TRUE,
+        'description' => 'Text of log message to be passed into the t() function.',
+      ],
+      'explanation' => [
+        'type'        => 'text',
+        'not null'    => TRUE,
+        'description' => 'Text of AI explanation returned.',
+      ],
+    ],
+    'primary key' => ['id'],
+    'unique keys' => [
+      'hash' => ['hash'],
+    ],
+  ];
+
+  return $schema;
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function ai_dblog_uninstall() {
+  // Delete the configuration.
+  config_clear('ai_dblog.settings', 'levels');
+  config_clear('ai_dblog.settings', 'model');
+  // Drop the database table.
+  db_drop_table('ai_dblog');
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function ai_dblog_requirements($phase) {
+  module_load_install('ai_upgrade');
+  return ai_upgrade_module_requirements($phase, 'ai_dblog');
+}
+

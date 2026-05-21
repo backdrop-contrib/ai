@@ -1,0 +1,436 @@
+<?php
+
+/**
+ * Implements hook_permission().
+ */
+function ai_ckeditor_permission() {
+  return [
+    'use ai ckeditor' => [
+      'title' => t('Use AI CKEditor'),
+      'description' => t('Allows users to access and use the AI CKEditor integration.'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ai_ckeditor_menu() {
+  $items = [];
+
+  $items['api/ai-ckeditor/completion'] = [
+    'title' => 'AI CKEditor Generate Completion',
+    'page callback' => 'ai_ckeditor_generate_completion',
+    'access callback' => 'user_access',
+    'access arguments' => ['use ai ckeditor'],
+    'type' => MENU_CALLBACK,
+    'delivery callback' => 'backdrop_json_output',
+  ];
+
+  $items['ai-ckeditor/text-completion-form/%filter_format'] = [
+    'title' => 'AI Text Completion Form',
+    'page callback' => 'ai_ckeditor_text_completion_form_wrapper',
+    'page arguments' => [2],
+    'access callback' => 'user_access',
+    'access arguments' => ['use ai ckeditor'],
+    'type' => MENU_CALLBACK,
+  ];
+
+  return $items;
+}
+
+/**
+ * Implements hook_library_info().
+ */
+function ai_ckeditor_library_info() {
+  $module_path = backdrop_get_path('module', 'ai_ckeditor');
+  $info = system_get_info('module', 'ai_ckeditor');
+
+  $libraries['ai_ckeditor.ai-plugin'] = [
+    'title' => 'AI CKEditor Plugin',
+    'version' => $info['version'],
+    'js' => [$module_path . '/js/ai.js' => []],
+    'css' => [$module_path . '/css/ai.css' => []],
+    'dependencies' => [['ckeditor5', 'ckeditor5']],
+  ];
+
+  return $libraries;
+}
+
+/**
+ * Implements hook_ckeditor5_plugins().
+ */
+function ai_ckeditor_ckeditor5_plugins() {
+  $plugins['ai.AI'] = [
+    'library' => ['ai_ckeditor', 'ai_ckeditor.ai-plugin'],
+    'buttons' => [
+      'AI' => [
+        'label' => t('AI'),
+        'image' => backdrop_get_path('module', 'ai_ckeditor') . '/icons/ai.svg',
+      ],
+    ],
+    'enabled_callback' => 'ai_ckeditor_plugin_enabled_callback',
+  ];
+
+  return $plugins;
+}
+
+/**
+ * Callback to enable the plugin based on filter format.
+ */
+function ai_ckeditor_plugin_enabled_callback($format, $plugin_name) {
+  return !empty($format->filters['ai']->status);
+}
+
+/**
+ * Implements hook_form_alter().
+ * Adds AI integration settings to CKEditor configuration forms.
+ */
+function ai_ckeditor_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id === 'ckeditor5_settings_form' || $form_id === 'filter_admin_format_form') {
+    // Load available models from all enabled providers.
+    // Do not require a single AI API key; providers may vary.
+    $format_name = !empty($form['format']['#default_value']) ? $form['format']['#default_value'] : 'filtered_html';
+    $format_config = config('filter.format.' . $format_name);
+    $ai_settings = $format_config->get('editor_settings.ai') ?? [];
+
+    $form['editor_settings']['plugins']['ai'] = [
+      '#type' => 'fieldset',
+      '#title' => t('AI Integration'),
+      '#description' => t('Settings for AI integration in CKEditor.'),
+      '#group' => 'plugins',
+      '#open' => TRUE,
+      '#parents' => ['editor_settings', 'ai'],
+      '#attributes' => ['class' => ['ckeditor5-plugin-ai']],
+    ];
+
+    $form['editor_settings']['plugins']['ai']['enabled'] = [
+      '#type' => 'checkbox',
+      '#title' => t('Enable AI Integration'),
+      '#default_value' => !empty($ai_settings['enabled']),
+    ];
+
+    // Model selector: use ai module helper for all chat models from all providers.
+    $model_options = ai_get_all_chat_models();
+
+    // Determine default.
+    $default_model = config_get('ai.settings', 'default_text_model') ?: '';
+    $flat_models = [];
+    foreach ($model_options as $g_label => $g_items) {
+      if (is_array($g_items)) {
+        foreach ($g_items as $k => $v) { $flat_models[$k] = $v; }
+      } else {
+        $flat_models[$g_label] = $g_items;
+      }
+    }
+    if (!empty($flat_models) && !isset($flat_models[$default_model])) {
+      if (isset($flat_models['gpt-3.5-turbo'])) {
+        $default_model = 'gpt-3.5-turbo';
+      } else {
+        reset($flat_models);
+        $default_model = key($flat_models);
+      }
+    }
+
+    $form['editor_settings']['plugins']['ai']['model'] = [
+      '#type' => 'select',
+      '#title' => t('Default model'),
+      '#options' => $model_options,
+      '#default_value' => $ai_settings['model'] ?? $default_model,
+      '#description' => t('Select which model to use to analyze text. See the <a href="@url" target="_blank">model overview</a> for details about each model.', ['@url' => 'https://platform.ai.com/docs/models']),
+    ];
+
+    $form['editor_settings']['plugins']['ai']['temperature'] = [
+      '#type' => 'number',
+      '#title' => t('Temperature'),
+      '#min' => 0,
+      '#max' => 2,
+      '#step' => 0.1,
+      '#default_value' => $ai_settings['temperature'] ?? '0.2',
+      '#description' => t('What sampling temperature to use, between 0 and 2. Higher values make the output more random, while lower values make it more focused.'),
+    ];
+
+    $form['editor_settings']['plugins']['ai']['max_tokens'] = [
+      '#type' => 'number',
+      '#title' => t('Max tokens'),
+      '#min' => 128,
+      '#step' => 1,
+      '#default_value' => $ai_settings['max_tokens'] ?? '128',
+      '#description' => t('The maximum number of tokens to generate. The token count of your prompt plus max_tokens cannot exceed the model\'s context length.'),
+    ];
+
+    $saved_prompts = $ai_settings['prompts'] ?? [];
+    $prompt_defaults = _ai_ckeditor_default_prompts();
+
+    $form['editor_settings']['plugins']['ai']['prompts'] = [
+      '#type'        => 'fieldset',
+      '#title'       => t('Prompt templates'),
+      '#description' => t('Customize the prompts sent to the AI for each operation. Placeholders are replaced at runtime — see each field\'s description for available tokens.'),
+      '#collapsible' => TRUE,
+      '#collapsed'   => TRUE,
+      '#tree'        => TRUE,
+    ];
+
+    foreach ($prompt_defaults as $key => $default) {
+      $form['editor_settings']['plugins']['ai']['prompts'][$key] = [
+        '#type'          => 'textarea',
+        '#title'         => $default['label'],
+        '#default_value' => isset($saved_prompts[$key]) ? $saved_prompts[$key] : $default['prompt'],
+        '#rows'          => 3,
+        '#description'   => $default['description'],
+      ];
+    }
+  }
+}
+
+/**
+ * Returns default prompt templates for each CKEditor operation.
+ *
+ * @return array
+ *   Keyed by operation ID. Each entry has 'label', 'prompt', 'description'.
+ */
+function _ai_ckeditor_default_prompts() {
+  return [
+    'tone' => [
+      'label'       => t('Adjust tone'),
+      'prompt'      => "Please rewrite the following text with a tone that is {{tone}} while preserving the original meaning:\n{{selectedText}}",
+      'description' => t('Available placeholders: <code>{{selectedText}}</code> (selected editor content], <code>{{tone}}</code> (adjective entered by the user].'),
+    ],
+    'summarize' => [
+      'label'       => t('Summarize'),
+      'prompt'      => "Create a concise summary of the following text, keeping the key points intact:\n{{selectedText}}",
+      'description' => t('Available placeholder: <code>{{selectedText}}</code> (selected editor content].'),
+    ],
+    'translate' => [
+      'label'       => t('Translate'),
+      'prompt'      => "Please accurately translate the following text into {{language}}:\n{{selectedText}}",
+      'description' => t('Available placeholders: <code>{{selectedText}}</code> (selected editor content], <code>{{language}}</code> (language entered by the user].'),
+    ],
+    'reformat' => [
+      'label'       => t('Reformat / correct HTML'),
+      'prompt'      => "Please fix this text to be marked up with semantic HTML using only lists, headers, or paragraph tags: {{selectedText}}",
+      'description' => t('Available placeholder: <code>{{selectedText}}</code> (selected editor content].'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_ckeditor5_config_alter().
+ * Modifies the CKEditor configuration to include AI settings.
+ */
+function ai_ckeditor_ckeditor5_config_alter(array &$config, $format) {
+  if (in_array('ai.AI', $config['pluginList'])) {
+    $format_config = config('filter.format.' . $format->format);
+    $ai_settings = $format_config->get('editor_settings.ai') ?? [];
+
+    $config['ai'] = [
+      'enabled' => $ai_settings['enabled'] ?? FALSE,
+      'model' => $ai_settings['model'] ?? ($default_model ?: ''),
+      'temperature' => $ai_settings['temperature'] ?? 0.2,
+      'max_tokens' => $ai_settings['max_tokens'] ?? 128,
+    ];
+  }
+}
+
+/**
+ * Wrapper to generate the form for text completion.
+ */
+function ai_ckeditor_text_completion_form_wrapper($format_id) {
+  return backdrop_get_form('ai_ckeditor_text_completion_form', $format_id);
+}
+
+/**
+ * Form callback for the AI Text Completion form.
+ */
+function ai_ckeditor_text_completion_form($form, &$form_state, $format) {
+  // Store the format ID in a hidden field for use on submission.
+  $form['format_id'] = [
+    '#type' => 'hidden',
+    '#value' => $format->format,
+  ];
+
+  $form['prompt'] = [
+    '#type' => 'textarea',
+    '#title' => t('Enter your prompt'),
+    '#required' => TRUE,
+  ];
+
+  $form['actions'] = ['#type' => 'actions'];
+  $form['actions']['submit'] = [
+    '#type' => 'submit',
+    '#value' => t('Submit'),
+    '#ajax' => [
+      'callback' => 'ai_ckeditor_text_completion_form_submit',
+      'event' => 'click',
+    ],
+  ];
+
+  return $form;
+}
+
+/**
+ * Form submission callback for AI Text Completion.
+ */
+function ai_ckeditor_text_completion_form_submit($form, &$form_state) {
+  $prompt = $form_state['values']['prompt'];
+  $format_id = $form_state['values']['format_id']; // Retrieve format ID.
+
+  // Load format and check if it's valid.
+  $format = filter_format_load($format_id);
+  if (!$format) {
+    watchdog('ai_ckeditor', 'Invalid format ID: @format_id', ['@format_id' => $format_id], WATCHDOG_ERROR);
+    return;
+  }
+
+  // Get AI settings for the format.
+  $ai_settings = get_ai_settings($format_id);
+  if (empty($ai_settings)) {
+    watchdog('ai_ckeditor', 'No AI settings found for format ID: @format_id', ['@format_id' => $format_id], WATCHDOG_WARNING);
+    return backdrop_json_output(['error' => 'AI configuration not found.']);
+  }
+
+  // Call the AI API and handle the response.
+  $response_text = ai_ckeditor_generate_text($prompt, $ai_settings);
+
+  // Prepare the AJAX response.
+  $commands = [];
+  if (!empty($response_text)) {
+    $commands[] = ajax_command_invoke(NULL, 'insertAIText', ['text' => $response_text]);
+  } else {
+    $commands[] = ajax_command_alert(t('No response received from AI.'));
+  }
+
+  $commands[] = ajax_command_close_dialog();
+  return ['#type' => 'ajax', '#commands' => $commands];
+}
+
+/**
+ * Helper function to communicate with AI.
+ */
+function ai_ckeditor_generate_text($prompt, $settings) {
+  $model = $settings['model'] ?? '';
+
+  // Use the centralized helper to get the API for this model
+  $stripped_model = '';
+  $ai_api = ai_get_api_for_model($model, $stripped_model);
+
+  if (!$ai_api) {
+    watchdog('ai_ckeditor', 'Unable to load API for model @model', ['@model' => $model], WATCHDOG_ERROR);
+    return t('No API provider configured for the selected model.');
+  }
+
+  // Use the chat endpoint (messages) which works for modern chat-capable models,
+  // including OpenRouter-backed chat models. Build a simple user message.
+  $messages = [
+    ['role' => 'user', 'content' => $prompt],
+  ];
+
+  try {
+    // Use the stripped model identifier (without provider prefix)
+    $response = $ai_api->chat($stripped_model, $messages, floatval($settings['temperature'] ?? 0.2), (int) ($settings['max_tokens'] ?? 128), FALSE, ['operation' => 'content_tools']);
+  }
+  catch (\Exception $e) {
+    watchdog('ai_ckeditor', 'AI chat error: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
+    return t('Error contacting AI provider.');
+  }
+
+  // Try to handle various response shapes. If chat returns a string, use it.
+  if (is_string($response) && !empty($response)) {
+    return $response;
+  }
+
+  // If returned as array with choices, try to extract text/content.
+  if (is_array($response)) {
+    if (!empty($response['choices'][0]['message']['content'])) {
+      return $response['choices'][0]['message']['content'];
+    }
+    if (!empty($response['choices'][0]['text'])) {
+      return $response['choices'][0]['text'];
+    }
+  }
+
+  return t('No response received.');
+}
+
+/**
+ * Rate-limiting function to prevent excessive API usage.
+ */
+function ai_ckeditor_check_rate_limit($user_id) {
+  $cache_key = 'api_request_count_' . $user_id;
+  $cache = cache_get($cache_key, 'cache_api_rate_limit');
+  $count = $cache ? $cache->data : 0;
+
+  if ($count >= 100) { // Example limit: 100 requests per hour.
+    return FALSE;
+  }
+
+  cache_set($cache_key, $count + 1, 'cache_api_rate_limit', REQUEST_TIME + 3600);
+  return TRUE;
+}
+
+/**
+ * Handles API request for generating AI completion.
+ */
+function ai_ckeditor_generate_completion() {
+  global $user;
+
+  // Check rate limit.
+  if (!ai_ckeditor_check_rate_limit($user->uid)) {
+    watchdog('ai_ckeditor', 'Rate limit exceeded for user ID: @uid', ['@uid' => $user->uid], WATCHDOG_WARNING);
+    return backdrop_json_output(['error' => 'Rate limit exceeded. Please try again later.']);
+  }
+
+  $raw_input = file_get_contents('php://input');
+  watchdog('ai_ckeditor', 'Received CKEditor completion request.', [], WATCHDOG_DEBUG);
+
+  $input = json_decode($raw_input, TRUE);
+  if (json_last_error() !== JSON_ERROR_NONE) {
+    watchdog('ai_ckeditor', 'JSON decode error: @error', ['@error' => json_last_error_msg()], WATCHDOG_ERROR);
+    return backdrop_json_output(['error' => 'Invalid JSON input']);
+  }
+
+  if (isset($input['prompt']) && !empty($input['prompt'])) {
+    // Sanitize the input to remove any potentially harmful content.
+    $input['prompt'] = filter_var($input['prompt'], FILTER_SANITIZE_FULL_SPECIAL_CHARS);
+
+    // Get the requested model.
+    $requested_model = $input['options']['model'] ?? 'default-model';
+
+    // Use the centralized helper to get the API for this model.
+    $stripped_model = '';
+    $api = ai_get_api_for_model($requested_model, $stripped_model);
+
+    if (!$api) {
+      return backdrop_json_output(['error' => 'API provider is not configured for selected model']);
+    }
+
+    $temperature = $input['options']['temperature'] ?? 0.7;
+    $max_tokens = $input['options']['max_tokens'] ?? 1000;
+
+    $messages = [
+      ['role' => 'user', 'content' => $input['prompt']]
+    ];
+
+    try {
+      // Use the stripped model ID without provider prefix.
+      $response = $api->chat($stripped_model, $messages, $temperature, $max_tokens, FALSE, ['operation' => 'content_tools']);
+    }
+    catch (\Exception $e) {
+      watchdog('ai_ckeditor', 'OpenRouter chat error: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
+      return backdrop_json_output(['error' => 'AI provider error: ' . $e->getMessage()]);
+    }
+
+    watchdog('ai_ckeditor', 'Generated CKEditor completion response.', [], WATCHDOG_DEBUG);
+
+    // If the adapter returned an array/choices, normalize to text.
+    if (is_array($response)) {
+      $response_text = $response['choices'][0]['message']['content'] ?? $response['choices'][0]['text'] ?? '';
+    } else {
+      $response_text = (string) $response;
+    }
+
+    return backdrop_json_output(['responseText' => $response_text]);
+  } else {
+    return backdrop_json_output(['error' => 'No prompt received or prompt is empty']);
+  }
+}

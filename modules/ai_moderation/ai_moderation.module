@@ -1,0 +1,280 @@
+<?php
+
+/**
+ * @file
+ * Permissions and menu items for the AI Moderation module.
+ */
+
+function ai_moderation_permission() {
+  return [
+    'access ai moderation' => [
+      'title' => t('Use AI Moderation'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ai_moderation_menu() {
+  $items = [];
+
+  $items['admin/config/ai/ai-moderation'] = [
+    'title' => 'AI Moderation',
+    'description' => 'Test AI content moderation with different models.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_moderation_form'],
+    'access callback' => 'user_access',
+    'access arguments' => ['access ai moderation'],
+    'weight' => -5,
+  ];
+
+  return $items;
+}
+
+/**
+ * Defines a form to test AI content moderation.
+ */
+function ai_moderation_form($form, &$form_state) {
+  // Ensure parent module functions are available
+  if (!function_exists('ai_get_api')) {
+    backdrop_set_message(t('AI module functions are not available. Please ensure the AI module is enabled.'), 'error');
+    return $form;
+  }
+
+  $config = config('ai.settings');
+
+  // Get all enabled providers
+  $providers_root = $config->get('providers') ?: [];
+
+  // Check if any provider is enabled
+  $any_enabled = FALSE;
+  foreach ($providers_root as $p => $cfg) {
+    if (!empty($cfg['enabled'])) {
+      $any_enabled = TRUE;
+      break;
+    }
+  }
+
+  if (!$any_enabled) {
+    // Use l() to build the link and concatenate to avoid embedding HTML in t().
+    $link = l(t('configure a provider'), 'admin/config/ai/settings');
+    backdrop_set_message(t('No providers are enabled.') . ' ' . $link, 'warning');
+    return $form;
+  }
+
+  // Get moderation models from all enabled providers
+  $moderation_models = ai_get_all_moderation_models();
+
+  // If no moderation models are available, show a message
+  if (empty($moderation_models)) {
+    $link = l(t('enable and configure AI'), 'admin/config/ai/settings');
+    backdrop_set_message(t('No moderation models are available from your configured providers. Moderation is currently only supported by the AI provider.') . ' ' . $link, 'warning');
+    return $form;
+  }
+
+  $form['text'] = [
+    '#type' => 'textarea',
+    '#title' => t('Text to Moderate'),
+    '#description' => t('Enter the text you want to check for policy violations. AI will analyze this content against their usage policies.'),
+    '#required' => TRUE,
+    '#rows' => 5,
+  ];
+
+  $default_model = ai_default_model($moderation_models, 'ai/omni-moderation-latest');
+
+  $form['model'] = [
+    '#type' => 'select',
+    '#title' => t('Moderation Model'),
+    '#options' => $moderation_models,
+    '#default_value' => $default_model,
+    '#description' => t('Select which moderation model to use for analysis.'),
+  ];
+
+  $form['response'] = [
+    '#prefix' => '<div id="ai-moderation-response">',
+    '#suffix' => '</div>',
+  ];
+
+  $form['actions'] = ['#type' => 'actions'];
+  $form['actions']['submit'] = [
+    '#type' => 'submit',
+    '#value' => t('Check Content'),
+    '#ajax' => [
+      'callback' => 'ai_moderation_get_response',
+      'wrapper' => 'ai-moderation-response',
+      'progress' => [
+        'type' => 'throbber',
+      ],
+    ],
+  ];
+
+  return $form;
+}
+
+/**
+ * AJAX callback for moderation form submission.
+ */
+function ai_moderation_get_response($form, &$form_state) {
+  $errors = form_get_errors();
+
+  if (empty($errors)) {
+    // Check if we have results in storage
+    if (!empty($form_state['storage']['moderation_result'])) {
+      $result = $form_state['storage']['moderation_result'];
+
+      $form['response']['#markup'] = theme('ai_moderation_result', ['result' => $result]);
+    } else {
+      $form['response']['#markup'] = t('No moderation result available.');
+    }
+  } else {
+    // Display form errors
+    $error_messages = [];
+    foreach ($errors as $error) {
+      $error_messages[] = $error;
+    }
+    $form['response']['#markup'] = t('Error: @errors', ['@errors' => implode('; ', $error_messages)]);
+  }
+
+  return $form['response'];
+}
+
+/**
+ * Form submission handler for the moderation form.
+ */
+function ai_moderation_form_submit($form, &$form_state) {
+  $text = $form_state['values']['text'];
+  $model = $form_state['values']['model'];
+
+  list($provider_id, $stripped_model) = ai_parse_model_id($model);
+
+  // If provider wasn't extracted from the selected value, try to detect it.
+  if (empty($provider_id)) {
+    $config = config('ai.settings');
+    $provider_id = ai_default_provider_id();
+    $providers = $config->get('providers') ?: [];
+    foreach ($providers as $pid => $provider_settings) {
+      if (empty($provider_settings['enabled'])) {
+        continue;
+      }
+      $api_try = ai_get_api($pid);
+      if ($api_try) {
+        $models = $api_try->getModerationModels();
+        if (isset($models[$stripped_model])) {
+          $provider_id = $pid;
+          break;
+        }
+      }
+    }
+  }
+
+  $api = ai_get_api($provider_id);
+
+  if (!$api) {
+    form_set_error('', t('Could not initialize API for selected model.'));
+    return;
+  }
+
+  try {
+    // Pass the stripped model id (without provider prefix) to the adapter.
+    $result = $api->moderation($text, $stripped_model);
+
+    // Store the result for the AJAX callback
+    $form_state['storage']['moderation_result'] = $result;
+    $form_state['rebuild'] = TRUE;
+
+  }
+
+  catch (\Exception $e) {
+    form_set_error('', t('Error during moderation: @message', ['@message' => $e->getMessage()]));
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function ai_moderation_theme() {
+  return [
+    'ai_moderation_result' => [
+      'variables' => ['result' => NULL],
+      'function' => 'theme_ai_moderation_result',
+    ],
+  ];
+}
+
+/**
+ * Theme function for moderation results.
+ */
+function theme_ai_moderation_result($variables) {
+  $result = $variables['result'];
+
+  if (empty($result) || !isset($result['results'])) {
+    return '<p>' . t('Invalid moderation result.') . '</p>';
+  }
+
+  $output = '<div class="ai-moderation-result">';
+  $output .= '<h3>' . t('Moderation Results') . '</h3>';
+
+  foreach ($result['results'] as $index => $moderation) {
+    $flagged = $moderation['flagged'] ?? FALSE;
+    $status_class = $flagged ? 'flagged' : 'safe';
+
+    $output .= '<div class="moderation-item ' . $status_class . '">';
+    $output .= '<h4>' . t('Overall Status: ') . '</h4>';
+    $output .= '<p class="status-' . $status_class . '">';
+    $output .= $flagged ?
+      '<strong style="color: red;">' . t('Content Flagged') . '</strong>' :
+      '<strong style="color: green;">' . t('Content Safe') . '</strong>';
+    $output .= '</p>';
+
+    if (isset($moderation['categories'])) {
+      $output .= '<h4>' . t('Category Analysis:') . '</h4>';
+      $output .= '<ul class="moderation-categories">';
+
+      foreach ($moderation['categories'] as $category => $violated) {
+        $category_display = ucwords(str_replace(['_', '-'], ' ', $category));
+        $status_text = $violated ? t('Violated') : t('Safe');
+
+        $output .= '<li>';
+        $output .= '<strong>' . $category_display . ':</strong> ';
+        $output .= $status_text;
+        $output .= '</li>';
+      }
+
+      $output .= '</ul>';
+    }
+
+    if (isset($moderation['category_scores'])) {
+      $output .= '<h4>' . t('Confidence Scores:') . '</h4>';
+      $output .= '<ul class="moderation-scores">';
+
+      foreach ($moderation['category_scores'] as $category => $score) {
+        $category_display = ucwords(str_replace(['_', '-'], ' ', $category));
+        $percentage = is_numeric($score) ? round(floatval($score) * 100, 2) : 0.0;
+
+        $output .= '<li>';
+        $output .= '<strong>' . $category_display . ':</strong> ';
+        $output .= $percentage . '%';
+        $output .= '</li>';
+      }
+
+      $output .= '</ul>';
+    }
+
+    $output .= '</div>';
+  }
+
+  $output .= '</div>';
+
+  // Add some basic CSS
+  $output .= '<style>
+    .ai-moderation-result { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+    .moderation-item.flagged { border-left: 4px solid #d32f2f; background-color: #ffebee; }
+    .moderation-item.safe { border-left: 4px solid #388e3c; background-color: #e8f5e8; }
+    .moderation-categories li, .moderation-scores li { margin: 5px 0; }
+    .status-flagged { color: #d32f2f; }
+    .status-safe { color: #388e3c; }
+  </style>';
+
+  return $output;
+}

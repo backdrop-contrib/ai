@@ -2,7 +2,7 @@
 
 ## Summary
 
-I've reviewed the example provider module (`openai_example_provider`) and updated it to match the current patterns used in `openai_ollama` and `openai_openrouter`.
+I've reviewed the example provider module (`ai_example_provider`) and updated it to match the current patterns used in `ai_ollama` and `ai_openrouter`.
 
 ## Changes Made
 
@@ -11,7 +11,7 @@ I've reviewed the example provider module (`openai_example_provider`) and update
 **Added:**
 - `getModelsByCapability($capability)` method - A helper method that filters models by capability (text, vision, image, embeddings, moderation)
 - `getModerationModels()` method - Now part of the standard adapter interface
-- Support for `backdrop_alter('openai_model_capabilities')` hook - Allows site admins to override capability detection
+- Support for `backdrop_alter('ai_model_capabilities')` hook - Allows site admins to override capability detection
 
 **Updated:**
 - `getChatModels()` - Now uses `getModelsByCapability('text')`
@@ -30,13 +30,13 @@ I've reviewed the example provider module (`openai_example_provider`) and update
 - Examples showing the `backdrop_alter()` hook integration
 
 **Key Patterns Documented:**
-- OpenAI: Uses API metadata for reliable capability detection
+- AI: Uses API metadata for reliable capability detection
 - Ollama: Uses API metadata + pattern matching + alter hook
 - OpenRouter: Uses pattern matching + alter hook (no reliable API metadata)
 
 ## Why These Changes Were Needed
 
-Both `openai_ollama` and `openai_openrouter` have evolved to use a more sophisticated capability detection system:
+Both `ai_ollama` and `ai_openrouter` have evolved to use a more sophisticated capability detection system:
 
 1. **Centralized Logic**: The `getModelsByCapability()` method centralizes all capability detection logic, making it easier to maintain and extend.
 
@@ -48,14 +48,14 @@ Both `openai_ollama` and `openai_openrouter` have evolved to use a more sophisti
 
 ## Files Modified
 
-1. `modules/contrib/openai/examples/includes/OpenAiExampleAdapter.php`
-2. `modules/contrib/openai/examples/PROVIDER_MODULE_GUIDE.md`
+1. `modules/contrib/ai/examples/includes/AiExampleAdapter.php`
+2. `modules/contrib/ai/examples/PROVIDER_MODULE_GUIDE.md`
 
 ## Files That Are Still Good
 
 The following files didn't need changes:
-- `openai_example_provider.module` - Still follows current patterns
-- `openai_example_provider.info` - Still valid
+- `ai_example_provider.module` - Still follows current patterns
+- `ai_example_provider.info` - Still valid
 - `README.md` - Still accurate
 - `model_capability_override.php` - Already demonstrates the alter hook pattern
 
@@ -65,15 +65,15 @@ If you want to test the example provider:
 
 1. Copy the example to a top-level module folder:
    ```bash
-   cp -r modules/contrib/openai/examples/openai_example_provider modules/contrib/openai_example_provider
+   cp -r modules/contrib/ai/examples/ai_example_provider modules/contrib/ai_example_provider
    ```
 
 2. Enable it:
    ```bash
-   ddev bee en openai_example_provider -y
+   ddev bee en ai_example_provider -y
    ddev bee cc all
    ```
 
-3. Configure it at Admin → Configuration → OpenAI → Settings
+3. Configure it at Admin → Configuration → AI → Settings
 
 The example provider will now demonstrate all the current best practices for building provider modules.

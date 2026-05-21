@@ -1,0 +1,127 @@
+<?php
+
+/**
+ * @file
+ * Tests for provider resolution and adapter selection.
+ */
+
+class AIProviderResolutionTestCase extends BackdropWebTestCase {
+
+  public function setUp() {
+    parent::setUp(['ai', 'ai_agent_test']);
+
+    $providers = config('ai.settings');
+    $providers->set('providers', [
+      'agent_test' => [
+        'enabled' => 1,
+      ],
+    ]);
+    $providers->save();
+  }
+
+  public function testPrefixedModelResolvesProvider() {
+    $stripped = NULL;
+    $api = ai_get_api_for_model('agent_test/gpt-4o-mini', $stripped);
+
+    $this->assertTrue(is_object($api), 'Provider API instance returned.');
+    $this->assertEqual('gpt-4o-mini', $stripped, 'Provider prefix stripped from model id.');
+    $this->assertEqual(['gpt-4o-mini' => 'GPT-4o Mini'], $api->getModels(), 'Fake provider models returned through wrapper.');
+  }
+
+  public function testChatLifecycleHooksRunInCoreWrapper() {
+    AITestSupportAdapter::$chatCalls = [];
+
+    $api = ai_get_api('agent_test');
+    $response = $api->chat('gpt-4o-mini', [
+      ['role' => 'user', 'content' => 'hello'],
+    ], 0.2, 64, FALSE, [
+      'test_prepend_system_message' => TRUE,
+      'test_suffix_response' => TRUE,
+    ]);
+
+    $this->assertEqual('chat [post-altered]', $response, 'Post-response alter ran through core wrapper.');
+    $this->assertEqual(1, count(AITestSupportAdapter::$chatCalls), 'Adapter chat called once.');
+    $this->assertEqual('system', AITestSupportAdapter::$chatCalls[0]['messages'][0]['role'], 'Pre-request alter injected system message before adapter call.');
+    $this->assertTrue(!empty(AITestSupportAdapter::$chatCalls[0]['context_extra']['skip_ai_message_alter']), 'Core wrapper marked lifecycle as already applied.');
+  }
+
+  public function testToolChatLifecycleHooksRunInCoreWrapper() {
+    AITestSupportAdapter::$chatWithToolsCalls = [];
+
+    $api = ai_get_api('agent_test');
+    $response = $api->chatWithTools('gpt-4o-mini', [
+      ['role' => 'user', 'content' => 'hello tools'],
+    ], [
+      [
+        'function' => [
+          'name' => 'test_echo_message',
+        ],
+      ],
+    ], 0.2, 64, 'auto', [
+      'test_prepend_system_message' => TRUE,
+      'test_suffix_response' => TRUE,
+    ]);
+
+    $this->assertEqual('tool_calls', $response['finish_reason'], 'Tool-aware request reached adapter.');
+    $this->assertEqual(1, count(AITestSupportAdapter::$chatWithToolsCalls), 'Adapter chatWithTools called once.');
+    $this->assertEqual('system', AITestSupportAdapter::$chatWithToolsCalls[0]['messages'][0]['role'], 'Pre-request alter injected system message before tool-aware adapter call.');
+    $this->assertTrue(!empty(AITestSupportAdapter::$chatWithToolsCalls[0]['tools']), 'Tools passed through lifecycle wrapper.');
+  }
+
+  public function testUnknownProviderThrowsConfigurationException() {
+    try {
+      new AIApi('', 'missing_provider');
+      $this->fail('Expected AIConfigurationException was not thrown.');
+    }
+    catch (AIConfigurationException $e) {
+      $this->assertEqual('missing_provider', $e->getProvider(), 'Configuration exception carries provider id.');
+      $this->assertEqual('bootstrap', $e->getOperation(), 'Configuration exception carries bootstrap operation.');
+      $this->assertEqual('configuration', $e->getCategory(), 'Configuration exception exposes category.');
+      $this->assertFalse($e->isRetryable(), 'Configuration exception is not retryable.');
+    }
+  }
+
+  public function testRuntimeAdapterExceptionNormalizesToProviderResponseException() {
+    $api = ai_get_api('agent_test');
+
+    try {
+      $api->chat('gpt-4o-mini', [
+        ['role' => 'user', 'content' => 'hello'],
+      ], 0.2, 64, FALSE, [
+        'throw_runtime_exception' => TRUE,
+      ]);
+      $this->fail('Expected AIProviderResponseException was not thrown.');
+    }
+    catch (AIProviderResponseException $e) {
+      $this->assertEqual('agent_test', $e->getProvider(), 'Provider response exception carries provider id.');
+      $this->assertEqual('chat', $e->getOperation(), 'Provider response exception carries operation.');
+      $this->assertEqual('provider_response', $e->getCategory(), 'Provider response exception exposes category.');
+      $this->assertTrue($e->isRetryable(), 'Provider response exception is retryable.');
+    }
+  }
+
+  public function testUnsupportedAdapterExceptionNormalizesToUnsupportedCapabilityException() {
+    $api = ai_get_api('agent_test');
+
+    try {
+      $api->chatWithTools('gpt-4o-mini', [
+        ['role' => 'user', 'content' => 'hello'],
+      ], [
+        [
+          'function' => [
+            'name' => 'test_echo_message',
+          ],
+        ],
+      ], 0.2, 64, 'auto', [
+        'throw_unsupported_exception' => TRUE,
+      ]);
+      $this->fail('Expected AIUnsupportedCapabilityException was not thrown.');
+    }
+    catch (AIUnsupportedCapabilityException $e) {
+      $this->assertEqual('agent_test', $e->getProvider(), 'Unsupported capability exception carries provider id.');
+      $this->assertEqual('chat', $e->getOperation(), 'Unsupported capability exception carries operation.');
+      $this->assertEqual('unsupported_capability', $e->getCategory(), 'Unsupported capability exception exposes category.');
+      $this->assertEqual('Selected AI provider does not support this feature.', $e->getUserSafeMessage(), 'Unsupported capability exception exposes user-safe message.');
+    }
+  }
+}

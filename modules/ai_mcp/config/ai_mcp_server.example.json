@@ -1,0 +1,8 @@
+{
+  "_config_name": "ai_mcp_server.example",
+  "id": "example",
+  "label": "Example MCP Server",
+  "auth_key": "",
+  "tools": [],
+  "oauth_enabled": false
+}

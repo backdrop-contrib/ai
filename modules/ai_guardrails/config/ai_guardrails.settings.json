@@ -1,0 +1,16 @@
+{
+    "_config_name": "ai_guardrails.settings",
+    "enabled": 1,
+    "blocked_message": "Your request could not be processed due to content policy restrictions.",
+    "guardrails": {
+        "script_tag":          { "enabled": 1 },
+        "event_handler":       { "enabled": 1 },
+        "javascript_protocol": { "enabled": 1 },
+        "css_expression":      { "enabled": 1 },
+        "dangerous_html":      { "enabled": 1 },
+        "pii_email":           { "enabled": 1, "phase": "both" },
+        "pii_credit_card":     { "enabled": 1, "phase": "both" },
+        "pii_iban":            { "enabled": 0, "phase": "both" },
+        "pii_phone":           { "enabled": 0, "phase": "both" }
+    }
+}

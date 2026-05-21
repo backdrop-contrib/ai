@@ -1,0 +1,92 @@
+<?php
+
+/**
+ * @file
+ * Install, update, and uninstall functions for ai_rate_limit.
+ */
+
+/**
+ * Implements hook_install().
+ */
+function ai_rate_limit_install() {
+  module_load_install('ai_upgrade');
+  ai_upgrade_module_install('ai_rate_limit');
+}
+
+/**
+ * Implements hook_schema().
+ */
+function ai_rate_limit_schema() {
+  $schema['ai_rate_limit_events'] = [
+    'description' => 'Tracks recent external AI API calls for rate limiting purposes.',
+    'fields' => [
+      'id' => [
+        'type'        => 'serial',
+        'not null'    => TRUE,
+        'description' => 'Auto-increment record ID.',
+      ],
+      'provider' => [
+        'type'        => 'varchar',
+        'length'      => 64,
+        'not null'    => TRUE,
+        'default'     => '',
+        'description' => 'Provider machine name (e.g. provider_name, anthropic, ollama).',
+      ],
+      'operation' => [
+        'type'        => 'varchar',
+        'length'      => 64,
+        'not null'    => TRUE,
+        'default'     => '',
+        'description' => 'Operation name (e.g. chat, embedding, images).',
+      ],
+      'uid' => [
+        'type'        => 'int',
+        'not null'    => TRUE,
+        'default'     => 0,
+        'description' => 'User ID that triggered the call.',
+      ],
+      'timestamp' => [
+        'type'        => 'int',
+        'not null'    => TRUE,
+        'default'     => 0,
+        'description' => 'Unix timestamp of the call.',
+      ],
+    ],
+    'primary key' => ['id'],
+    'indexes' => [
+      'timestamp'           => ['timestamp'],
+      'provider_timestamp'  => ['provider', 'timestamp'],
+      'operation_timestamp' => ['operation', 'timestamp'],
+    ],
+  ];
+
+  return $schema;
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function ai_rate_limit_uninstall() {
+  config_clear('ai_rate_limit.settings', 'enabled');
+  config_clear('ai_rate_limit.settings', 'global_limit');
+  config_clear('ai_rate_limit.settings', 'global_window');
+  config_clear('ai_rate_limit.settings', 'provider_limits');
+  db_drop_table('ai_rate_limit_events');
+}
+
+/**
+ * Add a timestamp index to speed global limit checks and cron purges.
+ */
+function ai_rate_limit_update_10000() {
+  if (db_table_exists('ai_rate_limit_events')) {
+    db_add_index('ai_rate_limit_events', 'timestamp', ['timestamp']);
+  }
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function ai_rate_limit_requirements($phase) {
+  module_load_install('ai_upgrade');
+  return ai_upgrade_module_requirements($phase, 'ai_rate_limit');
+}

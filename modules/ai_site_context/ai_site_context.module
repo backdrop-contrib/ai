@@ -1,0 +1,273 @@
+<?php
+
+
+/**
+ * Implements hook_config_info().
+ */
+function ai_site_context_config_info() {
+  return [
+    'ai_site_context.settings' => [
+      'label' => t('AI Site Context Settings'),
+      'group' => t('AI'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ai_site_context_menu() {
+  $items = [];
+
+  $items['admin/config/ai/ai-site-context'] = [
+    'title'            => 'AI Site Context',
+    'description'      => 'Configure global site context prompts for AI modules.',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_site_context_settings_form'],
+    'access arguments' => ['administer site configuration'],
+  ];
+
+  return $items;
+}
+
+/**
+ * Settings form.
+ */
+function ai_site_context_settings_form($form, &$form_state) {
+  $form = [];
+  $form['#config'] = 'ai_site_context.settings';
+
+  $config = config('ai_site_context.settings');
+
+  $form['enabled'] = [
+    '#type'          => 'checkbox',
+    '#title'         => t('Enable site context injection'),
+    '#description'   => t('When enabled, system instructions and/or site context are injected into AI prompts based on the operation mode settings below. Disable to test behavior without any site context.'),
+    '#default_value' => $config->get('enabled') !== NULL ? (bool) $config->get('enabled') : TRUE,
+  ];
+
+  $form['prompts'] = [
+    '#type'        => 'fieldset',
+    '#title'       => t('Prompt content'),
+    '#collapsible' => FALSE,
+    '#states'      => ['visible' => [':input[name="enabled"]' => ['checked' => TRUE]]],
+  ];
+
+  $form['prompts']['instructions'] = [
+    '#type'          => 'textarea',
+    '#title'         => t('System Instructions'),
+    '#description'   => t('Behavioral instructions injected as the system prompt for operations configured to use <em>full</em> mode. Define persona, tone, scope, and rules only — not factual site info. Every token here is sent with every qualifying AI call. Tokens such as [site:name] are supported. For active input/output blocking (injection detection, PII, jailbreaks], use the <em>AI Guardrails</em> module.'),
+    '#default_value' => $config->get('system') ?: '',
+    '#rows'          => 6,
+  ];
+
+  $form['prompts']['global_prompt'] = [
+    '#type'          => 'textarea',
+    '#title'         => t('Site Context'),
+    '#description'   => t('Describe the site\'s purpose, audience, editorial guidelines, and content conventions. This is injected for operations in <em>full</em> or <em>prompt only</em> mode, and is also returned on demand by the <code>get_site_context</code> tool (from <em>AI Tools</em>] when the model asks for it. Keep factual data like site name and URL out of here — those are already available via the <code>get_site_info</code> tool. Tokens such as [site:name], [site:url] are supported.'),
+    '#default_value' => $config->get('global_prompt') ?: '',
+    '#rows'          => 4,
+  ];
+
+  $form['prompts']['token_browser'] = [
+    '#type'        => 'fieldset',
+    '#title'       => t('Token browser'),
+    '#collapsible' => TRUE,
+    '#collapsed'   => TRUE,
+  ];
+  $form['prompts']['token_browser']['browser'] = [
+    '#type'   => 'item',
+    '#markup' => theme('token_tree', [
+      'dialog'           => TRUE,
+      'text'             => t('Browse available tokens'),
+      'token_types'      => [],
+      'global_types'     => [],
+      'show_restricted'  => FALSE,
+      'click_insert'     => TRUE,
+    ]),
+  ];
+
+  // Operation mode configuration.
+  $mode_options = [
+    'full'         => t('Full — system instructions + site context'),
+    'prompt_only'  => t('Prompt only — site context, no system instructions'),
+    'none'         => t('None — skip injection entirely'),
+  ];
+
+  $operation_labels = _ai_site_context_operation_labels();
+  $saved_modes    = $config->get('operation_modes') ?: [];
+  $default_mode   = $config->get('default_mode') ?: 'full';
+
+  $form['operation_modes'] = [
+    '#type'        => 'fieldset',
+    '#title'       => t('Injection mode per operation'),
+    '#description' => t('Controls how much context is injected for each type of AI call. <strong>Full</strong> injects system instructions + site context. <strong>Prompt only</strong> injects site context but skips system instructions (saves tokens for automated tasks]. <strong>None</strong> skips injection entirely. Operations not listed here use the default mode.'),
+    '#collapsible' => TRUE,
+    '#collapsed'   => FALSE,
+    '#tree'        => TRUE,
+    '#states'      => ['visible' => [':input[name="enabled"]' => ['checked' => TRUE]]],
+  ];
+
+  foreach ($operation_labels as $op => $label) {
+    $form['operation_modes'][$op] = [
+      '#type'          => 'select',
+      '#title'         => $label,
+      '#options'       => $mode_options,
+      '#default_value' => isset($saved_modes[$op]) ? $saved_modes[$op] : $default_mode,
+    ];
+  }
+
+  $form['default_mode'] = [
+    '#type'          => 'select',
+    '#title'         => t('Default mode for unlisted operations'),
+    '#description'   => t('Applied to any operation not explicitly listed above.'),
+    '#options'       => $mode_options,
+    '#default_value' => $default_mode,
+    '#states'        => ['visible' => [':input[name="enabled"]' => ['checked' => TRUE]]],
+  ];
+
+  return system_settings_form($form);
+}
+
+/**
+ * Helper: returns human-readable labels for known operations.
+ */
+function _ai_site_context_operation_labels() {
+  return [
+    'chat'             => t('Chat (general]'),
+    'chat_with_tools'  => t('Tool calls (raw]'),
+    'agent_call'       => t('Agent calls'),
+    'agent_explorer'   => t('Agent explorer'),
+    'chat_explorer'    => t('Chat explorer'),
+    'search_explorer'  => t('Search explorer'),
+    'tool_explorer'    => t('Tool explorer'),
+    'dblog_analysis'   => t('Database log analysis'),
+    'search_block'     => t('Search block conversation'),
+    'search_progressive' => t('Progressive search indexing'),
+    'completion'       => t('Completions (legacy]'),
+    'chatbot'          => t('Chatbot conversation'),
+    'field_generation' => t('Field automator / AI generation'),
+    'content_tools'    => t('Content tools (summarize, tone, etc.]'),
+    'image_generation' => t('Image generation'),
+    'seo_analysis'     => t('SEO analysis'),
+    'metatag'          => t('Metatag generation'),
+    'moderation'       => t('Content moderation'),
+    'embedding_generate' => t('Embedding generation'),
+    'text_to_speech'   => t('Text to speech'),
+    'speech_to_text'   => t('Speech to text'),
+  ];
+}
+
+/**
+ * Helper function to get the combined system and global prompts.
+ *
+ * @return string The token-replaced combined prompt, or empty string if disabled.
+ */
+function ai_site_context_get_prompt() {
+  $config = config('ai_site_context.settings');
+  if ($config->get('enabled') === 0 || $config->get('enabled') === '0') {
+    return '';
+  }
+  $system    = $config->get('system') ?: '';
+  $global_prompt = $config->get('global_prompt') ?: '';
+
+  $combined = '';
+  if (!empty($system)) {
+    $combined .= $system . "\n\n";
+  }
+  $combined .= $global_prompt;
+
+  return token_replace(trim($combined), [], ['sanitize' => FALSE]);
+}
+
+/**
+ * Resolves the injection mode for a given operation.
+ *
+ * @param string $operation The operation name from the alter context.
+ * @return string One of: 'full', 'prompt_only', 'none'.
+ */
+function _ai_site_context_resolve_mode($operation) {
+  $config        = config('ai_site_context.settings');
+  $modes         = $config->get('operation_modes') ?: [];
+  $default_mode  = $config->get('default_mode') ?: 'full';
+
+  return isset($modes[$operation]) ? $modes[$operation] : $default_mode;
+}
+
+/**
+ * Builds the injection string for a given mode.
+ *
+ * @param string $mode 'full', 'prompt_only', or 'none'.
+ * @return string The text to prepend, or empty string.
+ */
+function _ai_site_context_build_injection($mode) {
+  if ($mode === 'none') {
+    return '';
+  }
+
+  $config        = config('ai_site_context.settings');
+  $system   = token_replace(trim($config->get('system') ?: ''), [], ['sanitize' => FALSE]);
+  $global_prompt = token_replace(trim($config->get('global_prompt') ?: ''), [], ['sanitize' => FALSE]);
+
+  if ($mode === 'prompt_only') {
+    return $global_prompt;
+  }
+
+  // 'full': system prompt + global prompt.
+  $parts = array_filter([$system, $global_prompt]);
+  return implode("\n\n", $parts);
+}
+
+/**
+ * Implements hook_ai_prompt_alter().
+ *
+ * Prepends site context to non-chat (completions) prompts.
+ */
+function ai_site_context_ai_prompt_alter(&$prompt, array $context) {
+  if (!empty($context['disable_site_context'])) {
+    return;
+  }
+
+  $config = config('ai_site_context.settings');
+  if (!$config->get('enabled')) {
+    return;
+  }
+
+  $operation = $context['operation'] ?? 'completion';
+  $mode      = _ai_site_context_resolve_mode($operation);
+  $injection = _ai_site_context_build_injection($mode);
+
+  if ($injection !== '') {
+    $prompt = $injection . "\n\n" . trim($prompt);
+  }
+}
+
+/**
+ * Implements hook_ai_chat_messages_alter().
+ *
+ * Prepends site context as a system message for chat payloads.
+ */
+function ai_site_context_ai_chat_messages_alter(array &$messages, array $context) {
+  if (!empty($context['disable_site_context'])) {
+    return;
+  }
+  if (!empty($context['provider']) && $context['provider'] === 'browser') {
+    return;
+  }
+
+  $config = config('ai_site_context.settings');
+  if (!$config->get('enabled')) {
+    return;
+  }
+
+  $operation = $context['operation'] ?? 'chat';
+  $mode      = _ai_site_context_resolve_mode($operation);
+  $injection = _ai_site_context_build_injection($mode);
+
+  if ($injection !== '') {
+    array_unshift($messages, [
+      'role'    => 'system',
+      'content' => $injection,
+    ]);
+  }
+}

@@ -1,7 +1,0 @@
-name = OpenAI Content Editing Tools
-type = module
-description = Adds assistive tools for different areas of the content editing process for entities.
-package = OpenAI
-backdrop = 1.x
-configure = admin/config/openai/openai-content
-dependencies[] = openai

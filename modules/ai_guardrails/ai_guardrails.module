@@ -1,0 +1,534 @@
+<?php
+
+
+/**
+ * @file
+ * Active input/output guardrails for the AI module ecosystem.
+ *
+ * Provides:
+ *   - Regex-based security guardrails (XSS/injection pattern detection).
+ *   - Regex-based PII guardrails (email, credit card, IBAN, phone numbers).
+ *   - A plugin-style hook system so other modules can declare guardrails.
+ *   - Pre-generate checking (user input before it reaches the AI provider).
+ *   - Post-generate checking (AI response before it reaches the user).
+ *
+ * Extension points:
+ *   hook_ai_guardrail_info()        Declare additional guardrail definitions.
+ *   hook_ai_guardrail_info_alter()  Modify or remove existing definitions.
+ *   hook_ai_guardrail_result_alter() React to or override a block decision.
+ *
+ * Example — adding a custom regex guardrail from another module:
+ * @code
+ *   function ai_guardrails_ai_guardrail_info() {
+ *     return [
+ *       'no_competitor_names' => [
+ *         'label'   => t('Competitor names'),
+ *         'group'   => 'custom',
+ *         'type'    => 'regex',
+ *         'phase'   => 'pre',
+ *         'pattern' => 'CompetitorA|CompetitorB',
+ *         'flags'   => 'i',
+ *         'message' => t('Requests mentioning competitor products cannot be processed.'),
+ *       ],
+ *     ];
+ *   }
+ * @endcode
+ */
+
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_config_info().
+ */
+function ai_guardrails_config_info() {
+  return [
+    'ai_guardrails.settings' => [
+      'label' => t('AI Guardrails settings'),
+      'group' => t('AI'),
+    ],
+  ];
+}
+
+
+// ---------------------------------------------------------------------------
+// Menu / admin
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_menu().
+ */
+function ai_guardrails_menu() {
+  $items = [];
+
+  $items['admin/config/ai/ai-guardrails'] = [
+    'title'            => 'AI Guardrails',
+    'description'      => 'Configure active input and output guardrails for AI interactions.',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_guardrails_settings_form'],
+    'access arguments' => ['administer site configuration'],
+    'type'             => MENU_NORMAL_ITEM,
+  ];
+
+  return $items;
+}
+
+/**
+ * Settings form.
+ */
+function ai_guardrails_settings_form($form, &$form_state) {
+  $form = [];
+  $form['#config'] = 'ai_guardrails.settings';
+  $config = config('ai_guardrails.settings');
+
+  $form['enabled'] = [
+    '#type'          => 'checkbox',
+    '#title'         => t('Enable guardrails'),
+    '#description'   => t('When disabled, all guardrail checks are skipped and all requests pass through unmodified.'),
+    '#default_value' => $config->get('enabled') !== NULL ? (bool) $config->get('enabled') : TRUE,
+  ];
+
+  $form['blocked_message'] = [
+    '#type'          => 'textfield',
+    '#title'         => t('Blocked request message'),
+    '#description'   => t('Message returned to the caller when a request or response is blocked. Keep it generic to avoid revealing which pattern matched.'),
+    '#default_value' => $config->get('blocked_message') ?: t('Your request could not be processed due to content policy restrictions.'),
+    '#maxlength'     => 512,
+    '#states'        => ['visible' => [':input[name="enabled"]' => ['checked' => TRUE]]],
+  ];
+
+  // Build per-guardrail settings grouped by group.
+  $all = ai_guardrails_get_all();
+  $saved = $config->get('guardrails') ?: [];
+  $groups = _ai_guardrails_group_labels();
+  $phase_options = [
+    'pre'  => t('Input only (pre-generate]'),
+    'post' => t('Output only (post-generate]'),
+    'both' => t('Both input and output'),
+  ];
+
+  foreach ($groups as $group_id => $group_label) {
+    $group_guardrails = array_filter($all, function ($g) use ($group_id) {
+      return ($g['group'] ?? 'custom') === $group_id;
+    });
+
+    if (empty($group_guardrails)) {
+      continue;
+    }
+
+    $form[$group_id] = [
+      '#type'        => 'fieldset',
+      '#title'       => $group_label,
+      '#collapsible' => TRUE,
+      '#collapsed'   => FALSE,
+      '#tree'        => TRUE,
+      '#states'      => ['visible' => [':input[name="enabled"]' => ['checked' => TRUE]]],
+    ];
+
+    foreach ($group_guardrails as $id => $guardrail) {
+      $saved_g = isset($saved[$id]) ? $saved[$id] : [];
+      $default_enabled = isset($saved_g['enabled']) ? (bool) $saved_g['enabled'] : (bool) ($guardrail['enabled_default'] ?? TRUE);
+
+      $form[$group_id][$id . '__enabled'] = [
+        '#type'          => 'checkbox',
+        '#title'         => $guardrail['label'],
+        '#description'   => isset($guardrail['description']) ? $guardrail['description'] : '',
+        '#default_value' => $default_enabled,
+      ];
+
+      // Phase selector only for guardrails that support both phases.
+      if (($guardrail['phase'] ?? 'pre') === 'both' || !empty($guardrail['phase_configurable'])) {
+        $default_phase = isset($saved_g['phase']) ? $saved_g['phase'] : ($guardrail['phase'] ?? 'both');
+        $form[$group_id][$id . '__phase'] = [
+          '#type'          => 'select',
+          '#title'         => t('Apply during'),
+          '#options'       => $phase_options,
+          '#default_value' => $default_phase,
+          '#states'        => [
+            'visible' => [':input[name="' . $group_id . '[' . $id . '__enabled]"]' => ['checked' => TRUE]],
+          ],
+        ];
+      }
+    }
+  }
+
+  $form['actions'] = ['#type' => 'actions'];
+  $form['actions']['submit'] = [
+    '#type'  => 'submit',
+    '#value' => t('Save configuration'),
+  ];
+
+  return $form;
+}
+
+/**
+ * Submit handler for the settings form.
+ */
+function ai_guardrails_settings_form_submit($form, &$form_state) {
+  $config = config('ai_guardrails.settings');
+  $config->set('enabled', (bool) $form_state['values']['enabled']);
+  $config->set('blocked_message', check_plain($form_state['values']['blocked_message']));
+
+  $all = ai_guardrails_get_all();
+  $groups = array_keys(_ai_guardrails_group_labels());
+  $guardrails_config = [];
+
+  foreach ($groups as $group_id) {
+    if (empty($form_state['values'][$group_id])) {
+      continue;
+    }
+    $group_values = $form_state['values'][$group_id];
+
+    // Find guardrail IDs that belong to this group.
+    $group_guardrails = array_filter($all, function ($g) use ($group_id) {
+      return ($g['group'] ?? 'custom') === $group_id;
+    });
+
+    foreach (array_keys($group_guardrails) as $id) {
+      $enabled_key = $id . '__enabled';
+      $phase_key   = $id . '__phase';
+
+      $guardrails_config[$id] = [
+        'enabled' => !empty($group_values[$enabled_key]) ? 1 : 0,
+      ];
+      if (isset($group_values[$phase_key])) {
+        $guardrails_config[$id]['phase'] = $group_values[$phase_key];
+      }
+    }
+  }
+
+  $config->set('guardrails', $guardrails_config);
+  $config->save();
+  backdrop_set_message(t('Guardrail settings saved.'));
+}
+
+
+// ---------------------------------------------------------------------------
+// Guardrail definitions
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_ai_guardrail_info().
+ *
+ * Declares all built-in guardrail definitions.
+ *
+ * Each definition is an associative array with the following keys:
+ *   - label:           (string, required) Human-readable name shown in the UI.
+ *   - group:           (string) Group ID for UI grouping. Built-in: 'security', 'pii'.
+ *   - type:            (string) 'regex' (default) or 'ai_classifier'.
+ *   - phase:           (string) 'pre', 'post', or 'both'. Default 'pre'.
+ *   - phase_configurable: (bool) If TRUE, admins can change the phase per-guardrail.
+ *   - pattern:         (string, regex type) The regex pattern (without delimiters).
+ *   - flags:           (string, regex type) Regex flags, default 'i'.
+ *   - message:         (string) Override the global blocked message for this guardrail.
+ *   - enabled_default: (bool) Whether enabled out of the box. Default TRUE.
+ *   - description:     (string) Help text shown in the settings form.
+ */
+function ai_guardrails_ai_guardrail_info() {
+  return [
+
+    // --- Security: injection / XSS patterns (pre-generate only) ---
+
+    'script_tag' => [
+      'label'         => t('Script tags'),
+      'group'         => 'security',
+      'type'          => 'regex',
+      'phase'         => 'pre',
+      'pattern'       => '<script[\s\S]*?>',
+      'flags'         => 'i',
+      'enabled_default' => TRUE,
+      'description'   => t('Blocks inputs containing <code>&lt;script&gt;</code> tags, a common XSS vector.'),
+    ],
+
+    'event_handler' => [
+      'label'         => t('HTML event handlers'),
+      'group'         => 'security',
+      'type'          => 'regex',
+      'phase'         => 'pre',
+      'pattern'       => '\bon\w+\s*=',
+      'flags'         => 'i',
+      'enabled_default' => TRUE,
+      'description'   => t('Blocks inputs containing inline event handlers such as <code>onerror=</code> or <code>onclick=</code>.'),
+    ],
+
+    'javascript_protocol' => [
+      'label'         => t('JavaScript protocol'),
+      'group'         => 'security',
+      'type'          => 'regex',
+      'phase'         => 'pre',
+      'pattern'       => 'javascript\s*:',
+      'flags'         => 'i',
+      'enabled_default' => TRUE,
+      'description'   => t('Blocks inputs using the <code>javascript:</code> URI scheme.'),
+    ],
+
+    'css_expression' => [
+      'label'         => t('CSS expressions'),
+      'group'         => 'security',
+      'type'          => 'regex',
+      'phase'         => 'pre',
+      'pattern'       => 'expression\s*\(',
+      'flags'         => 'i',
+      'enabled_default' => TRUE,
+      'description'   => t('Blocks CSS <code>expression(]</code> injection attempts.'),
+    ],
+
+    'dangerous_html' => [
+      'label'         => t('Dangerous HTML elements'),
+      'group'         => 'security',
+      'type'          => 'regex',
+      'phase'         => 'pre',
+      'pattern'       => '<\s*(iframe|object|embed|applet]\b',
+      'flags'         => 'i',
+      'enabled_default' => TRUE,
+      'description'   => t('Blocks inputs containing elements commonly used for injection: <code>iframe</code>, <code>object</code>, <code>embed</code>, <code>applet</code>.'),
+    ],
+
+    // --- PII: personally identifiable information (pre and/or post) ---
+
+    'pii_email' => [
+      'label'            => t('Email addresses'),
+      'group'            => 'pii',
+      'type'             => 'regex',
+      'phase'            => 'both',
+      'phase_configurable' => TRUE,
+      'pattern'          => '[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}',
+      'enabled_default'  => TRUE,
+      'description'      => t('Detects email addresses in user input (pre] and AI responses (post]. Prevents PII from being sent to third-party AI providers.'),
+    ],
+
+    'pii_credit_card' => [
+      'label'            => t('Payment card numbers'),
+      'group'            => 'pii',
+      'type'             => 'regex',
+      'phase'            => 'both',
+      'phase_configurable' => TRUE,
+      'pattern'          => '\b(?:4[0-9]{12}(?:[0-9]{3}]?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2}][0-9]{12}]\b',
+      'enabled_default'  => TRUE,
+      'description'      => t('Detects Visa, Mastercard, American Express, and Discover card numbers.'),
+    ],
+
+    'pii_iban' => [
+      'label'            => t('IBAN bank account numbers'),
+      'group'            => 'pii',
+      'type'             => 'regex',
+      'phase'            => 'both',
+      'phase_configurable' => TRUE,
+      'pattern'          => '\b[A-Z]{2}[0-9]{2}[A-Z0-9]{4}[0-9]{7}(?:[A-Z0-9]{0,16}]\b',
+      'enabled_default'  => FALSE,
+      'description'      => t('Detects IBAN-format bank account numbers. Disabled by default — enable for sites handling financial data.'),
+    ],
+
+    'pii_phone' => [
+      'label'            => t('International phone numbers'),
+      'group'            => 'pii',
+      'type'             => 'regex',
+      'phase'            => 'both',
+      'phase_configurable' => TRUE,
+      'pattern'          => '\+[1-9][0-9]{7,14}\b',
+      'enabled_default'  => FALSE,
+      'description'      => t('Detects E.164-format international phone numbers (e.g. +12025551234]. Disabled by default to avoid false positives.'),
+    ],
+
+  ];
+}
+
+/**
+ * Collect all guardrail definitions from all modules.
+ *
+ * @return array
+ *   All guardrail definitions, keyed by guardrail ID, after alter hooks run.
+ */
+function ai_guardrails_get_all() {
+  $cache = &backdrop_static(__FUNCTION__);
+  if (isset($cache)) {
+    return $cache;
+  }
+
+  $guardrails = module_invoke_all('ai_guardrail_info');
+  backdrop_alter('ai_guardrail_info', $guardrails);
+  $cache = $guardrails;
+  return $cache;
+}
+
+/**
+ * Helper: returns human-readable group labels.
+ */
+function _ai_guardrails_group_labels() {
+  return [
+    'security' => t('Security — injection and XSS patterns'),
+    'pii'      => t('PII — personally identifiable information'),
+    'custom'   => t('Custom'),
+  ];
+}
+
+
+// ---------------------------------------------------------------------------
+// Core check runner
+// ---------------------------------------------------------------------------
+
+/**
+ * Run all enabled guardrails against a piece of text.
+ *
+ * @param string $text
+ *   The text to check (user input or AI response).
+ * @param string $phase
+ *   'pre' or 'post' — only guardrails applicable to this phase will run.
+ * @param string $operation
+ *   The operation context (e.g. 'chat', 'chatbot'). Reserved for future use.
+ *
+ * @return array
+ *   Result array with keys:
+ *     - blocked (bool): TRUE if a guardrail matched.
+ *     - guardrail_id (string|null): ID of the first guardrail that matched.
+ *     - message (string): Message to return to the caller.
+ */
+function ai_guardrails_run($text, $phase = 'pre', $operation = 'chat') {
+  $result = [
+    'blocked'      => FALSE,
+    'guardrail_id' => NULL,
+    'message'      => '',
+  ];
+
+  if (empty($text)) {
+    return $result;
+  }
+
+  $config  = config('ai_guardrails.settings');
+  $saved   = $config->get('guardrails') ?: [];
+  $default_message = $config->get('blocked_message') ?: t('Your request could not be processed due to content policy restrictions.');
+
+  $all = ai_guardrails_get_all();
+
+  foreach ($all as $id => $guardrail) {
+    // Determine enabled state (saved config overrides definition default).
+    $enabled = isset($saved[$id]['enabled']) ? (bool) $saved[$id]['enabled'] : (bool) ($guardrail['enabled_default'] ?? TRUE);
+    if (!$enabled) {
+      continue;
+    }
+
+    // Determine which phase this guardrail applies to.
+    $guardrail_phase = isset($saved[$id]['phase']) ? $saved[$id]['phase'] : ($guardrail['phase'] ?? 'pre');
+    if ($guardrail_phase !== 'both' && $guardrail_phase !== $phase) {
+      continue;
+    }
+
+    $type = $guardrail['type'] ?? 'regex';
+
+    if ($type === 'regex') {
+      $pattern = $guardrail['pattern'] ?? '';
+      $flags   = $guardrail['flags'] ?? 'i';
+      if (empty($pattern)) {
+        continue;
+      }
+      if (@preg_match('/' . $pattern . '/' . $flags, $text)) {
+        $result['blocked']      = TRUE;
+        $result['guardrail_id'] = $id;
+        $result['message']      = !empty($guardrail['message']) ? $guardrail['message'] : $default_message;
+
+        // Allow other modules to react to or override the block decision.
+        backdrop_alter('ai_guardrail_result', $result, $id, $guardrail, $text, $phase);
+
+        // A hook implementation can set blocked = FALSE to override.
+        if ($result['blocked']) {
+          watchdog('ai_guardrails', 'Guardrail @id blocked a @phase-generate request (operation: @op].', [
+            '@id'  => $id,
+            '@phase' => $phase,
+            '@op'  => $operation,
+          ], WATCHDOG_NOTICE);
+          return $result;
+        }
+      }
+    }
+    // Additional types (e.g. 'ai_classifier') can be handled by modules that
+    // implement hook_ai_guardrail_info() and hook_ai_guardrail_result_alter().
+  }
+
+  return $result;
+}
+
+
+// ---------------------------------------------------------------------------
+// Integration with AI module hooks.
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_ai_chat_messages_alter().
+ *
+ * Pre-generate check: inspect the last user message before it reaches the
+ * AI provider. Sets $context['guardrail_blocked'] = TRUE to signal AIApi
+ * to abort the request.
+ */
+function ai_guardrails_ai_chat_messages_alter(array &$messages, array &$context) {
+  $config = config('ai_guardrails.settings');
+  if (!$config->get('enabled')) {
+    return;
+  }
+  // Skip if a higher-level caller has already disabled guardrails.
+  if (!empty($context['disable_guardrails'])) {
+    return;
+  }
+
+  // Extract the last user message.
+  $user_text = '';
+  foreach (array_reverse($messages) as $msg) {
+    if (isset($msg['role']) && $msg['role'] === 'user') {
+      $content = $msg['content'] ?? '';
+      // Content can be a string or an array of parts (vision payloads, etc.).
+      if (is_array($content)) {
+        $parts = [];
+        foreach ($content as $part) {
+          if (isset($part['text'])) {
+            $parts[] = $part['text'];
+          }
+        }
+        $user_text = implode(' ', $parts);
+      }
+      else {
+        $user_text = (string) $content;
+      }
+      break;
+    }
+  }
+
+  if (empty($user_text)) {
+    return;
+  }
+
+  $operation = $context['operation'] ?? 'chat';
+  $result = ai_guardrails_run($user_text, 'pre', $operation);
+
+  if ($result['blocked']) {
+    $context['guardrail_blocked'] = TRUE;
+    $context['guardrail_message'] = $result['message'];
+  }
+}
+
+/**
+ * Implements hook_ai_chat_response_alter().
+ *
+ * Post-generate check: inspect the AI response before it is returned to the
+ * caller. Sets $context['guardrail_blocked'] = TRUE to abort delivery.
+ *
+ * Note: this hook is only fired for non-streamed responses. Streamed responses
+ * are not checked post-generate because the content arrives incrementally.
+ */
+function ai_guardrails_ai_chat_response_alter(&$response, array &$context) {
+  $config = config('ai_guardrails.settings');
+  if (!$config->get('enabled')) {
+    return;
+  }
+  if (!empty($context['disable_guardrails'])) {
+    return;
+  }
+
+  $operation = $context['operation'] ?? 'chat';
+  $result = ai_guardrails_run((string) $response, 'post', $operation);
+
+  if ($result['blocked']) {
+    $context['guardrail_blocked'] = TRUE;
+    $context['guardrail_message'] = $result['message'];
+  }
+}

@@ -1,0 +1,420 @@
+<?php
+
+
+/**
+ * @file
+ * Per-provider rate limiting for external AI API calls.
+ *
+ * All external AI calls pass through AIApi (or its provider adapters).
+ * AIApi::checkRateLimit() calls ai_rate_limit_check() before each
+ * request. If the limit is exceeded the call throws an exception, which is
+ * caught and recorded by the calling module (runner, async callback, etc.).
+ *
+ * Configuration:
+ *  - A site-wide global limit (across all providers combined), 0 = disabled.
+ *  - Per-provider limits (requests per window, window in seconds).
+ *
+ * Limits are stored in the database so they are shared across PHP processes
+ * and web workers — unlike static variables or APC/APCu caches.
+ *
+ * Usage from other modules:
+ * @code
+ *   if (!ai_rate_limit_check('provider_name', 'chat')) {
+ *     throw new Exception('Rate limit exceeded.');
+ *   }
+ * @endcode
+ */
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_config_info().
+ */
+function ai_rate_limit_config_info() {
+  return [
+    'ai_rate_limit.settings' => [
+      'label' => t('AI Rate Limit settings'),
+      'group' => t('AI'),
+    ],
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Menu / admin
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_menu().
+ */
+function ai_rate_limit_menu() {
+  $items = [];
+
+  $items['admin/config/ai/ai-rate-limit'] = [
+    'title'            => 'AI Rate Limiting',
+    'description'      => 'Configure per-provider request rate limits for external AI API calls.',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_rate_limit_settings_form'],
+    'access arguments' => ['administer site configuration'],
+    'type'             => MENU_NORMAL_ITEM,
+  ];
+
+  return $items;
+}
+
+/**
+ * Settings form.
+ */
+function ai_rate_limit_settings_form($form, &$form_state) {
+  $config = config('ai_rate_limit.settings');
+  $default_limit = 60;
+  $default_window = 60;
+
+  $form['#config'] = 'ai_rate_limit.settings';
+
+  $form['enabled'] = [
+    '#type'          => 'checkbox',
+    '#title'         => t('Enable rate limiting'),
+    '#description'   => t('When checked, rate limiting is active immediately using the global defaults below unless you change them.'),
+    '#default_value' => $config->get('enabled'),
+  ];
+
+  $form['global'] = [
+    '#type'  => 'fieldset',
+    '#title' => t('Global limit'),
+    '#description' => t('Applies across <em>all</em> providers combined. Example: limit `2` with window `60` allows up to 2 requests within 60 seconds.'),
+    '#states' => [
+      'visible' => [':input[name="enabled"]' => ['checked' => TRUE]],
+    ],
+  ];
+
+  $form['global']['global_limit'] = [
+    '#type'          => 'number',
+    '#title'         => t('Request limit'),
+    '#min'           => 1,
+    '#default_value' => (int) ($config->get('global_limit') ?: $default_limit),
+    '#field_suffix'  => t('requests'),
+    '#size'          => 6,
+    '#description'   => t('Default: @limit requests.', ['@limit' => $default_limit]),
+  ];
+
+  $form['global']['global_window'] = [
+    '#type'          => 'number',
+    '#title'         => t('Window'),
+    '#min'           => 1,
+    '#default_value' => (int) ($config->get('global_window') ?: $default_window),
+    '#field_suffix'  => t('seconds'),
+    '#size'          => 6,
+    '#description'   => t('Default: @window seconds.', ['@window' => $default_window]),
+  ];
+
+  // Per-provider limits. Source providers from hook_ai_provider_info() when
+  // available, with a sensible static fallback list.
+  $providers = _ai_rate_limit_get_providers();
+  $provider_limits = $config->get('provider_limits') ?: [];
+
+  $form['providers'] = [
+    '#type'  => 'fieldset',
+    '#title' => t('Per-provider limits'),
+    '#description' => t('Optional overrides for providers that are enabled in AI settings. These limits apply only to that provider.'),
+    '#states' => [
+      'visible' => [':input[name="enabled"]' => ['checked' => TRUE]],
+    ],
+    '#tree' => TRUE,
+  ];
+
+  foreach ($providers as $provider_id => $provider_label) {
+    $saved = isset($provider_limits[$provider_id]) ? $provider_limits[$provider_id] : [];
+
+    $form['providers'][$provider_id] = [
+      '#type'  => 'fieldset',
+      '#title' => check_plain($provider_label),
+    ];
+
+    $form['providers'][$provider_id]['enabled'] = [
+      '#type' => 'checkbox',
+      '#title' => t('Enable provider-specific limit'),
+      '#default_value' => !empty($saved['limit']),
+    ];
+
+    $form['providers'][$provider_id]['limit'] = [
+      '#type'          => 'number',
+      '#title'         => t('Request limit'),
+      '#min'           => 1,
+      '#default_value' => !empty($saved['limit']) ? (int) $saved['limit'] : $default_limit,
+      '#field_suffix'  => t('requests'),
+      '#size'          => 6,
+      '#description'   => t('Applies only when the provider-specific limit is enabled.'),
+      '#states' => [
+        'visible' => [':input[name="providers[' . $provider_id . '][enabled]"]' => ['checked' => TRUE]],
+      ],
+    ];
+
+    $form['providers'][$provider_id]['window'] = [
+      '#type'          => 'number',
+      '#title'         => t('Window (seconds]'),
+      '#min'           => 1,
+      '#default_value' => isset($saved['window']) ? (int) $saved['window'] : $default_window,
+      '#size'          => 6,
+      '#states' => [
+        'visible' => [':input[name="providers[' . $provider_id . '][enabled]"]' => ['checked' => TRUE]],
+      ],
+    ];
+  }
+
+  $form['actions'] = ['#type' => 'actions'];
+  $form['actions']['submit'] = [
+    '#type'  => 'submit',
+    '#value' => t('Save configuration'),
+  ];
+
+  return $form;
+}
+
+/**
+ * Submit handler for ai_rate_limit_settings_form.
+ */
+function ai_rate_limit_settings_form_submit($form, &$form_state) {
+  $config = config('ai_rate_limit.settings');
+  $config->set('enabled', (bool) $form_state['values']['enabled']);
+  $config->set('global_limit', max(1, (int) $form_state['values']['global_limit']));
+  $config->set('global_window', max(1, (int) $form_state['values']['global_window']));
+
+  $provider_limits = [];
+  if (!empty($form_state['values']['providers']) && is_array($form_state['values']['providers'])) {
+    foreach ($form_state['values']['providers'] as $provider_id => $values) {
+      if (!empty($values['enabled'])) {
+        $limit  = max(1, (int) ($values['limit'] ?? 60));
+        $window = max(1, (int) ($values['window'] ?? 60));
+        $provider_limits[$provider_id] = ['limit' => $limit, 'window' => $window];
+      }
+    }
+  }
+  $config->set('provider_limits', $provider_limits);
+  $config->save();
+
+  backdrop_set_message(t('Rate limit settings saved.'));
+}
+
+// ---------------------------------------------------------------------------
+// Implements hook_cron()
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_cron().
+ *
+ * Purges rate limit event records older than the longest configured window so
+ * the table does not grow unbounded.
+ */
+function ai_rate_limit_cron() {
+  $config = config('ai_rate_limit.settings');
+
+  // Find the longest window across all configured limits.
+  $max_window = max(
+    (int) ($config->get('global_window') ?: 60),
+    60
+  );
+  $provider_limits = $config->get('provider_limits') ?: [];
+  foreach ($provider_limits as $pl) {
+    $max_window = max($max_window, (int) ($pl['window'] ?? 60));
+  }
+
+  // Keep a 2× safety margin so borderline rows are not deleted prematurely.
+  $cutoff = REQUEST_TIME - ($max_window * 2);
+  db_delete('ai_rate_limit_events')
+    ->condition('timestamp', $cutoff, '<')
+    ->execute();
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Checks whether an AI provider call is within the configured rate limit.
+ *
+ * If the call is allowed, it is registered in the event table before returning.
+ * This function is called by AIApi::checkRateLimit() before every external
+ * AI API request.
+ *
+ * @param string $provider
+ *   Provider machine name (e.g. 'provider_name', 'anthropic', 'ollama').
+ * @param string $operation
+ *   Operation name (e.g. 'chat', 'embedding', 'images', 'moderation').
+ *
+ * @return bool
+ *   TRUE if the call is allowed and has been registered.
+ *   FALSE if the rate limit is exceeded — the caller should throw or return.
+ */
+function ai_rate_limit_check($provider, $operation) {
+  $config = config('ai_rate_limit.settings');
+
+  if (!$config->get('enabled')) {
+    return TRUE;
+  }
+
+  $global_limit = (int) $config->get('global_limit');
+  $provider_limits = $config->get('provider_limits') ?: [];
+  $provider_limit_configured = !empty($provider_limits[$provider]) && !empty($provider_limits[$provider]['limit']);
+
+  // If no global or provider-specific limits apply, do not write tracking rows.
+  if ($global_limit <= 0 && !$provider_limit_configured) {
+    return TRUE;
+  }
+
+  $lock_name = 'ai_rate_limit:check';
+  if (!lock_acquire($lock_name, 5.0)) {
+    watchdog('ai_rate_limit', 'Could not acquire rate limit lock for provider @provider, operation @op. Blocking request to preserve strict enforcement.', [
+      '@provider' => $provider,
+      '@op' => $operation,
+    ], WATCHDOG_WARNING);
+    return FALSE;
+  }
+
+  try {
+    // 1. Global limit (all providers combined).
+    $global_window = (int) ($config->get('global_window') ?: 60);
+    if ($global_limit > 0) {
+      $since = REQUEST_TIME - $global_window;
+      $count = db_query(
+        'SELECT COUNT(*] FROM {ai_rate_limit_events} WHERE timestamp > :since',
+        [':since' => $since]
+      )->fetchField();
+
+      if ((int) $count >= $global_limit) {
+        watchdog('ai_rate_limit', 'Global rate limit exceeded: @count/@limit calls in @window s. Provider: @provider, Operation: @op.', [
+          '@count'    => $count,
+          '@limit'    => $global_limit,
+          '@window'   => $global_window,
+          '@provider' => $provider,
+          '@op'       => $operation,
+        ], WATCHDOG_WARNING);
+        return FALSE;
+      }
+    }
+
+    // 2. Per-provider limit.
+    if ($provider_limit_configured) {
+      $pl     = $provider_limits[$provider];
+      $limit  = (int) $pl['limit'];
+      $window = (int) ($pl['window'] ?? 60);
+      $since  = REQUEST_TIME - $window;
+
+      $count = db_query(
+        'SELECT COUNT(*] FROM {ai_rate_limit_events} WHERE provider = :provider AND timestamp > :since',
+        [':provider' => $provider, ':since' => $since]
+      )->fetchField();
+
+      if ((int) $count >= $limit) {
+        watchdog('ai_rate_limit', 'Provider rate limit exceeded for @provider: @count/@limit calls in @window s. Operation: @op.', [
+          '@provider' => $provider,
+          '@count'    => $count,
+          '@limit'    => $limit,
+          '@window'   => $window,
+          '@op'       => $operation,
+        ], WATCHDOG_WARNING);
+        return FALSE;
+      }
+    }
+
+    // Allowed — register the event while still holding the lock so
+    // concurrent workers cannot overshoot the configured limit.
+    global $user;
+    db_insert('ai_rate_limit_events')
+      ->fields([
+        'provider'  => $provider,
+        'operation' => $operation,
+        'uid'       => isset($user->uid) ? (int) $user->uid : 0,
+        'timestamp' => REQUEST_TIME,
+      ])
+      ->execute();
+  }
+  finally {
+    lock_release($lock_name);
+  }
+
+  return TRUE;
+}
+
+/**
+ * Returns current call counts for all configured providers within their windows.
+ *
+ * Useful for status pages and admin dashboards.
+ *
+ * @return array
+ *   Keyed by provider, each value is an array with keys:
+ *   - count: calls in the current window
+ *   - limit: configured limit (0 = none)
+ *   - window: window in seconds
+ */
+function ai_rate_limit_status() {
+  $config = config('ai_rate_limit.settings');
+  $provider_limits = $config->get('provider_limits') ?: [];
+  $status = [];
+
+  foreach ($provider_limits as $provider => $pl) {
+    $window = (int) ($pl['window'] ?? 60);
+    $since  = REQUEST_TIME - $window;
+    $count  = db_query(
+      'SELECT COUNT(*] FROM {ai_rate_limit_events} WHERE provider = :provider AND timestamp > :since',
+      [':provider' => $provider, ':since' => $since]
+    )->fetchField();
+
+    $status[$provider] = [
+      'count'  => (int) $count,
+      'limit'  => (int) $pl['limit'],
+      'window' => $window,
+    ];
+  }
+
+  return $status;
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns an array of provider machine names => labels for the settings form.
+ */
+function _ai_rate_limit_get_providers() {
+  $enabled_provider_ids = [];
+  $ai_config = config('ai.settings');
+  $provider_config = $ai_config->get('providers') ?: [];
+  foreach ($provider_config as $provider_id => $provider_settings) {
+    if (!empty($provider_settings['enabled'])) {
+      $enabled_provider_ids[$provider_id] = TRUE;
+    }
+  }
+
+  // Use the ai provider registry when available.
+  if (function_exists('ai_get_providers')) {
+    $raw = ai_get_providers();
+    $providers = [];
+    foreach ($raw as $id => $info) {
+      if (!empty($enabled_provider_ids) && empty($enabled_provider_ids[$id])) {
+        continue;
+      }
+      $providers[$id] = isset($info['label']) ? $info['label'] : $id;
+    }
+    if (!empty($providers)) {
+      return $providers;
+    }
+  }
+
+  // Static fallback covering the common providers in this ecosystem.
+  $providers = [
+    'openai'       => t('OpenAI'),
+    'anthropic'    => t('Anthropic'),
+    'google_gemini' => t('Google Gemini'),
+    'ollama'       => t('Ollama'),
+    'openrouter'   => t('OpenRouter'),
+    'litellm'      => t('LiteLLM'),
+  ];
+  if (empty($enabled_provider_ids)) {
+    return $providers;
+  }
+
+  return array_intersect_key($providers, $enabled_provider_ids);
+}

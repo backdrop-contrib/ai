@@ -1,0 +1,41 @@
+<?php
+
+/**
+ * @file
+ * Tests for AI tool registry basics.
+ */
+
+class AIToolsRegistryTestCase extends BackdropWebTestCase {
+
+  public function setUp() {
+    parent::setUp(['ai', 'ai_tools', 'ai_agent_test']);
+
+    $providers = config('ai.settings');
+    $providers->set('providers', [
+      'agent_test' => [
+        'enabled' => 1,
+      ],
+    ]);
+    $providers->save();
+  }
+
+  public function testToolRegistryAndDispatch() {
+    $tools = ai_tools_get_tools();
+    $this->assertTrue(isset($tools['get_node_info']), 'Core tool registry loaded.');
+    $this->assertTrue(isset($tools['test_echo_message']), 'Test tool registry loaded.');
+
+    $result = ai_tools_dispatch('test_echo_message', ['message' => 'hello']);
+    $decoded = json_decode($result, TRUE);
+    $this->assertEqual('hello', $decoded['echo'], 'Tool dispatch returned expected payload.');
+  }
+
+  public function testToolExplorerLoadsWithModels() {
+    $admin = $this->backdropCreateUser(['administer site configuration']);
+    $this->backdropLogin($admin);
+
+    $this->backdropGet('admin/config/ai/tool-explorer');
+    $this->assertText('Tool Explorer', 'Tool Explorer page loads.');
+    $this->assertPattern('@agent_test/gpt-4o-mini@', 'Fake provider model is visible.');
+    $this->assertText('test_echo_message', 'Test tool is visible in explorer.');
+  }
+}

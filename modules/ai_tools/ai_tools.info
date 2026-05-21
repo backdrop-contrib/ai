@@ -1,0 +1,6 @@
+name = AI Tools
+description = Function-calling framework for AI providers and integrations.
+backdrop = 1.x
+type = module
+package = AI
+dependencies[] = ai

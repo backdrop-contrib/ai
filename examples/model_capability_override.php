@@ -8,11 +8,11 @@
  * their APIs, site administrators can use this hook to manually tag models
  * with capabilities.
  *
- * Place this code in a custom module (e.g., mysite_openai_overrides.module).
+ * Place this code in a custom module (e.g., mysite_ai_overrides.module).
  */
 
 /**
- * Implements hook_openai_model_capabilities_alter().
+ * Implements hook_ai_model_capabilities_alter().
  *
  * Allow site-specific model capability overrides.
  *
@@ -23,7 +23,7 @@
  * @param string &$provider_id
  *   The provider ID ('ollama', 'openrouter', etc.).
  */
-function mysite_openai_overrides_openai_model_capabilities_alter(&$filtered, &$capability, &$provider_id) {
+function mysite_ai_overrides_ai_model_capabilities_alter(&$filtered, &$capability, &$provider_id) {
   // Example 1: Add a vision model that wasn't detected
   if ($provider_id === 'ollama' && $capability === 'vision') {
     // If you have a vision model that isn't being detected, add it here
@@ -52,7 +52,7 @@ function mysite_openai_overrides_openai_model_capabilities_alter(&$filtered, &$c
 /**
  * Example: Override embedding dimensions for custom models.
  *
- * Implements hook_openai_embedding_dimension_alter().
+ * Implements hook_ai_embedding_dimension_alter().
  *
  * @param int &$dimension
  *   The detected or default dimension.
@@ -61,7 +61,7 @@ function mysite_openai_overrides_openai_model_capabilities_alter(&$filtered, &$c
  * @param string &$provider_id
  *   The provider ID.
  */
-function mysite_openai_overrides_openai_embedding_dimension_alter(&$dimension, &$model_id, &$provider_id) {
+function mysite_ai_overrides_ai_embedding_dimension_alter(&$dimension, &$model_id, &$provider_id) {
   // Example: Set dimension for a custom Ollama embedding model
   if ($provider_id === 'ollama' && $model_id === 'my-custom-embed:latest') {
     $dimension = 768;

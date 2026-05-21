@@ -1,0 +1,7 @@
+name = AI Moderation
+description = Provides an interface to test AI content moderation with model selection.
+package = AI
+type = module
+backdrop = 1.x
+dependencies[] = ai
+configure = admin/config/ai/ai-moderation

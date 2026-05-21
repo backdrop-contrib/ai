@@ -1,0 +1,1301 @@
+<?php
+
+
+/**
+ * Implements hook_config_info().
+ */
+function ai_alt_config_info() {
+  return [
+    'ai_alt.settings' => [
+      'label' => t('AI Alt Settings'),
+      'group' => t('AI'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ai_alt_menu() {
+  $items = [];
+
+  $items['admin/config/ai/ai-alt'] = [
+    'title' => 'AI Alt Text Generation',
+    'description' => 'Provides the possibility to fill out the alt text of an image field using AI.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_alt_settings_form'],
+    'access arguments' => ['administer site configuration'],
+    'weight' => -9,
+  ];
+
+  // AJAX endpoint for autogeneration (returns JSON)
+  $items['ai-alt/generate-alt-text'] = [
+    'page callback' => 'ai_alt_generate_alt_text_callback',
+    'access callback' => 'user_access',
+    'access arguments' => ['administer site configuration'],
+    'type' => MENU_CALLBACK,
+    'delivery callback' => 'backdrop_json_output',
+  ];
+
+  // New endpoint for CKEditor autogeneration.
+  $items['ai-alt/ckeditor-autogenerate'] = [
+    'page callback' => 'ai_alt_generate_alt_text_for_ckeditor_autogenerate',
+    'access callback' => 'user_access',
+    'access arguments' => ['administer site configuration'],
+    'type' => MENU_CALLBACK,
+    'delivery callback' => 'backdrop_json_output',
+  ];
+
+  return $items;
+}
+
+/**
+ * Build the configuration form for AI Alt Text.
+ *
+ * @return array
+ *   The configuration form.
+ */
+function ai_alt_settings_form(array $form, array &$form_state) {
+  // Get the configuration object to load values.
+  $config = config('ai_alt.settings');
+
+  $form = [];
+  $form['#config'] = 'ai_alt.settings';
+
+  // Retrieve configuration values.
+  $prompt = $config->get('prompt');
+
+  $bulk_link = l(t('Bulk generate alt text'), 'admin/config/ai/ai-alt-bulk');
+  $form['bulk_link'] = [
+    '#type' => 'item',
+    '#markup' => t('You can also !link for existing images.', ['!link' => $bulk_link]),
+    '#weight' => -10,
+  ];
+
+  // Prompt for generating alt text.
+  $form['prompt'] = [
+    '#type' => 'textarea',
+    '#title' => t('AI Alt text generation prompt'),
+    '#default_value' => $prompt,
+    '#description' => t('Prompt used for generating the alt text.'),
+    '#required' => TRUE,
+    '#rows' => 15,
+    '#cols' => 80,
+    '#attributes' => [
+      'style' => 'white-space: pre-wrap;',
+    ],
+  ];
+
+  // Load all image styles in Backdrop CMS.
+  $image_styles = image_styles();
+  $image_styles_options = [];
+
+  foreach ($image_styles as $name => $image_style) {
+    $image_styles_options[$name] = $image_style['label'];
+  }
+
+  // Define the form element for selecting an image style.
+  $form['image_style'] = [
+    '#title' => t('Image style'),
+    '#type' => 'select',
+    '#options' => $image_styles_options,
+    '#default_value' => $config->get('image_style') ?? 'ai_image_alt_text',
+    '#empty_option' => t('Original (NOT RECOMMENDED]'),
+    '#description' => t('Image style to use before sending the image to reduce resolution and reformat as PNG.'),
+  ];
+
+  // Get all vision models from all enabled providers.
+  $models = ai_get_all_vision_models();
+
+  $flat_models = [];
+  foreach ($models as $g_label => $g_items) {
+    if (is_array($g_items)) {
+      foreach ($g_items as $k => $v) { $flat_models[$k] = $v; }
+    } else {
+      $flat_models[$g_label] = $g_items;
+    }
+  }
+
+  // Preserve the selected model even if it's not in the vision list.
+  $current_model = $config->get('model');
+  if ($current_model && !isset($flat_models[$current_model])) {
+    // If current model isn't vision-capable, show all models so it can be selected/preserved.
+    $all_models = ai_get_all_models();
+    $flat_all_models = [];
+    foreach ($all_models as $g_label => $g_items) {
+      if (is_array($g_items)) {
+        foreach ($g_items as $k => $v) { $flat_all_models[$k] = $v; }
+      } else {
+        $flat_all_models[$g_label] = $g_items;
+      }
+    }
+
+    if (isset($flat_all_models[$current_model])) {
+      $models = $all_models;
+      $flat_models = $flat_all_models;
+    }
+    else {
+      // Check if the current model belongs to an enabled provider.
+      $parts = explode('/', $current_model);
+      $provider_id = $parts[0] ?? '';
+      $providers_root = config_get('ai.settings', 'providers') ?: [];
+      if (!empty($providers_root[$provider_id]['enabled'])) {
+        $provider_label = ai_get_provider_label($provider_id);
+        $models[$provider_label][$current_model] = $current_model . ' ' . t('(currently selected]');
+        // Update flat models too for consistency.
+        $flat_models[$current_model] = $current_model;
+      }
+    }
+  }
+
+  if (empty($models)) {
+    // Build an HTML link safely and insert it as an unescaped placeholder so the
+    // anchor tag is not double-escaped by t().
+    $link = l(t('configure a provider'), 'admin/config/ai/settings');
+    backdrop_set_message(t('No suitable models are available from your configured providers. Please !link in AI settings.', ['!link' => $link]), 'warning');
+  }
+
+  // Determine default model.
+  $default_model = config_get('ai.settings', 'default_text_model') ?: '';
+  if (!empty($flat_models) && !isset($flat_models[$default_model])) {
+    reset($flat_models);
+    $default_model = key($flat_models);
+  }
+
+  $form['model'] = [
+    '#type' => 'select',
+    '#title' => t('Model to use'),
+    '#options' => $models,
+    '#default_value' => $config->get('model') ?: $default_model,
+    '#required' => TRUE,
+    '#description' => t('AI model to use for generating the alt text. If the desired model is not listed, ensure its provider is enabled in AI settings.'),
+  ];
+
+  // Autogenerate option.
+  $form['autogenerate'] = [
+    '#title' => t('Autogenerate on upload'),
+    '#type' => 'checkbox',
+    '#default_value' => $config->get('autogenerate') ?? FALSE,
+    '#description' => t('Automatically generate alt text when uploading an image.'),
+  ];
+
+  $form['rename_filenames'] = [
+    '#title' => t('Rename uploaded image filenames'),
+    '#type' => 'checkbox',
+    '#default_value' => $config->get('rename_filenames') ?? FALSE,
+    '#description' => t('Rename new image files from a short AI-generated label, not the full alt text.'),
+  ];
+
+  // Hide button option.
+  $form['hide_button'] = [
+    '#title' => t('Hide button'),
+    '#type' => 'checkbox',
+    '#default_value' => $config->get('hide_button') ?? FALSE,
+    '#description' => t('Hide the button to generate alt text manually.'),
+    '#states' => [
+      'enabled' => [
+        ':input[name="autogenerate"]' => ['checked' => TRUE], // Disable when autogenerate is unchecked.
+      ],
+    ],
+  ];
+
+  // Add a form validation handler.
+  $form['#validate'][] = 'ai_alt_settings_form_validate';
+
+  return system_settings_form($form);
+}
+
+
+/**
+ * Form validation callback.
+ */
+function ai_alt_settings_form_validate($form, &$form_state) {
+  $autogenerate = $form_state['values']['autogenerate'] ?? FALSE;
+  $hide_button = $form_state['values']['hide_button'] ?? FALSE;
+
+  if (!$autogenerate && $hide_button) {
+    form_set_error('hide_button', t('The "Hide button" option cannot be enabled unless "Autogenerate on upload" is checked.'));
+  }
+}
+
+/**
+ * Implements hook_element_info_alter().
+ *
+ * Alter the image field widget to include a "Generate Alt Text" button.
+ */
+function ai_alt_element_info_alter(&$types) {
+  if (isset($types['managed_file'])) {
+    $types['managed_file']['#process'][] = 'ai_alt_image_field_process';
+  }
+}
+
+/**
+* Process callback to inject alt-text generation into managed_file fields.
+ *
+ * Called for each item (including single-value = delta 0, multi-value = delta 0,1,2,...).
+ */
+function ai_alt_image_field_process($element, &$form_state, $form) {
+  // 1] Define defaults to avoid “Undefined variable” warnings
+  $delta = 0;
+  $field_name = 'unknown_field';
+
+  // 2] If there's no alt property, or no #value at all, bail out early.
+  if (empty($element['#value']) || !isset($element['#value']['alt'])) {
+    return $element;
+  }
+
+  // 3] Parse the real delta from #parents.
+  //    Single-value fields might still have "0", multi-value might have "0,1,2,...".
+  if (!empty($element['#parents'])) {
+    $last_parent = end($element['#parents']);
+    if (is_numeric($last_parent)) {
+      $delta = (int) $last_parent;
+    }
+    reset($element['#parents']);
+  }
+
+  // 4] If #field_name is set, use it. e.g. "field_image" or "field_multiple_images".
+  if (!empty($element['#field_name'])) {
+    $field_name = $element['#field_name'];
+  }
+
+  // 5] Make the #id unique, so each item can be updated separately via AJAX.
+  //    e.g. "edit-field-multiple-images-und-1--delta-1"
+  if (!empty($element['#id'])) {
+    $element['#id'] .= '--delta-' . $delta;
+  }
+
+  // 6] Retrieve the current alt text, to decide if it's empty or not.
+  $current_alt = trim($element['#value']['alt']);
+
+  // 7] Grab your module's config settings, if any (e.g. hiding the button or auto-generation).
+  $hide_button  = config_get('ai_alt.settings', 'hide_button');
+  $autogenerate = config_get('ai_alt.settings', 'autogenerate');
+
+  // 8] Add a "Generate Alt Text" button, unless hidden. This allows manual generation.
+  if (empty($hide_button) && !isset($element['ai_alt_text_generation'])) {
+    $element['ai_alt_text_generation'] = [
+      '#type' => 'button',
+      '#value' => t('Generate Alt Text'),
+      '#name' => 'ai_alt_text_generation' . $field_name . '_' . $delta,
+      '#ajax' => [
+        'callback' => 'ai_alt_generate_alt_text_ajax',
+        // This ensures only THIS item is re-rendered on successful AJAX
+        'wrapper' => $element['#id'],
+      ],
+      '#attributes' => [
+        'class' => ['ai-alt-text-generation', 'button--primary'],
+        // Pass the file ID, field name, and delta
+        'data-file-id'    => isset($element['#value']['fid']) ? $element['#value']['fid'] : NULL,
+        'data-field-name' => $field_name,
+        'data-delta'      => $delta,
+      ],
+      '#weight' => 1,
+    ];
+  }
+
+  // 9] If "autogenerate" is enabled AND alt is empty, attach JS to auto-generate alt text.
+  // Skip if image_entity_alt has already provided a global alt text for this file.
+  $has_global_alt = FALSE;
+  if (module_exists('image_entity_alt') && !empty($element['#value']['fid'])) {
+    $alt_field = function_exists('image_entity_alt_field_name') ? image_entity_alt_field_name() : 'field_alt';
+    $file = file_load((int) $element['#value']['fid']);
+    if ($file && !empty($file->{$alt_field}[LANGUAGE_NONE][0]['value'])) {
+      $has_global_alt = TRUE;
+    }
+  }
+  if (!empty($autogenerate) && $current_alt === '' && !$has_global_alt) {
+    // Use a unique sub-key so multiple items won't overwrite each other in JS.
+    $unique_key = $field_name . ':' . $delta;
+
+    // This merges into Backdrop.settings.aiAlt[...] in the JS.
+    $element['#attached']['js'][] = [
+      'data' => [
+        'aiAlt' => [
+          $unique_key => [
+            'fid'        => isset($element['#value']['fid']) ? $element['#value']['fid'] : NULL,
+            'field_name' => $field_name,
+            'delta'      => $delta,
+            'target_id'  => $element['#id'], // The updated #id
+          ],
+        ],
+      ],
+      'type' => 'setting',
+    ];
+
+    // Attach your JavaScript file that triggers auto-generation.
+    $element['#attached']['js'][] = backdrop_get_path('module', 'ai_alt') . '/js/ai_alt_autogenerate.js';
+  }
+
+  return $element;
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function ai_alt_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'filter_format_editor_image_form') {
+    // Add weights for existing fields.
+    if (isset($form['image'])) {
+      $form['image']['fid']['#weight'] = 0; // File upload field.
+      $form['image']['src']['#weight'] = 1; // Image source field.
+    }
+    if (isset($form['alt'])) {
+      $form['alt']['#weight'] = 2; // Alternative text field.
+    }
+    if (isset($form['size'])) {
+      $form['size']['#weight'] = 4; // Image size wrapper.
+      $form['size']['width']['#weight'] = 5; // Width field.
+      $form['size']['height']['#weight'] = 6; // Height field.
+    }
+    if (isset($form['align'])) {
+      $form['align']['#weight'] = 7; // Alignment field.
+    }
+    if (isset($form['caption'])) {
+      $form['caption']['#weight'] = 8; // Caption checkbox.
+    }
+    if (isset($form['actions'])) {
+      $form['actions']['submit']['#weight'] = 8; // Submit button.
+    }
+
+    // Ensure the 'alt' field exists.
+    if (isset($form['alt'])) {
+      // Add a unique ID to the alt field for AJAX targeting.
+      $form['alt']['#prefix'] = '<div id="edit-alt-wrapper">';
+      $form['alt']['#suffix'] = '</div>';
+
+      // Retrieve the module settings to check if the button should be hidden.
+      $hide_button = config_get('ai_alt.settings', 'hide_button');
+      $autogenerate = config_get('ai_alt.settings', 'autogenerate');
+
+      // Add the "Generate Alt Text" button only if it's not hidden.
+      if (empty($hide_button)) {
+        $form['generate_with_ai'] = [
+          '#type'       => 'button',
+          '#value'      => t('Generate Alt Text'),
+          '#ajax'       => [
+            'callback' => 'ai_alt_generate_alt_text_for_ckeditor',
+            'wrapper'  => 'edit-alt-wrapper',
+          ],
+          '#attributes' => [
+            'class' => ['ckeditor-ai-generate-button'],
+          ],
+          '#weight'     => 3, // Place the button right after the alt field.
+        ];
+      }
+
+      // If autogenerate is enabled, attach JS to trigger after image upload/selection.
+      if (!empty($autogenerate)) {
+        //watchdog('ai_alt', 'Attaching autogenerate JavaScript for
+        // CKEditor.', [)];
+
+        $uploaded_fid = $form_state['values']['fid'] ?? NULL;
+
+        if ($uploaded_fid) {
+          //watchdog('ai_alt', 'Detected uploaded image with fid: @fid',
+          // ['@fid' => $uploaded_fid)];
+
+          // Pass FID to JS settings.
+          $form['#attached']['js'][] = [
+            'data' => [
+              'aiAlt' => [
+                'fid' => $uploaded_fid,
+                'wrapper_id' => 'edit-alt-wrapper',
+              ],
+            ],
+            'type' => 'setting',
+          ];
+        } else {
+          watchdog('ai_alt', 'No uploaded image detected, waiting for selection.', []);
+
+          $form['#attached']['js'][] = [
+            'data' => [
+              'aiAlt' => [
+                'wrapper_id' => 'edit-alt-wrapper',
+              ],
+            ],
+            'type' => 'setting',
+          ];
+        }
+
+        // Always attach the JS file to ensure it loads.
+        $form['#attached']['js'][] = backdrop_get_path('module', 'ai_alt') . '/js/ai_alt_autogenerate_ckeditor.js';
+      }
+    }
+  }
+}
+
+/**
+ * AJAX callback to generate alt text in CKEditor modal.
+ */
+function ai_alt_generate_alt_text_for_ckeditor($form, &$form_state) {
+  // Retrieve the file ID (`fid`) from the form.
+  $fid = $form['image']['fid']['#value']['fid'] ?? NULL;
+
+  if (!$fid) {
+    // Log and notify if no file ID is found.
+    watchdog('ai_alt', 'No file ID (fid] found in the form.', [], WATCHDOG_WARNING);
+    return [
+      '#type' => 'ajax',
+      '#commands' => [
+        ajax_command_alert(t('Please upload or select an image before generating alt text.')),
+      ],
+    ];
+  }
+
+  // Load the file entity using the file ID.
+  $file = file_load($fid);
+  if (!$file) {
+    watchdog('ai_alt', 'Failed to load file with fid: @fid', ['@fid' => $fid], WATCHDOG_WARNING);
+    // Return an AJAX error so the CKEditor modal receives a response.
+    return [
+      '#type' => 'ajax',
+      '#commands' => [
+        ajax_command_alert(t('Failed to load the image file. Please try again.')),
+      ],
+    ];
+  }
+
+  // Get the file URI and check the file extension.
+  $file_uri = $file->uri;
+  $extension = strtolower(pathinfo($file_uri, PATHINFO_EXTENSION));
+
+  // If the image is an SVG, convert it before sending to AI.
+  if ($extension === 'svg') {
+    $converted_uri = ai_alt_convert_svg_to_png($file_uri);
+    if (!$converted_uri) {
+      watchdog('ai_alt', 'SVG conversion failed.');
+      return [
+        '#type' => 'ajax',
+        '#commands' => [
+          ajax_command_alert(t('Failed to process SVG file for alt text generation.')),
+        ],
+      ];
+    }
+    $file_uri = $converted_uri; // Use the converted PNG
+  }
+
+  try {
+    // Use the AI API to generate alt text for the image.
+    $api = ai_alt_get_api();
+    $generated_alt_text = $api->describeImage(file_create_url($file_uri));
+
+    if (!empty($generated_alt_text)) {
+      // Update the `alt` field's value with the generated alt text.
+      $form['alt']['#value'] = $generated_alt_text;
+
+      // Return an AJAX response to update only the `alt` field wrapper in the DOM.
+      return [
+        '#type' => 'ajax',
+        '#commands' => [
+          ajax_command_replace('#edit-alt-wrapper', backdrop_render($form['alt'])),
+        ],
+      ];
+    }
+    else {
+      backdrop_set_message(t('Failed to generate alt text. Please try again.'), 'error');
+    }
+  }
+  catch (\Exception $e) {
+    // Log the error and notify the user.
+    watchdog('ai_alt', 'Error generating alt text: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
+    return [
+      '#type' => 'ajax',
+      '#commands' => [
+        ajax_command_alert(t('An error occurred while generating alt text.')),
+      ],
+    ];
+  }
+
+  // Fallback if something unexpected happens.
+  return [
+    '#type' => 'ajax',
+    '#commands' => [
+      ajax_command_alert(t('Failed to generate alt text. Please try again.')),
+    ],
+  ];
+}
+
+function ai_alt_generate_alt_text_for_ckeditor_autogenerate() {
+  $fid = $_POST['fid'] ?? NULL;
+  $src = $_POST['src'] ?? NULL;
+
+  if (!$fid && !$src) {
+    watchdog('ai_alt', 'No file ID (fid] or source (src] provided.', [], WATCHDOG_WARNING);
+    backdrop_json_output(['status' => 'error', 'message' => 'No image provided.']);
+    return;
+  }
+
+  // Load the file if fid is provided.
+  if ($fid) {
+    $file = file_load($fid);
+    if (!$file) {
+      watchdog('ai_alt', 'Failed to load file with fid: @fid', ['@fid' => $fid], WATCHDOG_WARNING);
+      backdrop_json_output(['status' => 'error', 'message' => 'Failed to load image file.']);
+      return;
+    }
+
+    $file_uri = $file->uri;
+    $extension = strtolower(pathinfo($file_uri, PATHINFO_EXTENSION));
+
+    // **If the image is an SVG, convert it to PNG before applying an image style**
+    if ($extension === 'svg') {
+      $converted_uri = ai_alt_convert_svg_to_png($file_uri);
+      if (!$converted_uri) {
+        watchdog('ai_alt', 'SVG conversion failed.');
+        backdrop_json_output(['status' => 'error', 'message' => 'Failed to process SVG file.']);
+        return;
+      }
+      $file_uri = $converted_uri; // **Use the converted PNG**
+    }
+
+    // Load image style from settings.
+    $style_name = config_get('ai_alt.settings', 'image_style') ?? 'ai_image_alt_text';
+    $styled_uri = image_style_path($style_name, $file_uri);
+
+    // **Generate the derivative if it doesn't exist**
+    $style = image_style_load($style_name);
+    if ($style && !file_exists($styled_uri)) {
+      watchdog('ai_alt', 'Derivative missing, generating: @styled_uri', ['@styled_uri' => $styled_uri]);
+      image_style_create_derivative($style, $file_uri, $styled_uri);
+      sleep(1); // Allow time for file generation.
+
+      if (!file_exists($styled_uri)) {
+        watchdog('ai_alt', 'Derivative still missing after generation attempt.', []);
+      }
+    }
+
+    // **Use the derivative if it exists, otherwise fallback to the original/converted PNG**
+    $final_image_uri = file_exists($styled_uri) ? $styled_uri : $file_uri;
+  }
+  else {
+    // For images selected from the library via src.
+    $final_image_uri = $src;
+  }
+
+  // **Send the image to AI for alt text generation**
+  try {
+    $api = ai_alt_get_api();
+    $generated_alt_text = $api->describeImage(file_create_url($final_image_uri));
+
+    if (!empty($generated_alt_text)) {
+      backdrop_json_output(['status' => 'success', 'alt_text' => $generated_alt_text]);
+    } else {
+      backdrop_json_output(['status' => 'error', 'message' => 'Failed to generate alt text.']);
+    }
+  }
+  catch (\Exception $e) {
+    watchdog('ai_alt', 'Error generating alt text: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
+    backdrop_json_output(['status' => 'error', 'message' => 'An error occurred while generating alt text.']);
+  }
+}
+
+/**
+ * AJAX callback for manual "Generate Alt Text" button.
+ */
+function ai_alt_generate_alt_text_ajax($form, &$form_state) {
+  $triggering_element = $form_state['triggering_element'];
+
+  // Get the data attributes: file ID, field name, delta
+  $fid = isset($triggering_element['#attributes']['data-file-id'])
+    ? $triggering_element['#attributes']['data-file-id'] : NULL;
+  $field_name = isset($triggering_element['#attributes']['data-field-name'])
+    ? $triggering_element['#attributes']['data-field-name'] : NULL;
+  $delta = isset($triggering_element['#attributes']['data-delta'])
+    ? $triggering_element['#attributes']['data-delta'] : NULL;
+
+  /*watchdog('ai_alt', 'Manual generation triggered. File: @fid, Field: @field_name, Delta: @delta', [
+    '@fid' => $fid,
+    '@field_name' => $field_name,
+    '@delta' => $delta,
+  )];*/
+
+  if (!$field_name || $delta === NULL) {
+    backdrop_set_message(t('Unable to determine field context.'), 'error');
+    return [
+      '#type' => 'ajax',
+      '#commands' => [
+        ajax_command_alert(t('An error occurred while generating alt text. Please try again.')),
+      ],
+    ];
+  }
+
+  // Load file
+  $file = file_load($fid);
+  if (!$file) {
+    backdrop_set_message(t('File not found for the given file ID.'), 'error');
+    return [
+      '#type' => 'ajax',
+      '#commands' => [
+        ajax_command_alert(t('File not found for the given file ID.')),
+      ],
+    ];
+  }
+
+  // Possibly generate an image derivative
+  $style_name = config_get('ai_alt.settings', 'image_style') ?? 'ai_image_alt_text';
+  $styled_uri = image_style_path($style_name, $file->uri);
+  $style = image_style_load($style_name);
+  if ($style && !file_exists($styled_uri)) {
+    image_style_create_derivative($style, $file->uri, $styled_uri);
+    // ...
+  }
+  $file_uri = file_exists($styled_uri) ? $styled_uri : $file->uri;
+
+  // Call your AI function to get alt text
+  $api = ai_alt_get_api();
+  $generated_alt_text = $api->describeImage(file_create_url($file_uri));
+
+  if (!$generated_alt_text) {
+    backdrop_set_message(t('Failed to generate alt text. Please try again.'), 'error');
+    return [
+      '#type' => 'ajax',
+      '#commands' => [
+        ajax_command_alert(t('An error occurred while generating alt text. Please try again.')),
+      ],
+    ];
+  }
+
+  watchdog('ai_alt', 'Generated alt text: @txt', ['@txt' => $generated_alt_text]);
+
+  // Build the CSS selector for the correct alt field: "field_myimage[und][0][alt]" for example
+  $selector = "input[name='{$field_name}[und][{$delta}][alt]']";
+
+  // Return an AJAX command to set that input’s value
+  return [
+    '#type' => 'ajax',
+    '#commands' => [
+      ajax_command_invoke($selector, 'val', [$generated_alt_text]),
+    ],
+  ];
+}
+
+/**
+ * Handles AJAX requests to generate alt text.
+ */
+function ai_alt_generate_alt_text_callback() {
+  $fid = $_POST['fid'] ?? NULL;
+  $field_name = $_POST['field_name'] ?? NULL;
+  $delta = $_POST['delta'] ?? NULL;
+
+  if (!$fid || !$field_name || $delta === NULL) {
+    watchdog('ai_alt', 'Missing parameters in AJAX request.');
+    return ['status' => 'error', 'message' => 'Invalid request.'];
+  }
+
+  // Load the file
+  $file = file_load($fid);
+  if (!$file) {
+    watchdog('ai_alt', 'File not found for fid: @fid', ['@fid' => $fid]);
+    return ['status' => 'error', 'message' => 'File not found.'];
+  }
+
+  // Get the file URI
+  $file_uri = $file->uri;
+
+  // Identify file type
+  $extension = strtolower(pathinfo($file_uri, PATHINFO_EXTENSION));
+  watchdog('ai_alt', 'Detected file extension: @extension', ['@extension' => $extension]);
+
+  // If the image is an SVG, convert it before sending to AI
+  if ($extension === 'svg') {
+    $converted_uri = ai_alt_convert_svg_to_png($file_uri);
+    if (!$converted_uri) {
+      watchdog('ai_alt', 'Failed to convert SVG to PNG.');
+      return ['status' => 'error', 'message' => 'Failed to process SVG file.'];
+    }
+    $image_uri_to_send = $converted_uri;
+  } else {
+    $image_uri_to_send = $file_uri;
+  }
+
+  // Send image to AI for alt text generation
+  $api = ai_alt_get_api();
+  $generated_alt_text = $api->describeImage(file_create_url($image_uri_to_send));
+
+  if (!$generated_alt_text) {
+    return ['status' => 'error', 'message' => 'Alt text generation failed.'];
+  }
+
+  return [
+    'status' => 'success',
+    'alt_text' => $generated_alt_text,
+    'wrapper_id' => "ai-alt-field-wrapper-{$field_name}-{$delta}",
+  ];
+}
+function ai_alt_convert_svg_to_png($svg_uri) {
+  // Check if the file is in a local storage scheme (public:// or private://)
+  if (file_stream_wrapper_valid_scheme(file_uri_scheme($svg_uri))) {
+    $svg_real_path = backdrop_realpath($svg_uri);
+  } else {
+    $svg_real_path = $svg_uri; // Assume direct file path (like S3 URL)
+  }
+
+  // Ensure the resolved path exists for local files
+  if (!$svg_real_path || (!file_exists($svg_real_path) && file_uri_scheme($svg_uri) !== 's3')) {
+    watchdog('ai_alt', 'Could not resolve real path or file does not exist: @uri', ['@uri' => $svg_uri]);
+    return FALSE;
+  }
+
+  // Define the output file path (same directory as SVG)
+  $output_uri = str_replace('.svg', '.png', $svg_real_path);
+
+  // Ensure ImageMagick is available
+  if (!shell_exec('which convert')) {
+    watchdog('ai_alt', 'ImageMagick `convert` command not found.');
+    return FALSE;
+  }
+
+  // Convert the SVG to PNG
+  $command = escapeshellcmd("convert " . escapeshellarg($svg_real_path) . " PNG32:" . escapeshellarg($output_uri));
+  watchdog('ai_alt', 'Running command: @command', ['@command' => $command]);
+  shell_exec($command);
+
+  // Ensure the PNG file was created
+  if (!file_exists($output_uri)) {
+    watchdog('ai_alt', 'Failed to convert SVG to PNG: @uri', ['@uri' => $output_uri]);
+    return FALSE;
+  }
+
+  watchdog('ai_alt', 'Successfully converted SVG to PNG: @uri', ['@uri' => $output_uri]);
+  return $output_uri;
+}
+
+/**
+ * Get an AI API instance.
+ *
+ * @return AIApi
+ *   The AI API instance.
+ */
+function ai_alt_get_api() {
+  static $api;
+  if ($api) {
+    return $api;
+  }
+
+  // Get configured model from this module's settings.
+  $configured_model = config_get('ai_alt.settings', 'model');
+
+  // Use the centralized helper to get the correct API for this model.
+  $api = ai_get_api_for_model($configured_model);
+
+  if (!$api) {
+    throw new Exception(t('No API provider is configured for model @model.', ['@model' => $configured_model]));
+  }
+
+  return $api;
+}
+
+/**
+ * Shared helper to generate alt text for a file entity.
+ */
+function ai_alt_generate_from_file($file) {
+  try {
+    $file_uri = $file->uri;
+    $extension = strtolower(pathinfo($file_uri, PATHINFO_EXTENSION));
+
+    // If the image is an SVG, convert it before sending to AI.
+    if ($extension === 'svg') {
+      $converted_uri = ai_alt_convert_svg_to_png($file_uri);
+      if ($converted_uri) {
+        $file_uri = $converted_uri;
+      }
+    }
+
+    $style_name = config_get('ai_alt.settings', 'image_style') ?: 'ai_image_alt_text';
+    $styled_uri = image_style_path($style_name, $file_uri);
+    $style = image_style_load($style_name);
+    if ($style && !file_exists($styled_uri)) {
+      image_style_create_derivative($style, $file_uri, $styled_uri);
+    }
+    $image_url = file_create_url(file_exists($styled_uri) ? $styled_uri : $file_uri);
+    $api = ai_alt_get_api();
+    $alt_text = $api->describeImage($image_url);
+    return !empty($alt_text) ? $alt_text : FALSE;
+  }
+  catch (\Exception $e) {
+    watchdog('ai_alt', 'Failed to generate alt text for file @fid: @error', [
+      '@fid' => isset($file->fid) ? $file->fid : 'new',
+      '@error' => $e->getMessage(),
+    ], WATCHDOG_ERROR);
+    return FALSE;
+  }
+}
+
+/**
+ * Implements hook_file_presave().
+ *
+ * Renames new image files before the record is written, so no second
+ * file_save() is needed and file_metadata duplicates cannot occur.
+ */
+function ai_alt_file_presave($file) {
+  if (!$file->isNew()) {
+    return;
+  }
+
+  if (empty($file->filemime) || strpos($file->filemime, 'image/') !== 0) {
+    return;
+  }
+
+  if (!config_get('ai_alt.settings', 'rename_filenames')) {
+    return;
+  }
+
+  $new_filename = ai_alt_generate_short_filename_for_file($file);
+  if (empty($new_filename)) {
+    watchdog('ai_alt', 'Could not generate filename for new image file.', [], WATCHDOG_WARNING);
+    return;
+  }
+
+  $current_filename = backdrop_basename($file->uri);
+  if ($current_filename === $new_filename) {
+    return;
+  }
+
+  $destination = file_stream_wrapper_uri_normalize(backdrop_dirname($file->uri) . '/' . $new_filename);
+  $new_uri = file_unmanaged_move($file->uri, $destination, FILE_EXISTS_RENAME);
+  if ($new_uri) {
+    $file->uri = $new_uri;
+    $file->filename = backdrop_basename($new_uri);
+  }
+}
+
+/**
+ * Build a file URL for an image file, using derivative if configured.
+ */
+function ai_alt_get_file_image_url($file) {
+  $file_uri = $file->uri;
+  $extension = strtolower(pathinfo($file_uri, PATHINFO_EXTENSION));
+
+  if ($extension === 'svg') {
+    $converted_uri = ai_alt_convert_svg_to_png($file_uri);
+    if ($converted_uri) {
+      $file_uri = $converted_uri;
+    }
+  }
+
+  $style_name = config_get('ai_alt.settings', 'image_style') ?: 'ai_image_alt_text';
+  $styled_uri = image_style_path($style_name, $file_uri);
+  $style = image_style_load($style_name);
+  if ($style && !file_exists($styled_uri)) {
+    image_style_create_derivative($style, $file_uri, $styled_uri);
+  }
+
+  return file_create_url(file_exists($styled_uri) ? $styled_uri : $file_uri);
+}
+
+/**
+ * Get a base64 data URL for an image file, resized via image style if possible.
+ *
+ * Creates the image style derivative from disk (no HTTP request needed), then
+ * base64-encodes it. Falls back to the original file if the derivative fails.
+ * Returns FALSE if the file cannot be read.
+ */
+/**
+ * Normalize an AI response into a safe filename stem.
+ */
+function ai_alt_build_filename_from_label($label, $extension = '') {
+  $label = strtolower(trim((string) $label));
+  $label = preg_replace('/[^a-z0-9\-_ ]+/', '', $label);
+  $label = preg_replace('/\s+/', '-', $label);
+  $label = system_transliterate_machine_name($label, [
+    'replace' => '-',
+    'maxlength' => 96,
+  ]);
+  $parts = array_values(array_filter(explode('-', $label), 'strlen'));
+  $parts = array_slice($parts, 0, 6);
+  $filename = trim(implode('-', $parts), '-');
+
+  if ($filename === '') {
+    $filename = 'image';
+  }
+
+  if (!empty($extension)) {
+    return $filename . '.' . strtolower($extension);
+  }
+
+  return $filename;
+}
+
+/**
+ * Generate short filename from image content.
+ *
+ * Returns new filename or FALSE.
+ */
+function ai_alt_generate_short_filename_for_file($file) {
+  if (empty($file) || empty($file->uri)) {
+    return FALSE;
+  }
+
+  $model = config_get('ai_alt.settings', 'model');
+  if (empty($model)) {
+    return FALSE;
+  }
+
+  $image_url = ai_alt_get_file_image_url($file);
+  $prompt = 'Write a short filename for this image. Return 3 to 6 lowercase words separated by hyphens. No extension. No quotes. No punctuation. Be descriptive but concise.';
+  $messages = [
+    [
+      'role' => 'user',
+      'content' => [
+        ['type' => 'text', 'text' => $prompt],
+        ['type' => 'image_url', 'image_url' => ['url' => $image_url, 'detaifal' => 'high']],
+      ],
+    ],
+  ];
+
+  try {
+    $label = ai_chat($model, $messages, 0.2, 80, FALSE, [
+      'operation' => 'ai_alt_generate_short_filename',
+      'fid' => $file->fid,
+    ]);
+  }
+  catch (\Exception $e) {
+    watchdog('ai_alt', 'Failed to generate filename for file @fid: @error', [
+      '@fid' => $file->fid,
+      '@error' => $e->getMessage(),
+    ], WATCHDOG_ERROR);
+    return FALSE;
+  }
+
+  if (empty($label)) {
+    return FALSE;
+  }
+
+  $extension = pathinfo($file->filename, PATHINFO_EXTENSION);
+  return ai_alt_build_filename_from_label($label, $extension);
+}
+
+/**
+ * Move file object to new filename in same directory.
+ */
+function ai_alt_move_file_to_filename($file, $new_filename) {
+  if (empty($file) || empty($file->uri) || empty($new_filename)) {
+    return FALSE;
+  }
+
+  $old_uri = $file->uri;
+  $current_filename = backdrop_basename($file->uri);
+  if ($current_filename === $new_filename) {
+    return FALSE;
+  }
+
+  $destination = file_stream_wrapper_uri_normalize(backdrop_dirname($file->uri) . '/' . $new_filename);
+  $moved_file = file_move($file, $destination, FILE_EXISTS_RENAME);
+  if (!$moved_file) {
+    return FALSE;
+  }
+
+  ai_alt_rewrite_referenced_file_urls($moved_file, $old_uri, $moved_file->uri);
+  ai_alt_create_file_redirect($old_uri, $moved_file->uri);
+
+  return $moved_file;
+}
+
+/**
+ * Check whether file URI uses a local stream wrapper.
+ */
+function ai_alt_file_uses_local_stream_wrapper($uri) {
+  $scheme = file_uri_scheme($uri);
+  if (!$scheme) {
+    return FALSE;
+  }
+
+  $local_wrappers = file_get_stream_wrappers(STREAM_WRAPPERS_LOCAL);
+  return !empty($local_wrappers[$scheme]);
+}
+
+/**
+ * Rewrite exact file URLs in referencing entities after a file move.
+ *
+ * Returns number of entities saved.
+ */
+function ai_alt_rewrite_referenced_file_urls($file, $old_uri, $new_uri) {
+  $old_url = file_create_url($old_uri);
+  $new_url = file_create_url($new_uri);
+  if ($old_url === $new_url) {
+    return 0;
+  }
+
+  $refs = ai_alt_collect_file_usage_refs($file);
+  if (empty($refs)) {
+    return 0;
+  }
+
+  $visited = [];
+  $saved = 0;
+
+  foreach ($refs as $ref) {
+    if (!ai_alt_can_load_entity_type($ref['type'])) {
+      continue;
+    }
+
+    $entities = entity_load($ref['type'], [$ref['id']]);
+    if (empty($entities[$ref['id']])) {
+      continue;
+    }
+
+    $entity = $entities[$ref['id']];
+    if (ai_alt_rewrite_entity_file_urls($ref['type'], $entity, $old_url, $new_url, $visited)) {
+      entity_save($ref['type'], $entity);
+      $saved++;
+    }
+  }
+
+  return $saved;
+}
+
+/**
+ * Check whether an entity type can be loaded with entity_load().
+ */
+function ai_alt_can_load_entity_type($entity_type) {
+  $info = entity_get_info($entity_type);
+  return !empty($info);
+}
+
+/**
+ * Collect entity references for a file from file usage.
+ */
+function ai_alt_collect_file_usage_refs($file) {
+  $usage = file_usage_list($file);
+  $refs = [];
+
+  foreach ($usage as $module => $types) {
+    foreach ($types as $type => $ids) {
+      foreach ($ids as $id => $count) {
+        $refs[] = [
+          'module' => $module,
+          'type' => $type,
+          'id' => (int) $id,
+        ];
+      }
+    }
+  }
+
+  usort($refs, function ($a, $b) {
+    return strcmp($a['module'] . ':' . $a['type'] . ':' . $a['id'], $b['module'] . ':' . $b['type'] . ':' . $b['id']);
+  });
+
+  return $refs;
+}
+
+/**
+ * Recursively rewrite exact file URLs within an entity tree.
+ */
+function ai_alt_rewrite_entity_file_urls($entity_type, &$entity, $old_url, $new_url, array &$visited) {
+  list($entity_id) = entity_extract_ids($entity_type, $entity);
+  $visit_key = $entity_type . ':' . (string) $entity_id;
+  if (isset($visited[$visit_key])) {
+    return FALSE;
+  }
+  $visited[$visit_key] = TRUE;
+
+  $entity_info = entity_get_info($entity_type);
+  if (empty($entity_info)) {
+    return FALSE;
+  }
+
+  $bundle_key = !empty($entity_info['entity keys']['bundle']) ? $entity_info['entity keys']['bundle'] : NULL;
+  $bundle = $bundle_key && isset($entity->{$bundle_key}) ? $entity->{$bundle_key} : $entity_type;
+  $instances = field_info_instances($entity_type, $bundle);
+  $lang = LANGUAGE_NONE;
+  $changed = FALSE;
+
+  foreach ($instances as $field_name => $instance) {
+    $field_info = field_info_field($field_name);
+    if (empty($entity->{$field_name}[$lang])) {
+      continue;
+    }
+
+    switch ($field_info['type']) {
+      case 'text':
+      case 'text_long':
+      case 'text_with_summary':
+        foreach ($entity->{$field_name}[$lang] as $delta => $item) {
+          $item_changed = FALSE;
+          if (!empty($item['value']) && strpos($item['value'], $old_url) !== FALSE) {
+            $entity->{$field_name}[$lang][$delta]['value'] = str_replace($old_url, $new_url, $item['value']);
+            $item_changed = TRUE;
+          }
+          if (isset($item['summary']) && !empty($item['summary']) && strpos($item['summary'], $old_url) !== FALSE) {
+            $entity->{$field_name}[$lang][$delta]['summary'] = str_replace($old_url, $new_url, $item['summary']);
+            $item_changed = TRUE;
+          }
+          $changed = $changed || $item_changed;
+        }
+        break;
+
+      case 'paragraphs':
+        foreach ($entity->{$field_name}[$lang] as $item) {
+          if (empty($item['value'])) {
+            continue;
+          }
+          $children = entity_load('paragraphs_item', [$item['value']]);
+          if (empty($children[$item['value']])) {
+            continue;
+          }
+          ai_alt_rewrite_entity_file_urls('paragraphs_item', $children[$item['value']], $old_url, $new_url, $visited);
+        }
+        break;
+    }
+  }
+
+  if ($changed) {
+    entity_save($entity_type, $entity);
+  }
+
+  return $changed;
+}
+
+/**
+ * Create a redirect from old file URL to new file URL for local files.
+ */
+function ai_alt_create_file_redirect($old_uri, $new_uri) {
+  if (!module_exists('redirect')) {
+    return FALSE;
+  }
+
+  module_load_include('module', 'redirect');
+  $old_url = file_create_url($old_uri);
+  $new_url = file_create_url($new_uri);
+  $old_parsed = redirect_parse_url($old_url);
+  $new_parsed = redirect_parse_url($new_url);
+  if (empty($old_parsed['url']) || empty($new_parsed['url']) || $old_parsed['url'] === $new_parsed['url']) {
+    return FALSE;
+  }
+
+  $redirect = new Redirect([
+    'source' => $old_parsed['url'],
+    'redirect' => $new_parsed['url'],
+    'status_code' => 301,
+  ]);
+  try {
+    redirect_save($redirect);
+  }
+  catch (\Exception $e) {
+    watchdog('ai_alt', 'Failed to create redirect from @old to @new: @error', [
+      '@old' => $old_parsed['url'],
+      '@new' => $new_parsed['url'],
+      '@error' => $e->getMessage(),
+    ], WATCHDOG_WARNING);
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter() for file_add_form.
+ */
+function ai_alt_form_file_add_form_alter(&$form, &$form_state) {
+  if (isset($form['#step']) && $form['#step'] == 4) {
+    _ai_alt_attach_to_file_form($form, $form_state);
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter() for file_manage_form.
+ */
+function ai_alt_form_file_manage_form_alter(&$form, &$form_state) {
+  _ai_alt_attach_to_file_form($form, $form_state);
+}
+
+/**
+ * Helper to attach AI generation button to file forms.
+ */
+function _ai_alt_attach_to_file_form(&$form, &$form_state) {
+  if (!module_exists('image_entity_alt')) {
+    return;
+  }
+
+  $autogenerate = config_get('ai_alt.settings', 'autogenerate');
+  $hide_button = config_get('ai_alt.settings', 'hide_button');
+
+  // Only for image file types.
+  $file = NULL;
+  if (isset($form_state['file'])) {
+    $file = $form_state['file'];
+  }
+  elseif (isset($form_state['storage']['upload'])) {
+    $file = file_load($form_state['storage']['upload']);
+  }
+
+  if (!$file || strpos($file->filemime, 'image/') !== 0) {
+    return;
+  }
+
+  $alt_field = image_entity_alt_field_name();
+  if (!isset($form[$alt_field])) {
+    return;
+  }
+
+  $lang = isset($form[$alt_field]['#language']) ? $form[$alt_field]['#language'] : LANGUAGE_NONE;
+  if (isset($form[$alt_field][$lang][0]['value'])) {
+    $wrapper_id = 'ai-alt-file-wrapper';
+
+    // Add wrapper to the textfield.
+    $form[$alt_field][$lang][0]['value']['#prefix'] = '<div id="' . $wrapper_id . '">';
+    $form[$alt_field][$lang][0]['value']['#suffix'] = '</div>';
+
+    // Add the button.
+    $form[$alt_field][$lang][0]['generate_button'] = [
+      '#type' => 'button',
+      '#value' => t('AI Generate Alt Text'),
+      '#ajax' => [
+        'callback' => 'ai_alt_file_form_ajax_callback',
+        'wrapper' => $wrapper_id,
+      ],
+      '#weight' => 10,
+      '#attributes' => [
+        'class' => ['ai-alt-file-generate-button'],
+      ],
+    ];
+
+    // Hide the button via CSS if hide_button is set (it will still be triggered via JS if autogenerate is true).
+    if ($hide_button && $autogenerate) {
+      $form[$alt_field][$lang][0]['generate_button']['#attributes']['style'] = 'display: none;';
+    }
+
+    // Ensure the button doesn't trigger form submission.
+    $form[$alt_field][$lang][0]['generate_button']['#limit_validation_errors'] = [];
+
+    // Attach settings and JS for autogeneration.
+    $form['#attached']['js'][] = [
+      'data' => [
+        'aiAltFile' => [
+          'autogenerate' => (bool) $autogenerate,
+        ],
+      ],
+      'type' => 'setting',
+    ];
+    $form['#attached']['js'][] = backdrop_get_path('module', 'ai_alt') . '/js/ai_alt_file_form.js';
+  }
+}
+
+/**
+ * AJAX callback for file form alt text generation.
+ */
+function ai_alt_file_form_ajax_callback($form, &$form_state) {
+  $alt_field = image_entity_alt_field_name();
+  $lang = isset($form[$alt_field]['#language']) ? $form[$alt_field]['#language'] : LANGUAGE_NONE;
+
+  $fid = NULL;
+  if (isset($form_state['file']->fid)) {
+    $fid = $form_state['file']->fid;
+  }
+  elseif (isset($form_state['storage']['upload'])) {
+    $fid = $form_state['storage']['upload'];
+  }
+
+  if ($fid) {
+    $file = file_load($fid);
+    if ($file) {
+      $alt_text = ai_alt_generate_from_file($file);
+      if ($alt_text) {
+        $form[$alt_field][$lang][0]['value']['#value'] = $alt_text;
+      }
+    }
+  }
+
+  return $form[$alt_field][$lang][0]['value'];
+}

@@ -1,0 +1,866 @@
+<?php
+
+/**
+ * @file
+ * Webform read tools for the AI Tools registry.
+ */
+
+/**
+ * Implements hook_ai_tools().
+ */
+function ai_webform_tools_ai_tools() {
+  return [
+    'list_webforms' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'list_webforms',
+          'description' => 'List webform nodes on the site that the current user can update.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'limit' => [
+                'type' => 'integer',
+                'description' => 'Maximum number of webforms to return.',
+              ],
+            ],
+            'required' => [],
+          ],
+        ],
+      ],
+      'execute' => 'ai_webform_tools_execute_list_webforms',
+      'module' => 'ai_webform_tools',
+      'category' => 'webform',
+      'operation' => 'read',
+      'destructive' => FALSE,
+      'requirements' => 'ai_webform_tools_tool_requirements',
+    ],
+    'get_webform' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'get_webform',
+          'description' => 'Load a webform node with its settings, components, emails, and conditionals.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'node_id' => [
+                'type' => 'integer',
+                'description' => 'The node ID of the webform.',
+              ],
+            ],
+            'required' => ['node_id'],
+          ],
+        ],
+      ],
+      'execute' => 'ai_webform_tools_execute_get_webform',
+      'module' => 'ai_webform_tools',
+      'category' => 'webform',
+      'operation' => 'read',
+      'destructive' => FALSE,
+      'requirements' => 'ai_webform_tools_tool_requirements',
+    ],
+    'list_webform_elements' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'list_webform_elements',
+          'description' => 'List the webform element types available on this site.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'include_disabled' => [
+                'type' => 'boolean',
+                'description' => 'Whether to include disabled element types.',
+              ],
+            ],
+            'required' => [],
+          ],
+        ],
+      ],
+      'execute' => 'ai_webform_tools_execute_list_webform_elements',
+      'module' => 'ai_webform_tools',
+      'category' => 'webform',
+      'operation' => 'read',
+      'destructive' => FALSE,
+      'requirements' => 'ai_webform_tools_tool_requirements',
+    ],
+    'get_webform_settings' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'get_webform_settings',
+          'description' => 'Load the settings for a webform node, including submission and email configuration.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'node_id' => [
+                'type' => 'integer',
+                'description' => 'The node ID of the webform.',
+              ],
+            ],
+            'required' => ['node_id'],
+          ],
+        ],
+      ],
+      'execute' => 'ai_webform_tools_execute_get_webform_settings',
+      'module' => 'ai_webform_tools',
+      'category' => 'webform',
+      'operation' => 'read',
+      'destructive' => FALSE,
+      'requirements' => 'ai_webform_tools_tool_requirements',
+    ],
+    'list_webform_submissions' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'list_webform_submissions',
+          'description' => 'List submissions for a webform node.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'node_id' => [
+                'type' => 'integer',
+                'description' => 'The node ID of the webform.',
+              ],
+              'limit' => [
+                'type' => 'integer',
+                'description' => 'Maximum number of submissions to return.',
+              ],
+              'uid' => [
+                'type' => 'integer',
+                'description' => 'Optional user ID filter.',
+              ],
+              'is_draft' => [
+                'type' => 'boolean',
+                'description' => 'Optional draft-only filter.',
+              ],
+            ],
+            'required' => ['node_id'],
+          ],
+        ],
+      ],
+      'execute' => 'ai_webform_tools_execute_list_webform_submissions',
+      'module' => 'ai_webform_tools',
+      'category' => 'webform',
+      'operation' => 'read',
+      'destructive' => FALSE,
+      'requirements' => 'ai_webform_tools_tool_requirements',
+    ],
+    'create_webform' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'create_webform',
+          'description' => 'Create a new webform node. Returns the nid of the created webform.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'title' => [
+                'type' => 'string',
+                'description' => 'Title of the webform node.',
+              ],
+              'status' => [
+                'type' => 'boolean',
+                'description' => 'Whether the node is published. Defaults to true.',
+              ],
+              'confirmation' => [
+                'type' => 'string',
+                'description' => 'Confirmation message shown after submission.',
+              ],
+              'submit_text' => [
+                'type' => 'string',
+                'description' => 'Label for the submit button. Defaults to "Submit".',
+              ],
+            ],
+            'required' => ['title'],
+          ],
+        ],
+      ],
+      'execute' => 'ai_webform_tools_execute_create_webform',
+      'module' => 'ai_webform_tools',
+      'category' => 'webform',
+      'operation' => 'write',
+      'destructive' => FALSE,
+      'requirements' => 'ai_webform_tools_tool_requirements',
+    ],
+    'add_webform_component' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'add_webform_component',
+          'description' => 'Add a component (field) to an existing webform. Call list_webform_elements first to see available component types.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'node_id' => [
+                'type' => 'integer',
+                'description' => 'The nid of the webform.',
+              ],
+              'name' => [
+                'type' => 'string',
+                'description' => 'Human-readable label for the component.',
+              ],
+              'type' => [
+                'type' => 'string',
+                'description' => 'Component type machine name (e.g. textfield, textarea, email, select, radios, checkboxes, date, time, file, hidden, markup, pagebreak).',
+              ],
+              'required' => [
+                'type' => 'boolean',
+                'description' => 'Whether the field is required. Defaults to false.',
+              ],
+              'value' => [
+                'type' => 'string',
+                'description' => 'Default value for the component.',
+              ],
+              'description' => [
+                'type' => 'string',
+                'description' => 'Help text shown below the field.',
+              ],
+              'options' => [
+                'type' => 'string',
+                'description' => 'For select/radios/checkboxes: newline-separated key|label pairs, e.g. "yes|Yes\nno|No". For simple lists, one label per line.',
+              ],
+              'pid' => [
+                'type' => 'integer',
+                'description' => 'Parent component ID for nesting inside a fieldset. Omit for top-level.',
+              ],
+              'weight' => [
+                'type' => 'integer',
+                'description' => 'Sort weight. Lower renders first.',
+              ],
+            ],
+            'required' => ['node_id', 'name', 'type'],
+          ],
+        ],
+      ],
+      'execute' => 'ai_webform_tools_execute_add_webform_component',
+      'module' => 'ai_webform_tools',
+      'category' => 'webform',
+      'operation' => 'write',
+      'destructive' => FALSE,
+      'requirements' => 'ai_webform_tools_tool_requirements',
+    ],
+    'edit_webform_component' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'edit_webform_component',
+          'description' => 'Edit an existing webform component by its cid. Only supplied fields are updated.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'node_id' => [
+                'type' => 'integer',
+                'description' => 'The nid of the webform.',
+              ],
+              'cid' => [
+                'type' => 'integer',
+                'description' => 'Component ID to edit.',
+              ],
+              'name' => [
+                'type' => 'string',
+                'description' => 'New label.',
+              ],
+              'required' => [
+                'type' => 'boolean',
+                'description' => 'Whether the field is required.',
+              ],
+              'value' => [
+                'type' => 'string',
+                'description' => 'New default value.',
+              ],
+              'description' => [
+                'type' => 'string',
+                'description' => 'New help text.',
+              ],
+              'options' => [
+                'type' => 'string',
+                'description' => 'New options for select/radios/checkboxes (newline-separated key|label pairs).',
+              ],
+              'weight' => [
+                'type' => 'integer',
+                'description' => 'New sort weight.',
+              ],
+            ],
+            'required' => ['node_id', 'cid'],
+          ],
+        ],
+      ],
+      'execute' => 'ai_webform_tools_execute_edit_webform_component',
+      'module' => 'ai_webform_tools',
+      'category' => 'webform',
+      'operation' => 'write',
+      'destructive' => FALSE,
+      'requirements' => 'ai_webform_tools_tool_requirements',
+    ],
+    'set_webform_settings' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'set_webform_settings',
+          'description' => 'Update settings on an existing webform node. Only supplied fields are changed.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'node_id' => [
+                'type' => 'integer',
+                'description' => 'The nid of the webform.',
+              ],
+              'title' => [
+                'type' => 'string',
+                'description' => 'New node title.',
+              ],
+              'status' => [
+                'type' => 'boolean',
+                'description' => 'Published status of the node.',
+              ],
+              'confirmation' => [
+                'type' => 'string',
+                'description' => 'Confirmation message shown after submission.',
+              ],
+              'submit_text' => [
+                'type' => 'string',
+                'description' => 'Submit button label.',
+              ],
+              'submit_limit' => [
+                'type' => 'integer',
+                'description' => 'Max submissions per user (-1 = unlimited).',
+              ],
+              'total_submit_limit' => [
+                'type' => 'integer',
+                'description' => 'Max total submissions (-1 = unlimited).',
+              ],
+              'allow_draft' => [
+                'type' => 'boolean',
+                'description' => 'Whether users can save drafts.',
+              ],
+              'redirect_url' => [
+                'type' => 'string',
+                'description' => 'URL to redirect to after submission.',
+              ],
+            ],
+            'required' => ['node_id'],
+          ],
+        ],
+      ],
+      'execute' => 'ai_webform_tools_execute_set_webform_settings',
+      'module' => 'ai_webform_tools',
+      'category' => 'webform',
+      'operation' => 'write',
+      'destructive' => FALSE,
+      'requirements' => 'ai_webform_tools_tool_requirements',
+    ],
+  ];
+}
+
+/**
+ * Requirements callback for webform tools.
+ */
+function ai_webform_tools_tool_requirements() {
+  return module_exists('webform');
+}
+
+/**
+ * Creates a new webform node.
+ */
+function ai_webform_tools_execute_create_webform(array $args) {
+  $title = trim($args['title'] ?? '');
+  if ($title === '') {
+    return ['error' => 'title is required.'];
+  }
+  if (!node_access('create', 'webform')) {
+    return ['error' => 'Access denied: you do not have permission to create webform content.'];
+  }
+
+  $node = new Node([
+    'type'     => 'webform',
+    'title'    => $title,
+    'status'   => isset($args['status']) ? (int) (bool) $args['status'] : 1,
+    'uid'      => isset($GLOBALS['user']->uid) ? (int) $GLOBALS['user']->uid : 1,
+    'language' => LANGUAGE_NONE,
+  ]);
+  node_object_prepare($node);
+
+  $node->webform['confirmation'] = $args['confirmation'] ?? 'Thank you for your submission.';
+  $node->webform['submit_text'] = $args['submit_text'] ?? 'Submit';
+  $node->webform['status'] = 1;
+
+  node_save($node);
+
+  if (empty($node->nid)) {
+    return ['error' => 'Node save failed.'];
+  }
+
+  return [
+    'status' => 'created',
+    'nid' => (int) $node->nid,
+    'title' => $node->title,
+    'url' => url('node/' . $node->nid),
+    'edit_url' => url('node/' . $node->nid . '/webform'),
+  ];
+}
+
+/**
+ * Adds a component to an existing webform.
+ */
+function ai_webform_tools_execute_add_webform_component(array $args) {
+  module_load_include('inc', 'webform', 'includes/webform.components');
+  $node = ai_webform_tools_load_node($args);
+  if (!$node) {
+    return ['error' => 'Webform not found or access denied.'];
+  }
+
+  $type = trim($args['type'] ?? '');
+  $name = trim($args['name'] ?? '');
+  if ($type === '' || $name === '') {
+    return ['error' => 'name and type are required.'];
+  }
+
+  $components = webform_components();
+  if (!isset($components[$type])) {
+    return ['error' => "Unknown component type '$type'. Call list_webform_elements to see available types."];
+  }
+
+  $form_key = preg_replace('/[^a-z0-9_]/', '_', strtolower($name));
+  $form_key = trim($form_key, '_');
+  if ($form_key === '') {
+    $form_key = 'field_' . (count($node->webform['components']) + 1);
+  }
+  // Ensure unique form_key within this webform.
+  $existing_keys = array_column($node->webform['components'], 'form_key');
+  $base_key = $form_key;
+  $i = 1;
+  while (in_array($form_key, $existing_keys, TRUE)) {
+    $form_key = $base_key . '_' . $i++;
+  }
+
+  $component = [
+    'nid'      => (int) $node->nid,
+    'pid'      => isset($args['pid']) ? (int) $args['pid'] : 0,
+    'name'     => $name,
+    'form_key' => $form_key,
+    'type'     => $type,
+    'value'    => $args['value'] ?? '',
+    'required' => !empty($args['required']) ? 1 : 0,
+    'weight'   => isset($args['weight']) ? (int) $args['weight'] : count($node->webform['components']),
+    'extra'    => [],
+  ];
+
+  if (!empty($args['description'])) {
+    $component['extra']['description'] = $args['description'];
+  }
+  if (!empty($args['options']) && in_array($type, ['select', 'radios', 'checkboxes'], TRUE)) {
+    $component['extra']['items'] = $args['options'];
+  }
+
+  webform_component_insert($component);
+  $node = node_load($node->nid, NULL, TRUE);
+  $saved = NULL;
+  foreach ($node->webform['components'] as $c) {
+    if ($c['form_key'] === $form_key) {
+      $saved = $c;
+      break;
+    }
+  }
+
+  return [
+    'status'     => 'created',
+    'nid'        => (int) $node->nid,
+    'cid'        => $saved ? (int) $saved['cid'] : NULL,
+    'form_key'   => $form_key,
+    'name'       => $name,
+    'type'       => $type,
+    'components' => array_map('ai_webform_tools_normalize_component', array_values($node->webform['components'])),
+  ];
+}
+
+/**
+ * Edits an existing webform component.
+ */
+function ai_webform_tools_execute_edit_webform_component(array $args) {
+  module_load_include('inc', 'webform', 'includes/webform.components');
+  $node = ai_webform_tools_load_node($args);
+  if (!$node) {
+    return ['error' => 'Webform not found or access denied.'];
+  }
+
+  $cid = isset($args['cid']) ? (int) $args['cid'] : 0;
+  if (!$cid || empty($node->webform['components'][$cid])) {
+    return ['error' => "Component cid $cid not found on this webform."];
+  }
+
+  $component = $node->webform['components'][$cid];
+
+  if (isset($args['name']))     { $component['name']     = $args['name']; }
+  if (isset($args['required'])) { $component['required'] = !empty($args['required']) ? 1 : 0; }
+  if (isset($args['value']))    { $component['value']    = $args['value']; }
+  if (isset($args['weight']))   { $component['weight']   = (int) $args['weight']; }
+  if (isset($args['description'])) {
+    $component['extra']['description'] = $args['description'];
+  }
+  if (isset($args['options']) && in_array($component['type'], ['select', 'radios', 'checkboxes'], TRUE)) {
+    $component['extra']['items'] = $args['options'];
+  }
+
+  webform_component_update($component);
+  $node = node_load($node->nid, NULL, TRUE);
+
+  return [
+    'status'    => 'updated',
+    'nid'       => (int) $node->nid,
+    'component' => ai_webform_tools_normalize_component($node->webform['components'][$cid] ?? $component),
+  ];
+}
+
+/**
+ * Updates settings on an existing webform node.
+ */
+function ai_webform_tools_execute_set_webform_settings(array $args) {
+  $node = ai_webform_tools_load_node($args);
+  if (!$node) {
+    return ['error' => 'Webform not found or access denied.'];
+  }
+
+  $changed = FALSE;
+  if (isset($args['title'])) {
+    $node->title = trim($args['title']);
+    $changed = TRUE;
+  }
+  if (isset($args['status'])) {
+    $node->status = (int) (bool) $args['status'];
+    $changed = TRUE;
+  }
+
+  $webform_keys = ['confirmation', 'submit_text', 'submit_limit', 'total_submit_limit', 'redirect_url', 'allow_draft'];
+  foreach ($webform_keys as $key) {
+    if (array_key_exists($key, $args)) {
+      $node->webform[$key] = $args[$key];
+      $changed = TRUE;
+    }
+  }
+
+  if (!$changed) {
+    return ['status' => 'no_changes', 'nid' => (int) $node->nid];
+  }
+
+  node_save($node);
+
+  return [
+    'status'   => 'updated',
+    'nid'      => (int) $node->nid,
+    'title'    => $node->title,
+    'settings' => ai_webform_tools_normalize_webform_settings($node->webform),
+  ];
+}
+
+/**
+ * Returns the list of webforms the current user can update.
+ */
+function ai_webform_tools_execute_list_webforms(array $args) {
+  $limit = !empty($args['limit']) ? max(1, min(100, (int) $args['limit'])) : 50;
+  $query = db_select('webform', 'w');
+  $query->join('node', 'n', 'n.nid = w.nid');
+  $query->fields('n', ['nid', 'title', 'status', 'type', 'uid']);
+  $query->orderBy('n.title', 'ASC');
+  $query->range(0, $limit);
+
+  $items = [];
+  foreach ($query->execute()->fetchAll() as $row) {
+    $node = node_load($row->nid);
+    if (!$node || $node->type !== 'webform' || !node_access('update', $node)) {
+      continue;
+    }
+
+    $items[] = [
+      'nid' => (int) $node->nid,
+      'title' => $node->title,
+      'status' => !empty($node->status),
+      'uid' => (int) $node->uid,
+      'url' => url('node/' . $node->nid),
+    ];
+  }
+
+  return [
+    'count' => count($items),
+    'webforms' => $items,
+  ];
+}
+
+/**
+ * Returns a full webform payload for a node.
+ */
+function ai_webform_tools_execute_get_webform(array $args) {
+  $node = ai_webform_tools_load_node($args);
+  if (!$node) {
+    return [
+      'error' => 'Webform not found or access denied.',
+    ];
+  }
+
+  return [
+    'nid' => (int) $node->nid,
+    'title' => $node->title,
+    'status' => !empty($node->status),
+    'uid' => (int) $node->uid,
+    'webform' => ai_webform_tools_normalize_webform($node->webform),
+  ];
+}
+
+/**
+ * Returns the available webform element types.
+ */
+function ai_webform_tools_execute_list_webform_elements(array $args) {
+  $include_disabled = !empty($args['include_disabled']);
+  $components = webform_components($include_disabled);
+  $items = [];
+
+  foreach ($components as $type => $info) {
+    $items[] = [
+      'type' => $type,
+      'label' => isset($info['label']) ? $info['label'] : $type,
+      'enabled' => !empty($info['enabled']),
+      'module' => !empty($info['module']) ? $info['module'] : NULL,
+    ];
+  }
+
+  return [
+    'count' => count($items),
+    'elements' => $items,
+  ];
+}
+
+/**
+ * Returns the settings payload for a webform node.
+ */
+function ai_webform_tools_execute_get_webform_settings(array $args) {
+  $node = ai_webform_tools_load_node($args);
+  if (!$node) {
+    return [
+      'error' => 'Webform not found or access denied.',
+    ];
+  }
+
+  return [
+    'nid' => (int) $node->nid,
+    'title' => $node->title,
+    'settings' => ai_webform_tools_normalize_webform_settings($node->webform),
+  ];
+}
+
+/**
+ * Returns submissions for a webform node.
+ */
+function ai_webform_tools_execute_list_webform_submissions(array $args) {
+  $node = ai_webform_tools_load_node($args, FALSE);
+  if (!$node || !webform_results_access($node)) {
+    return [
+      'error' => 'Webform not found or access denied.',
+    ];
+  }
+
+  $limit = !empty($args['limit']) ? max(1, min(100, (int) $args['limit'])) : 20;
+  $filters = ['nid' => $node->nid];
+  if (isset($args['uid']) && $args['uid'] !== '') {
+    $filters['uid'] = (int) $args['uid'];
+  }
+  if (array_key_exists('is_draft', $args) && $args['is_draft'] !== NULL && $args['is_draft'] !== '') {
+    $filters['is_draft'] = !empty($args['is_draft']) ? 1 : 0;
+  }
+
+  $submissions = webform_get_submissions($filters, NULL, $limit);
+  $items = [];
+  foreach ($submissions as $submission) {
+    $items[] = ai_webform_tools_normalize_submission($node, $submission);
+  }
+
+  $count_uid = isset($filters['uid']) ? $filters['uid'] : NULL;
+  $count_draft = array_key_exists('is_draft', $filters) ? $filters['is_draft'] : NULL;
+
+  return [
+    'count' => (int) webform_get_submission_count($node->nid, $count_uid, $count_draft),
+    'submissions' => $items,
+  ];
+}
+
+/**
+ * Loads and validates a webform node from the tool args.
+ *
+ * @param array $args
+ *   Tool arguments.
+ * @param bool $require_update_access
+ *   Whether update access is required. Defaults to TRUE.
+ *
+ * @return object|false
+ *   The loaded node, or FALSE.
+ */
+function ai_webform_tools_load_node(array $args, $require_update_access = TRUE) {
+  if (empty($args['node_id'])) {
+    return FALSE;
+  }
+
+  $node = node_load((int) $args['node_id']);
+  if (!$node || $node->type !== 'webform') {
+    return FALSE;
+  }
+
+  if ($require_update_access && !node_access('update', $node)) {
+    return FALSE;
+  }
+
+  return $node;
+}
+
+/**
+ * Normalizes a webform array for tool output.
+ */
+function ai_webform_tools_normalize_webform(array $webform) {
+  $components = [];
+  foreach (!empty($webform['components']) && is_array($webform['components']) ? $webform['components'] : [] as $component) {
+    $components[] = ai_webform_tools_normalize_component($component);
+  }
+
+  return [
+    'confirmation' => isset($webform['confirmation']) ? $webform['confirmation'] : '',
+    'confirmation_format' => isset($webform['confirmation_format']) ? $webform['confirmation_format'] : NULL,
+    'redirect_url' => isset($webform['redirect_url']) ? $webform['redirect_url'] : NULL,
+    'status' => !empty($webform['status']),
+    'roles' => !empty($webform['roles']) ? array_values($webform['roles']) : [],
+    'settings' => ai_webform_tools_normalize_webform_settings($webform),
+    'components' => $components,
+    'emails' => !empty($webform['emails']) && is_array($webform['emails']) ? array_values($webform['emails']) : [],
+    'conditionals' => !empty($webform['conditionals']) && is_array($webform['conditionals']) ? array_values($webform['conditionals']) : [],
+  ];
+}
+
+/**
+ * Normalizes only the settings part of a webform.
+ */
+function ai_webform_tools_normalize_webform_settings(array $webform) {
+  $keys = [
+    'allow_draft',
+    'auto_save',
+    'back_to_form_link',
+    'block',
+    'confidential',
+    'confirmation',
+    'confirmation_format',
+    'next_serial',
+    'preview',
+    'preview_excluded_components',
+    'preview_message',
+    'preview_message_format',
+    'preview_next_button_label',
+    'preview_prev_button_label',
+    'preview_title',
+    'progressbar_bar',
+    'progressbar_include_confirmation',
+    'progressbar_label_confirmation',
+    'progressbar_label_first',
+    'progressbar_page_number',
+    'progressbar_pagebreak_labels',
+    'progressbar_percent',
+    'redirect_url',
+    'roles',
+    'status',
+    'submit_interval',
+    'submit_limit',
+    'submit_notice',
+    'submit_text',
+    'total_submit_interval',
+    'total_submit_limit',
+  ];
+
+  $settings = [];
+  foreach ($keys as $key) {
+    if (isset($webform[$key])) {
+      $settings[$key] = $webform[$key];
+    }
+  }
+
+  if (!empty($webform['emails']) && is_array($webform['emails'])) {
+    $settings['emails'] = array_values($webform['emails']);
+  }
+
+  return $settings;
+}
+
+/**
+ * Normalizes a single webform component.
+ */
+function ai_webform_tools_normalize_component(array $component) {
+  return [
+    'cid' => isset($component['cid']) ? (int) $component['cid'] : NULL,
+    'pid' => isset($component['pid']) ? (int) $component['pid'] : NULL,
+    'name' => isset($component['name']) ? $component['name'] : '',
+    'form_key' => isset($component['form_key']) ? $component['form_key'] : '',
+    'type' => isset($component['type']) ? $component['type'] : '',
+    'value' => isset($component['value']) ? $component['value'] : NULL,
+    'required' => !empty($component['required']),
+    'weight' => isset($component['weight']) ? (int) $component['weight'] : 0,
+    'page_num' => isset($component['page_num']) ? (int) $component['page_num'] : NULL,
+    'extra' => !empty($component['extra']) && is_array($component['extra']) ? $component['extra'] : [],
+  ];
+}
+
+/**
+ * Normalizes a single webform submission.
+ */
+function ai_webform_tools_normalize_submission($node, $submission) {
+  $component_map = ai_webform_tools_component_map($node);
+  $data = [];
+  foreach (!empty($submission->data) && is_array($submission->data) ? $submission->data : [] as $cid => $values) {
+    $key = isset($component_map[$cid]) ? $component_map[$cid] : (string) $cid;
+    $data[$key] = ai_webform_tools_flatten_submission_values($values);
+  }
+
+  return [
+    'sid' => isset($submission->sid) ? (int) $submission->sid : NULL,
+    'serial' => isset($submission->serial) ? (int) $submission->serial : NULL,
+    'uid' => isset($submission->uid) ? (int) $submission->uid : NULL,
+    'name' => isset($submission->name) ? $submission->name : '',
+    'submitted' => isset($submission->submitted) ? (int) $submission->submitted : NULL,
+    'completed' => isset($submission->completed) ? (int) $submission->completed : NULL,
+    'is_draft' => !empty($submission->is_draft),
+    'remote_addr' => isset($submission->remote_addr) ? $submission->remote_addr : '',
+    'data' => $data,
+  ];
+}
+
+/**
+ * Builds a cid to form_key map for a node.
+ */
+function ai_webform_tools_component_map($node) {
+  $map = [];
+  if (empty($node->webform['components']) || !is_array($node->webform['components'])) {
+    return $map;
+  }
+
+  foreach ($node->webform['components'] as $component) {
+    if (isset($component['cid']) && isset($component['form_key'])) {
+      $map[$component['cid']] = $component['form_key'];
+    }
+  }
+
+  return $map;
+}
+
+/**
+ * Flattens stored submission values into a tool-friendly shape.
+ */
+function ai_webform_tools_flatten_submission_values($values) {
+  if (!is_array($values)) {
+    return $values;
+  }
+
+  if (count($values) === 1) {
+    $value = reset($values);
+    if ($value === '') {
+      return '';
+    }
+    return $value;
+  }
+
+  return array_values($values);
+}
+

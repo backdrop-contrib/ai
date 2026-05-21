@@ -1,0 +1,7 @@
+[AIWebformToolsTestCase]
+name = AI Webform Tools Test
+description = Verify webform read tools are registered and dispatch against real webform data.
+group = AI Tools
+file = tests/ai_webform_tools.test
+backdrop = 1.x
+

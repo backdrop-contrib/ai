@@ -1,0 +1,67 @@
+<?php
+
+/**
+ * @file
+ * Tests for the AI async job runner.
+ */
+
+class AIAsyncWorkerTestCase extends BackdropWebTestCase {
+
+  protected $account;
+
+  public function setUp() {
+    parent::setUp(['ai', 'ai_async', 'ai_agent_test']);
+
+    $providers = config('ai.settings');
+    $providers->set('providers', [
+      'agent_test' => [
+        'enabled' => 1,
+      ],
+    ]);
+    $providers->save();
+
+    $this->account = $this->backdropCreateUser(['access content']);
+    $this->backdropLogin($this->account);
+  }
+
+  public function testAllowedCallbacksIncludeTestHook() {
+    $callbacks = ai_async_get_allowed_callbacks();
+    $this->assertTrue(isset($callbacks['ai_agent_test_async_echo']), 'Async test callback is registered.');
+  }
+
+  public function testWorkerProcessesPendingJob() {
+    $job_id = _ai_async_uuid();
+    $token = backdrop_random_key(32);
+
+    db_insert('ai_async_jobs')
+      ->fields([
+        'job_id' => $job_id,
+        'callback' => 'ai_agent_test_async_echo',
+        'data' => serialize(['message' => 'hello']),
+        'status' => 'pending',
+        'result' => NULL,
+        'error' => NULL,
+        'token' => $token,
+        'uid' => $this->account->uid,
+        'created' => REQUEST_TIME,
+        'updated' => REQUEST_TIME,
+      ])
+      ->execute();
+
+    $worker = new AIAsyncWorker();
+    $this->assertFalse($worker->process($job_id, 'bad-token'), 'Invalid token is rejected.');
+
+    $job = ai_async_get_job($job_id);
+    $this->assertEqual('pending', $job->status, 'Job stays pending after invalid token.');
+
+    $this->assertTrue($worker->process($job_id, $token), 'Valid token processes the job.');
+
+    $job = ai_async_get_job($job_id);
+    $this->assertEqual('complete', $job->status, 'Job completed.');
+    $this->assertEqual(['echo' => 'hello'], $job->getResult(), 'Job result stored deterministically.');
+  }
+
+  public function testSubmitRejectsUnknownCallback() {
+    $this->assertFalse(ai_async_submit('definitely_missing_callback', ['message' => 'hello']), 'Unregistered callback is rejected.');
+  }
+}

@@ -1,0 +1,56 @@
+<?php
+
+/**
+ * @file
+ * Tests for AI webform read tools.
+ */
+
+require_once backdrop_get_path('module', 'webform') . '/tests/WebformTestCase.test';
+
+class AIWebformToolsTestCase extends WebformTestCase {
+
+  public function setUp($added_modules = []) {
+    parent::setUp(array_merge(['ai', 'ai_tools', 'ai_webform_tools'], $added_modules));
+  }
+
+  public function testWebformToolsRegistry() {
+    $tools = ai_tools_get_tools();
+
+    $this->assertTrue(isset($tools['list_webforms']), 'List webforms tool is registered.');
+    $this->assertTrue(isset($tools['get_webform']), 'Get webform tool is registered.');
+    $this->assertTrue(isset($tools['list_webform_elements']), 'List webform elements tool is registered.');
+    $this->assertTrue(isset($tools['get_webform_settings']), 'Get webform settings tool is registered.');
+    $this->assertTrue(isset($tools['list_webform_submissions']), 'List webform submissions tool is registered.');
+  }
+
+  public function testWebformToolsDispatch() {
+    $this->backdropLogin($this->webform_users['admin']);
+    $node = $this->webformForm();
+    $this->backdropGet('node/' . $node->nid);
+    $this->backdropPost(NULL, $this->webformPost(), 'Submit', [], [], 'webform-client-form-' . $node->nid);
+
+    backdrop_static_reset('webform_get_submission');
+    $this->assertIdentical(1, (int) webform_get_submission_count($node->nid), 'A test submission was saved.');
+
+    $webforms = json_decode(ai_tools_dispatch('list_webforms', []), TRUE);
+    $this->assertTrue(!empty($webforms['webforms']), 'Webform list returned results.');
+    $this->assertEqual($node->nid, $webforms['webforms'][0]['nid'], 'Webform list returned the expected node.');
+
+    $webform = json_decode(ai_tools_dispatch('get_webform', ['node_id' => $node->nid]), TRUE);
+    $this->assertEqual($node->title, $webform['title'], 'Full webform payload returned the expected title.');
+    $this->assertTrue(!empty($webform['webform']['components']), 'Full webform payload includes components.');
+
+    $elements = json_decode(ai_tools_dispatch('list_webform_elements', []), TRUE);
+    $this->assertTrue(!empty($elements['elements']), 'Webform element list returned results.');
+    $this->assertTrue(isset($elements['elements'][0]), 'Webform element list is structured.');
+
+    $settings = json_decode(ai_tools_dispatch('get_webform_settings', ['node_id' => $node->nid]), TRUE);
+    $this->assertEqual('Thanks!', $settings['settings']['confirmation'], 'Webform settings returned confirmation text.');
+    $this->assertTrue(isset($settings['settings']['roles']), 'Webform settings returned roles.');
+
+    $submissions = json_decode(ai_tools_dispatch('list_webform_submissions', ['node_id' => $node->nid, 'limit' => 10]), TRUE);
+    $this->assertTrue(!empty($submissions['submissions']), 'Submission list returned results.');
+    $this->assertEqual($node->webform['components'][1]['form_key'], 'date', 'Test fixture uses expected webform shape.');
+    $this->assertEqual($node->nid, $webforms['webforms'][0]['nid'], 'Submission tool targets the same webform node.');
+  }
+}

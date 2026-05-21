@@ -1,0 +1,340 @@
+<?php
+
+/**
+ * @file
+ * Admin UI and CLI tools for migrating legacy openai_* modules to ai_* modules.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function ai_upgrade_menu() {
+  $items = [];
+
+  $items['admin/config/ai/upgrade'] = [
+    'title' => 'AI Upgrade',
+    'description' => 'Enable AI replacement modules and migrate from legacy modules.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_upgrade_form'],
+    'access arguments' => ['administer modules'],
+    'file' => 'ai_upgrade.pages.inc',
+    'type' => MENU_NORMAL_ITEM,
+  ];
+
+  return $items;
+}
+
+/**
+ * Return actionable AI upgrade candidates keyed by replacement module name.
+ */
+function ai_upgrade_get_candidates() {
+  module_load_install('ai_upgrade');
+
+  $candidates = [];
+  foreach (ai_upgrade_registry() as $module => $info) {
+    $legacy_enabled = [];
+    foreach ($info['legacy_modules'] as $legacy_module) {
+      if (module_exists($legacy_module)) {
+        $legacy_enabled[] = $legacy_module;
+      }
+    }
+
+    $deprecated = !empty($info['deprecated']);
+    $actual_module = !empty($info['module']) ? $info['module'] : $module;
+    // Deprecated entries have no replacement module — treat as never enabled.
+    $replacement_enabled = !$deprecated && module_exists($actual_module);
+    if (empty($legacy_enabled) && !$replacement_enabled) {
+      continue;
+    }
+
+    $candidates[$module] = [
+      'module' => $actual_module,
+      'label' => $info['label'],
+      'legacy_modules' => $info['legacy_modules'],
+      'legacy_enabled' => $legacy_enabled,
+      'replacement_enabled' => $replacement_enabled,
+      'deprecated' => $deprecated,
+    ];
+  }
+
+  return $candidates;
+}
+
+/**
+ * Resolve selected modules to a full replacement set for enabled legacy state.
+ */
+function ai_upgrade_resolve_modules(array $modules) {
+  $registry = ai_upgrade_registry();
+  $selected = [];
+  $legacy_to_modules = [];
+
+  foreach ($registry as $module => $info) {
+    foreach ($info['legacy_modules'] as $legacy_module) {
+      $legacy_to_modules[$legacy_module][] = $module;
+    }
+  }
+
+  foreach ($modules as $module) {
+    if (isset($registry[$module])) {
+      $selected[$module] = $module;
+    }
+  }
+
+  $changed = TRUE;
+  while ($changed) {
+    $changed = FALSE;
+    $legacy_modules = [];
+
+    foreach ($selected as $module) {
+      foreach ($registry[$module]['legacy_modules'] as $legacy_module) {
+        if (module_exists($legacy_module)) {
+          $legacy_modules[$legacy_module] = $legacy_module;
+        }
+      }
+    }
+
+    foreach ($legacy_modules as $legacy_module) {
+      if (!empty($legacy_to_modules[$legacy_module])) {
+        foreach ($legacy_to_modules[$legacy_module] as $replacement_module) {
+          if (!isset($selected[$replacement_module])) {
+            $selected[$replacement_module] = $replacement_module;
+            $changed = TRUE;
+          }
+        }
+      }
+    }
+
+    $dependents = ai_upgrade_find_enabled_dependents(array_values($legacy_modules), array_values($legacy_modules));
+    foreach ($dependents as $dependent_modules) {
+      foreach ($dependent_modules as $dependent_module) {
+        if (!empty($legacy_to_modules[$dependent_module])) {
+          foreach ($legacy_to_modules[$dependent_module] as $replacement_module) {
+            if (!isset($selected[$replacement_module])) {
+              $selected[$replacement_module] = $replacement_module;
+              $changed = TRUE;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return array_values($selected);
+}
+
+/**
+ * Find enabled modules that still depend on legacy modules slated for removal.
+ */
+function ai_upgrade_find_enabled_dependents(array $legacy_modules, array $ignore_modules = []) {
+  $dependents = [];
+  $module_data = system_rebuild_module_data();
+  $ignore = array_fill_keys(array_merge($legacy_modules, $ignore_modules), TRUE);
+
+  foreach ($legacy_modules as $legacy_module) {
+    if (empty($module_data[$legacy_module])) {
+      continue;
+    }
+    foreach (array_keys($module_data[$legacy_module]->required_by) as $dependent) {
+      if (!empty($ignore[$dependent])) {
+        continue;
+      }
+      if (!empty($module_data[$dependent]->status)) {
+        $dependents[$legacy_module][] = $dependent;
+      }
+    }
+  }
+
+  return $dependents;
+}
+
+/**
+ * Map of replacement modules that ship bundled inside a parent project.
+ *
+ * Key: replacement machine name. Value: parent project name that ships it.
+ * Modules not listed here are assumed to be standalone projects.
+ */
+function ai_upgrade_bundle_map() {
+  return [
+    'ai_alt' => 'ai',
+    'ai_ckeditor' => 'ai',
+    'ai_content' => 'ai',
+    'ai_dblog' => 'ai',
+    'ai_guardrails' => 'ai',
+    'ai_mcp' => 'ai',
+    'ai_moderation' => 'ai',
+    'ai_privacy' => 'ai',
+    'ai_rate_limit' => 'ai',
+    'ai_site_context' => 'ai',
+  ];
+}
+
+/**
+ * Identify replacement modules that are not present on disk.
+ *
+ * Returns a list of [registry_key => actual_module] for entries whose
+ * replacement module has no .info on disk. Deprecated entries (no replacement)
+ * are skipped.
+ */
+function ai_upgrade_find_missing_modules(array $modules) {
+  $registry = ai_upgrade_registry();
+  $module_data = system_rebuild_module_data();
+  $missing = [];
+
+  foreach ($modules as $module) {
+    if (empty($registry[$module])) {
+      continue;
+    }
+    $info = $registry[$module];
+    if (!empty($info['deprecated'])) {
+      continue;
+    }
+    $actual_module = !empty($info['module']) ? $info['module'] : $module;
+    if (empty($module_data[$actual_module])) {
+      $missing[$module] = $actual_module;
+    }
+  }
+
+  return $missing;
+}
+
+/**
+ * Format missing replacement modules for error output.
+ */
+function ai_upgrade_format_missing_modules(array $missing) {
+  $registry = ai_upgrade_registry();
+  $bundles = ai_upgrade_bundle_map();
+  $module_data = system_rebuild_module_data();
+  $lines = [];
+  foreach ($missing as $module => $actual_module) {
+    $label = !empty($registry[$module]['label']) ? $registry[$module]['label'] : $module;
+    if (!empty($bundles[$actual_module])) {
+      $parent = $bundles[$actual_module];
+      $parent_present = !empty($module_data[$parent]);
+      if ($parent_present) {
+        $lines[] = t('@label: @actual_module ships as a submodule of @parent (already on disk). It should appear in the modules list — rebuild the cache if not.', [
+          '@label' => $label,
+          '@actual_module' => $actual_module,
+          '@parent' => $parent,
+        ]);
+      }
+      else {
+        $lines[] = t('@label: @actual_module ships as a submodule of the @parent project — download and install @parent.', [
+          '@label' => $label,
+          '@actual_module' => $actual_module,
+          '@parent' => $parent,
+        ]);
+      }
+    }
+    else {
+      $lines[] = t('@label: download and place @actual_module in your modules directory (standalone project).', [
+        '@label' => $label,
+        '@actual_module' => $actual_module,
+      ]);
+    }
+  }
+  return implode("\n", $lines);
+}
+
+/**
+ * Format enabled dependent-module blockers for error output.
+ */
+function ai_upgrade_format_dependent_blockers(array $dependents) {
+  $messages = [];
+  foreach ($dependents as $legacy_module => $modules) {
+    sort($modules);
+    $messages[] = t('@legacy is still required by enabled module(s): @modules', [
+      '@legacy' => $legacy_module,
+      '@modules' => implode(', ', $modules),
+    ]);
+  }
+  return implode("\n", $messages);
+}
+
+/**
+ * Enable and/or migrate selected AI replacement modules.
+ */
+function ai_upgrade_execute(array $modules) {
+  module_load_install('ai_upgrade');
+  $modules = ai_upgrade_resolve_modules($modules);
+
+  $registry = ai_upgrade_registry();
+  $ordered_modules = [];
+  foreach (array_keys($registry) as $module) {
+    if (in_array($module, $modules, TRUE)) {
+      $ordered_modules[] = $module;
+    }
+  }
+
+  $all_legacy_modules = [];
+  foreach ($ordered_modules as $module) {
+    $info = ai_upgrade_module_info($module);
+    if (empty($info)) {
+      continue;
+    }
+    foreach ($info['legacy_modules'] as $legacy_module) {
+      if (module_exists($legacy_module)) {
+        $all_legacy_modules[$legacy_module] = $legacy_module;
+      }
+    }
+  }
+
+  $missing_modules = ai_upgrade_find_missing_modules($ordered_modules);
+  if (!empty($missing_modules)) {
+    throw new RuntimeException(ai_upgrade_format_missing_modules($missing_modules));
+  }
+
+  $dependent_blockers = ai_upgrade_find_enabled_dependents(array_values($all_legacy_modules));
+  if (!empty($dependent_blockers)) {
+    throw new RuntimeException(ai_upgrade_format_dependent_blockers($dependent_blockers));
+  }
+
+  $results = [];
+  ai_upgrade_runtime_active(TRUE);
+  try {
+    foreach ($ordered_modules as $module) {
+      $info = ai_upgrade_module_info($module);
+      if (empty($info)) {
+        continue;
+      }
+
+      $actual_module = !empty($info['module']) ? $info['module'] : $module;
+      $deprecated = !empty($info['deprecated']);
+      ai_upgrade_install_result($module, NULL, TRUE);
+
+      if (!$deprecated && !module_exists($actual_module)) {
+        module_enable([$actual_module]);
+        // Run migration/disable explicitly — modules without a .install hook
+        // (or whose actual_module differs from the registry key) won't have
+        // called ai_upgrade_module_install() themselves.
+        $result = ai_upgrade_module_install($module);
+      }
+      else {
+        $result = ai_upgrade_module_install($module);
+        if ($deprecated && empty($result['disabled'])) {
+          $result['disabled'] = ai_upgrade_disable_legacy($info['legacy_modules'], FALSE);
+        }
+      }
+
+      if (empty($result)) {
+        $result = ['migrated' => 0, 'disabled' => [], 'tables' => []];
+      }
+
+      $results[$module] = [
+        'module' => $actual_module,
+        'label' => $info['label'],
+        'enabled' => $deprecated ? FALSE : module_exists($actual_module),
+        'migrated' => $result['migrated'],
+        'disabled' => $result['disabled'],
+        'tables' => $result['tables'],
+      ];
+    }
+  }
+  finally {
+    ai_upgrade_runtime_active(FALSE);
+  }
+
+  entity_info_cache_clear();
+  module_implements_reset();
+  return $results;
+}
+

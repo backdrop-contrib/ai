@@ -1,0 +1,919 @@
+<?php
+
+/**
+ * Implements hook_config_info().
+ */
+function ai_content_config_info() {
+  return [
+    'ai_content.settings' => [
+      'label' => t('AI Content Settings'),
+      'group' => t('AI'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ai_content_menu() {
+  $items = [];
+
+  $items['admin/config/ai/ai-content'] = [
+    'title' => 'AI Content Editing Tools',
+    'description' => 'Settings for content suggestions using AI',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_content_settings_form'],
+    'access arguments' => ['administer site configuration'],
+    'weight' => -7,
+  ];
+
+  return $items;
+}
+
+/**
+ * Build the configuration form for AI Content.
+ *
+ * @return array
+ *   The configuration form.
+ */
+function ai_content_settings_form($form, &$form_state) {
+  // Get the configuration object to load values.
+  $config = config('ai_content.settings');
+  $ai_config = config('ai.settings');
+  $providers_root = $ai_config->get('providers') ?: [];
+  // Check if any provider is enabled
+  $any_enabled = FALSE;
+  foreach ($providers_root as $p => $cfg) {
+    if (!empty($cfg['enabled'])) {
+      $any_enabled = TRUE;
+      break;
+    }
+  }
+
+  if (!$any_enabled) {
+    form_set_error('', t('No providers are enabled. Please configure a provider in AI settings.'));
+    return $form;
+  }
+
+  // Get chat models from all enabled providers
+  $chat_models = ai_get_all_chat_models();
+
+  // Get moderation models from all enabled providers
+  $moderation_models = ai_get_all_moderation_models();
+
+  // Determine default chat model.
+  $default_chat_model = config_get('ai.settings', 'default_text_model') ?: '';
+  $flat_chat_models = [];
+  foreach ($chat_models as $g_label => $g_items) {
+    if (is_array($g_items)) {
+      foreach ($g_items as $k => $v) { $flat_chat_models[$k] = $v; }
+    } else {
+      $flat_chat_models[$g_label] = $g_items;
+    }
+  }
+  if (!empty($flat_chat_models) && !isset($flat_chat_models[$default_chat_model])) {
+    reset($flat_chat_models);
+    $default_chat_model = key($flat_chat_models);
+  }
+
+  // Determine default moderation model.
+  $default_mod_model = config_get('ai.settings', 'default_moderation_model') ?: '';
+  $flat_mod_models = [];
+  foreach ($moderation_models as $g_label => $g_items) {
+    if (is_array($g_items)) {
+      foreach ($g_items as $k => $v) { $flat_mod_models[$k] = $v; }
+    } else {
+      $flat_mod_models[$g_label] = $g_items;
+    }
+  }
+  if (!empty($flat_mod_models) && !isset($flat_mod_models[$default_mod_model])) {
+    reset($flat_mod_models);
+    $default_mod_model = key($flat_mod_models);
+  }
+
+  $form = [];
+  $form['#config'] = 'ai_content.settings';
+
+  $form['introduction'] = [
+    '#type' => 'html_tag',
+    '#tag' => 'p',
+    '#children' => t('Below is a list of the available plugins you can enable or disable for analyzing your content.'),
+  ];
+
+  $form['features'] = [
+    '#type' => 'fieldset',
+    '#title' => t('Available Features'),
+  ];
+
+  $form['features']['text_analysis'] = [
+    '#type' => 'checkbox',
+    '#title' => t('Enable Text Analysis'),
+    '#default_value' => $config->get('text_analysis'),
+    '#description' => t('Allows analyzing the text for policy violations.'),
+  ];
+
+  // Text Analysis settings section.
+  $form['features']['text_analysis_settings'] = [
+    '#type' => 'fieldset',
+    '#title' => t('Text Analysis Settings'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  ];
+
+  $form['features']['text_analysis_settings']['text_analysis_model'] = [
+    '#type' => 'select',
+    '#title' => t('Model for Text Analysis'),
+    '#options' => $moderation_models,
+    '#default_value' => $config->get('text_analysis_model') ?? $default_mod_model,
+    '#description' => t('Select the moderation model to use for text analysis.'),
+  ];
+
+  $form['features']['tone_adjustment'] = [
+    '#type' => 'checkbox',
+    '#title' => t('Enable Tone Adjustment'),
+    '#default_value' => $config->get('tone_adjustment'),
+    '#description' => t('Allows adjusting the tone of the text to match specific audiences.'),
+  ];
+
+  // Tone Adjustment settings section, always visible for simplicity.
+  $form['features']['tone_adjustment_settings'] = [
+    '#type' => 'fieldset',
+    '#title' => t('Tone Adjustment Settings'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  ];
+
+  $form['features']['tone_adjustment_settings']['tone_adjustment_prompt'] = [
+    '#type' => 'textarea',
+    '#title' => t('Prompt for Tone Adjustment'),
+    '#default_value' => $config->get('tone_adjustment_prompt') ?? 'Change the tone of the following text to be {{ tone }} using the same language as the input text.',
+    '#description' => t('The prompt used for adjusting the tone of the text. Use {{ tone }} as a placeholder for the selected tone.'),
+  ];
+
+  $form['features']['tone_adjustment_settings']['tone_adjustment_model'] = [
+    '#type' => 'select',
+    '#title' => t('Model for Tone Adjustment'),
+    '#options' => $chat_models,
+    '#default_value' => $config->get('tone_adjustment_model') ?? $default_chat_model,
+    '#description' => t('Select the model to use for tone adjustment.'),
+  ];
+
+  $form['features']['tone_adjustment_settings']['tone_adjustment_temperature'] = [
+    '#type' => 'number',
+    '#title' => t('Temperature'),
+    '#default_value' => $config->get('tone_adjustment_temperature') ?? 0.7,
+    '#step' => 0.1,
+    '#min' => 0,
+    '#max' => 1,
+    '#description' => t('Controls randomness. Lower values make the model more focused, higher values make it more creative.'),
+  ];
+
+  $form['features']['tone_adjustment_settings']['tone_adjustment_max_tokens'] = [
+    '#type' => 'number',
+    '#title' => t('Max Tokens'),
+    '#default_value' => $config->get('tone_adjustment_max_tokens') ?? 2048,
+    '#description' => t('The maximum number of tokens to include in the output.'),
+  ];
+
+
+  $form['features']['summarization'] = [
+    '#type' => 'checkbox',
+    '#title' => t('Enable Summarization'),
+    '#default_value' => $config->get('summarization'),
+    '#description' => t('Allows summarizing the text content.'),
+  ];
+
+  // Summarization settings section, always visible for simplicity.
+  $form['features']['summarization_settings'] = [
+    '#type' => 'fieldset',
+    '#title' => t('Summarization Settings'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  ];
+
+  $form['features']['summarization_settings']['summarization_prompt'] = [
+    '#type' => 'textarea',
+    '#title' => t('Prompt for Summarization'),
+    '#default_value' => $config->get('summarization_prompt') ?? 'Create a detailed summary of the following text in less than 130 words.',
+    '#description' => t('The prompt used for generating text summaries.'),
+  ];
+
+  $form['features']['summarization_settings']['summarization_model'] = [
+    '#type' => 'select',
+    '#title' => t('Model for Summarization'),
+    '#options' => $chat_models,
+    '#default_value' => $config->get('summarization_model') ?? $default_chat_model,
+    '#description' => t('Select the model to use for summarization.'),
+  ];
+
+  $form['features']['summarization_settings']['summarization_temperature'] = [
+    '#type' => 'number',
+    '#title' => t('Temperature'),
+    '#default_value' => $config->get('summarization_temperature') ?? 0.7,
+    '#step' => 0.1,
+    '#min' => 0,
+    '#max' => 1,
+    '#description' => t('Controls randomness. Lower values make the model more focused, higher values make it more creative.'),
+  ];
+
+  $form['features']['summarization_settings']['summarization_max_tokens'] = [
+    '#type' => 'number',
+    '#title' => t('Max Tokens'),
+    '#default_value' => $config->get('summarization_max_tokens') ?? 2048,
+    '#description' => t('The maximum number of tokens to include in the output.'),
+  ];
+
+  $form['features']['title_suggestion'] = [
+    '#type' => 'checkbox',
+    '#title' => t('Enable Title Suggestion'),
+    '#default_value' => $config->get('title_suggestion'),
+    '#description' => t('Allows suggesting SEO-friendly titles based on the text content.'),
+  ];
+
+  // Title suggestion settings section, always visible for simplicity.
+  $form['features']['title_settings'] = [
+    '#type' => 'fieldset',
+    '#title' => t('Title Suggestion Settings'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  ];
+
+  $form['features']['title_settings']['title_prompt'] = [
+    '#type' => 'textarea',
+    '#title' => t('Prompt for Title Suggestion'),
+    '#default_value' => $config->get('title_prompt') ?? 'Suggest an SEO-friendly title for the following content in 10 words or less.',
+    '#description' => t('The prompt used for generating title suggestions.'),
+  ];
+
+  $form['features']['title_settings']['title_model'] = [
+    '#type' => 'select',
+    '#title' => t('Model for Title Suggestion'),
+    '#options' => $chat_models,
+      '#default_value' => $config->get('title_model') ?? $default_chat_model,
+    '#description' => t('Select the model to use for title suggestions.'),
+  ];
+
+  $form['features']['title_settings']['title_temperature'] = [
+    '#type' => 'number',
+    '#title' => t('Temperature'),
+    '#default_value' => $config->get('title_temperature') ?? 0.4,
+    '#step' => 0.1,
+    '#min' => 0,
+    '#max' => 1,
+    '#description' => t('Controls randomness. Lower values make the model more focused, higher values make it more creative.'),
+  ];
+
+  $form['features']['title_settings']['title_max_tokens'] = [
+    '#type' => 'number',
+    '#title' => t('Max Tokens'),
+    '#default_value' => $config->get('title_max_tokens') ?? 2048,
+    '#description' => t('The maximum number of tokens to include in the output.'),
+  ];
+
+
+  // Taxonomy settings section, visible only if taxonomy suggestion is enabled.
+  $form['features']['taxonomy_suggestion'] = [
+    '#type' => 'checkbox',
+    '#title' => t('Enable Taxonomy Suggestion'),
+    '#default_value' => $config->get('taxonomy_suggestion'),
+    '#description' => t('Allows suggesting taxonomy terms based on the text content.'),
+  ];
+
+  // Add the collapsible settings fieldset under the checkbox.
+  $form['features']['taxonomy_settings'] = [
+    '#type' => 'fieldset',
+    '#title' => t('Taxonomy Suggestion Settings'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  ];
+
+  // Add taxonomy prompt field.
+  $form['features']['taxonomy_settings']['taxonomy_prompt'] = [
+    '#type' => 'textarea',
+    '#title' => t('Prompt for Taxonomy Suggestion'),
+    '#default_value' => $config->get('taxonomy_prompt') ?? 'Suggest five words to classify the following text.',
+    '#description' => t('The prompt used for generating taxonomy suggestions.'),
+  ];
+
+  // Add taxonomy model selection.
+  $form['features']['taxonomy_settings']['taxonomy_model'] = [
+    '#type' => 'select',
+    '#title' => t('Model for Taxonomy Suggestion'),
+    '#options' => $chat_models,
+      '#default_value' => $config->get('taxonomy_model') ?? $default_chat_model,
+    '#description' => t('Select the model to use for taxonomy suggestions.'),
+  ];
+
+  // Add taxonomy temperature setting.
+  $form['features']['taxonomy_settings']['taxonomy_temperature'] = [
+    '#type' => 'number',
+    '#title' => t('Temperature'),
+    '#default_value' => $config->get('taxonomy_temperature') ?? 0.4,
+    '#step' => 0.1,
+    '#min' => 0,
+    '#max' => 1,
+    '#description' => t('Controls randomness. Lower values make the model more focused, higher values make it more creative.'),
+  ];
+
+  // Add taxonomy max tokens setting.
+  $form['features']['taxonomy_settings']['taxonomy_max_tokens'] = [
+    '#type' => 'number',
+    '#title' => t('Max Tokens'),
+    '#default_value' => $config->get('taxonomy_max_tokens') ?? 2048,
+    '#description' => t('The maximum number of tokens to include in the output.'),
+  ];
+
+  return system_settings_form($form);
+}
+
+/**
+ * @file
+ * Permissions for the AI Content module.
+ */
+
+function ai_content_permission() {
+  return [
+    'access ai content tools' => [
+      'title' => t('Permit access to using content tools provided by the AI Content module.'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter() for node forms.
+ */
+function ai_content_form_node_form_alter(&$form, &$form_state, $form_id) {
+  global $user;
+
+  if (user_access('access ai content tools')) {
+    $form['ai_content_preview_text'] = [
+      '#type' => 'hidden',
+      '#default_value' => '',
+    ];
+    $form['#attached']['js'][] = backdrop_get_path('module', 'ai_content') . '/js/ai_content_preview_extract.js';
+    $config = config('ai_content.settings');
+
+    // Define the features and their configurations.
+    $features = [
+      'text_analysis' => [
+        'fieldset' => 'ai_moderate',
+        'title' => t('Analyze text'),
+        'description' => t('AI can analyze content for policy violations.'),
+        'ajax_callback' => 'ai_content_entity_analyze_content',
+        'button_text' => t('Analyze'),
+        'response_wrapper' => 'ai-moderate-response',
+      ],
+      'tone_adjustment' => [
+        'fieldset' => 'ai_tone_edit',
+        'title' => t('Adjust content tone'),
+        'description' => t('Have AI check your content and adjust the tone for different audiences.'),
+        'ajax_callback' => 'ai_content_entity_adjust_tone',
+        'button_text' => t('Adjust tone'),
+        'response_wrapper' => 'ai-tone-edit-response',
+        'extra_fields' => [
+          'tone' => [
+            '#type' => 'select',
+            '#title' => t('Choose tone'),
+            '#description' => t('Adjust/reword the body content to match the target audience.'),
+            '#options' => [
+              'friendly' => t('Friendly'),
+              'professional' => t('Professional'),
+              'helpful' => t('Helpful'),
+              'high_school' => t('High school level reader'),
+              'college' => t('College level reader'),
+              'explain_5' => t('Explain like I\'m 5'),
+            ],
+          ],
+        ],
+      ],
+      'summarization' => [
+        'fieldset' => 'ai_summarize',
+        'title' => t('Summarize text'),
+        'description' => t('Create a summary from the selected field.'),
+        'ajax_callback' => 'ai_content_entity_field_summarize',
+        'button_text' => t('Summarize'),
+        'response_wrapper' => 'ai-summarize-response',
+      ],
+      'title_suggestion' => [
+        'fieldset' => 'ai_suggest_title',
+        'title' => t('Suggest content title'),
+        'description' => t('Suggest an SEO-friendly title based on the text content.'),
+        'ajax_callback' => 'ai_content_suggest_title',
+        'button_text' => t('Suggest title'),
+        'response_wrapper' => 'ai-suggest-title-response',
+      ],
+      'taxonomy_suggestion' => [
+        'fieldset' => 'ai_suggest',
+        'title' => t('Suggest taxonomy'),
+        'description' => t('Suggest taxonomy terms based on the text content.'),
+        'ajax_callback' => 'ai_content_entity_suggest_taxonomy',
+        'button_text' => t('Suggest taxonomy'),
+        'response_wrapper' => 'ai-suggest-response',
+      ],
+    ];
+
+    // Add functionality based on enabled settings.
+    foreach ($features as $key => $feature) {
+      if ($config->get($key)) {
+        $fieldset = $feature['fieldset'];
+
+        $form[$fieldset] = [
+          '#type' => 'fieldset',
+          '#title' => $feature['title'],
+          '#collapsible' => TRUE,
+          '#collapsed' => TRUE,
+          '#group' => 'additional_settings',
+        ];
+
+        $form[$fieldset]['target_field'] = [
+          '#type' => 'hidden',
+          '#value' => '__full_node__',
+        ];
+
+        $form[$fieldset]['target_field_note'] = [
+          '#type' => 'markup',
+          '#markup' => '<p>' . t('Using the entire node content (including paragraph text].') . '</p>',
+        ];
+
+        // Add extra fields if defined.
+        if (!empty($feature['extra_fields'])) {
+          foreach ($feature['extra_fields'] as $field_key => $field) {
+            $form[$fieldset][$field_key] = $field;
+          }
+        }
+
+        $form[$fieldset]['response'] = [
+          '#type' => 'markup',
+          '#markup' => '',
+          '#prefix' => "<div id=\"{$feature['response_wrapper']}\">",
+          '#suffix' => '</div>',
+        ];
+
+        $form[$fieldset]['do_action'] = [
+          '#type' => 'button',
+          '#value' => $feature['button_text'],
+          '#limit_validation_errors' => [],
+          '#attributes' => [
+            'class' => ['ai-content-action-button'],
+          ],
+          '#ajax' => [
+            'callback' => $feature['ajax_callback'],
+            'wrapper' => $feature['response_wrapper'],
+            'effect' => 'fade',
+          ],
+        ];
+      }
+    }
+  }
+}
+
+/**
+ * Get a list of all string and text fields on the current node.
+ *
+ * @param object $entity
+ *   The content entity on the form.
+ *
+ * @return array
+ *   List of all valid field options.
+ */
+function _ai_content_get_all_text_with_summary_fields($entity) {
+  $fields = field_info_instances('node', $entity->type);
+  $options = [];
+
+  foreach ($fields as $field_name => $field_info) {
+    $field = field_info_field($field_name);
+    if (in_array($field['type'], ['text_with_summary', 'text_long', 'text', 'string_long'])) {
+      if (in_array($field_name, ['revision_log', 'revision_log_message'])) {
+        continue;
+      }
+      $options[$field_name] = $field_info['label'];
+    }
+    elseif ($field['type'] === 'paragraphs') {
+      // Include paragraph reference fields and extract their text recursively.
+      $options[$field_name] = t('@label (paragraph content]', ['@label' => $field_info['label']]);
+    }
+  }
+
+  asort($options);
+  return $options;
+}
+
+/**
+ * Gets plain text content from a selected field value in form state.
+ *
+ * Supports regular text fields and nested paragraph form values.
+ *
+ * @param array $form_state
+ *   Form state array.
+ * @param string $target_field
+ *   Selected field machine name.
+ *
+ * @return string
+ *   Extracted text content.
+ */
+function _ai_content_get_selected_field_text(array $form_state, $target_field, $entity = NULL) {
+  if ($target_field === '__full_node__') {
+    if (!empty($form_state['values']['ai_content_preview_text'])) {
+      return trim($form_state['values']['ai_content_preview_text']);
+    }
+    return _ai_content_get_all_node_text_from_form_state($form_state, $entity);
+  }
+
+  if (empty($target_field) || empty($form_state['values'][$target_field])) {
+    return '';
+  }
+
+  $value = $form_state['values'][$target_field];
+
+  // Fast-path for standard text fields.
+  if (isset($value[LANGUAGE_NONE][0]['value']) && is_string($value[LANGUAGE_NONE][0]['value'])) {
+    return trim($value[LANGUAGE_NONE][0]['value']);
+  }
+
+  $text = [];
+  _ai_content_collect_text_recursive($value, $text);
+  $text = array_values(array_unique(array_filter(array_map('trim', $text))));
+
+  return implode("\n\n", $text);
+}
+
+/**
+ * Gets text across all editable node fields from current form values.
+ *
+ * Includes paragraph field values recursively, so unsaved paragraph edits are
+ * included in AI prompts.
+ *
+ * @param array $form_state
+ *   Form state array.
+ * @param object|null $entity
+ *   Node entity from the form, if available.
+ *
+ * @return string
+ *   Aggregated node text.
+ */
+function _ai_content_get_all_node_text_from_form_state(array $form_state, $entity = NULL) {
+  if (empty($entity) || empty($entity->type) || empty($form_state['values']) || !is_array($form_state['values'])) {
+    return '';
+  }
+
+  return AIContentExtractor::extractNodeFormValuesText(
+    $form_state['values'],
+    $entity->type,
+    [
+      'include_title' => FALSE,
+      'keep_numeric' => TRUE,
+    ]
+  );
+}
+
+/**
+ * Recursively collects candidate text fragments from nested field values.
+ *
+ * @param mixed $value
+ *   Value to inspect.
+ * @param array $out
+ *   Collected text fragments.
+ */
+function _ai_content_collect_text_recursive($value, array &$out) {
+  AIContentExtractor::collectTextRecursive($value, $out, [
+    'keep_numeric' => TRUE,
+  ]);
+}
+
+
+/**
+ * The AJAX callback for adjusting the tone of body content.
+ *
+ * @param array $form
+ *   The entity form.
+ * @param array $form_state
+ *   The form state.
+ *
+ * @return array
+ *   The renderable part of the form.
+ */
+function ai_content_entity_adjust_tone($form, &$form_state) {
+  $content_config = config('ai_content.settings');
+
+  $target_field = !empty($form_state['values']['target_field']) ? $form_state['values']['target_field'] : '__full_node__';
+  if (!empty($target_field)) {
+    $target_field_value = _ai_content_get_selected_field_text($form_state, $target_field, isset($form['#node']) ? $form['#node'] : NULL);
+    $tone = $form_state['values']['ai_tone_edit']['tone'];
+
+    if (!empty($target_field_value)) {
+      // Fetch settings for tone adjustment.
+      $model = $content_config->get('tone_adjustment_model') ?? (config_get('ai.settings', 'default_text_model'));
+      $temperature = $content_config->get('tone_adjustment_temperature') ?? 0.7;
+      $max_tokens = $content_config->get('tone_adjustment_max_tokens') ?? 2048;
+      $prompt = $content_config->get('tone_adjustment_prompt') ?? 'Change the tone of the following text to be {{ tone }} using the same language as the input text.';
+
+      // Replace the {{ tone }} placeholder in the prompt.
+      $final_prompt = str_replace('{{ tone }}', $tone, $prompt) . "\r\n\"" . mb_substr(AIContentExtractor::htmlToMarkdown($target_field_value), 0, 3900) . "\"";
+
+      try {
+        $response = ai_chat(
+          $model,
+          [
+            ['role' => 'user', 'content' => $final_prompt]
+          ],
+          $temperature,
+          $max_tokens,
+          FALSE,
+          ['operation' => 'content_tools']
+        );
+
+        // Check if the response is a string and handle accordingly
+        if (is_string($response)) {
+          $text = trim($response);
+        } else {
+          $result = json_decode($response, TRUE);
+          $text = isset($result["choices"][0]["message"]["content"]) ? trim($result["choices"][0]["message"]["content"]) : t('No result could be generated.');
+        }
+      }
+      catch (\Exception $e) {
+        backdrop_set_message('Error: ' . $e->getMessage(), 'error');
+        $text = t('An error occurred while processing your request.');
+      }
+    } else {
+      $text = t('The @field field has no text. Please supply content to the @field field.', ['@field' => $target_field]);
+    }
+  } else {
+    $text = t('No field selected for tone adjustment.');
+  }
+
+  $form['ai_tone_edit']['response']['#markup'] = $text;
+  return $form['ai_tone_edit']['response'];
+}
+
+/**
+ * The AJAX callback for summarizing a field.
+ *
+ * @param array $form
+ *   The entity form.
+ * @param array $form_state
+ *   The form state.
+ *
+ * @return array
+ *   The renderable part of the form.
+ */
+function ai_content_entity_field_summarize($form, &$form_state) {
+  $content_config = config('ai_content.settings');
+
+  $target_field = !empty($form_state['values']['target_field']) ? $form_state['values']['target_field'] : '__full_node__';
+  if (!empty($target_field)) {
+    $target_field_value = _ai_content_get_selected_field_text($form_state, $target_field, isset($form['#node']) ? $form['#node'] : NULL);
+
+    if (!empty($target_field_value)) {
+      // Fetch settings for summarization.
+      $model = $content_config->get('summarization_model') ?? (config_get('ai.settings', 'default_text_model'));
+      $temperature = $content_config->get('summarization_temperature') ?? 0.7;
+      $max_tokens = $content_config->get('summarization_max_tokens') ?? 2048;
+      $prompt = $content_config->get('summarization_prompt') ?? 'Create a detailed summary of the following text in less than 130 words.';
+
+      // Prepare the prompt by injecting the field value.
+      $final_prompt = $prompt . "\r\n\"" . mb_substr(AIContentExtractor::htmlToMarkdown($target_field_value), 0, 3900) . "\"";
+
+      try {
+        $response = ai_chat(
+          $model,
+          [
+            ['role' => 'user', 'content' => $final_prompt]
+          ],
+          $temperature,
+          $max_tokens,
+          FALSE,
+          ['operation' => 'content_tools']
+        );
+
+        // Check if the response is a string and handle accordingly
+        if (is_string($response)) {
+          $text = trim($response);
+        } else {
+          $result = json_decode($response, TRUE);
+          $text = isset($result["choices"][0]["message"]["content"]) ? trim($result["choices"][0]["message"]["content"]) : t('No result could be generated.');
+        }
+      }
+      catch (\Exception $e) {
+        backdrop_set_message('Error: ' . $e->getMessage(), 'error');
+        $text = t('An error occurred while processing your request.');
+      }
+    } else {
+      $text = t('The @field field has no text. Please supply content to the @field field.', ['@field' => $target_field]);
+    }
+  } else {
+    $text = t('No field selected for summarization.');
+  }
+
+  $form['ai_summarize']['response']['#markup'] = $text;
+  return $form['ai_summarize']['response'];
+}
+
+/**
+ * The AJAX callback for suggesting a title.
+ *
+ * @param array $form
+ *   The entity form.
+ * @param array $form_state
+ *   The form state.
+ *
+ * @return array
+ *   The renderable part of the form.
+ */
+function ai_content_suggest_title($form, &$form_state) {
+  $content_config = config('ai_content.settings');
+
+  $target_field = !empty($form_state['values']['target_field']) ? $form_state['values']['target_field'] : '__full_node__';
+  if (!empty($target_field)) {
+    $target_field_value = _ai_content_get_selected_field_text($form_state, $target_field, isset($form['#node']) ? $form['#node'] : NULL);
+
+    if (!empty($target_field_value)) {
+      // Fetch settings for title suggestion.
+      $model = $content_config->get('title_model') ?? (config_get('ai.settings', 'default_text_model'));
+      $temperature = $content_config->get('title_temperature') ?? 0.4;
+      $max_tokens = $content_config->get('title_max_tokens') ?? 2048;
+      $prompt = $content_config->get('title_prompt') ?? 'Suggest an SEO-friendly title for the following content in 10 words or less.';
+
+      // Prepare the prompt by injecting the field value.
+      $final_prompt = $prompt . "\r\n\"" . mb_substr(AIContentExtractor::htmlToMarkdown($target_field_value), 0, 3900) . "\"";
+
+      try {
+        $response = ai_chat(
+          $model,
+          [
+            ['role' => 'user', 'content' => $final_prompt]
+          ],
+          $temperature,
+          $max_tokens,
+          FALSE,
+          ['operation' => 'content_tools']
+        );
+
+        // Check if the response is a string and handle accordingly
+        if (is_string($response)) {
+          $text = trim($response);
+        } else {
+          $result = json_decode($response, TRUE);
+          $text = isset($result["choices"][0]["message"]["content"]) ? trim($result["choices"][0]["message"]["content"]) : t('No title could be generated from the provided input.');
+        }
+      }
+      catch (\Exception $e) {
+        backdrop_set_message('Error: ' . $e->getMessage(), 'error');
+        $text = t('An error occurred while processing your request.');
+      }
+    } else {
+      $text = t('The @field field has no text. Please supply content to the @field field.', ['@field' => $target_field]);
+    }
+  } else {
+    $text = t('No field selected for title suggestion.');
+  }
+
+  $form['ai_suggest_title']['response']['#markup'] = $text;
+  return $form['ai_suggest_title']['response'];
+}
+
+/**
+ * The AJAX callback for suggesting taxonomy.
+ *
+ * @param array $form
+ *   The entity form.
+ * @param array $form_state
+ *   The form state.
+ *
+ * @return array
+ *   The renderable part of the form.
+ */
+function ai_content_entity_suggest_taxonomy($form, &$form_state) {
+  $content_config = config('ai_content.settings');
+
+  $target_field = !empty($form_state['values']['target_field']) ? $form_state['values']['target_field'] : '__full_node__';
+  if (!empty($target_field)) {
+    $target_field_value = _ai_content_get_selected_field_text($form_state, $target_field, isset($form['#node']) ? $form['#node'] : NULL);
+
+    if (!empty($target_field_value)) {
+      $truncated_value = mb_substr(AIContentExtractor::htmlToMarkdown($target_field_value), 0, 3900);
+
+      // Get settings from the configuration.
+      $prompt = $content_config->get('taxonomy_prompt') ?? 'Suggest five words to classify the following text.';
+      $model = $content_config->get('taxonomy_model') ?? (config_get('ai.settings', 'default_text_model'));
+      $temperature = $content_config->get('taxonomy_temperature') ?? 0.4;
+      $max_tokens = $content_config->get('taxonomy_max_tokens') ?? 2048;
+
+      try {
+        $response = ai_chat(
+          $model,
+          [
+            ['role' => 'user', 'content' => $prompt . "\r\n\"" . $truncated_value . "\""],
+          ],
+          $temperature,
+          $max_tokens,
+          FALSE,
+          ['operation' => 'content_tools']
+        );
+
+        // Check if the response is a string and handle accordingly.
+        if (is_string($response)) {
+          $text = trim($response);
+        } else {
+          $result = json_decode($response, TRUE);
+          $text = isset($result["choices"][0]["message"]["content"]) ? trim($result["choices"][0]["message"]["content"]) : t('No terms could be generated from the provided input.');
+        }
+      }
+      catch (\Exception $e) {
+        $text = t('An error occurred while processing your request.');
+      }
+    } else {
+      $text = t('The @field field has no text. Please supply content to the @field field.', ['@field' => $target_field]);
+    }
+  } else {
+    $text = t('No field selected for suggestion.');
+  }
+
+  $form['ai_suggest']['response']['#markup'] = $text;
+  return $form['ai_suggest']['response'];
+}
+
+/**
+ * The AJAX callback for analyzing content.
+ *
+ * @param array $form
+ *   The entity form.
+ * @param array $form_state
+ *   The form state.
+ *
+ * @return array
+ *   The renderable part of the form.
+ */
+function ai_content_entity_analyze_content($form, &$form_state) {
+  $ai_config = config('ai.settings');
+  $content_config = config('ai_content.settings');
+
+  // Get the configured moderation model
+  $moderation_model = $content_config->get('text_analysis_model') ?? (config_get('ai.settings', 'default_moderation_model') ?: 'omni-moderation-latest');
+
+  $target_field = !empty($form_state['values']['target_field']) ? $form_state['values']['target_field'] : '__full_node__';
+  if (!empty($target_field)) {
+    $target_field_value = _ai_content_get_selected_field_text($form_state, $target_field, isset($form['#node']) ? $form['#node'] : NULL);
+
+    if (!empty($target_field_value)) {
+      $truncated_value = mb_substr(AIContentExtractor::htmlToMarkdown($target_field_value), 0, 8000);
+
+      try {
+        // Use the moderation API with the configured model
+        $result = ai_moderation($truncated_value, $moderation_model);
+
+        // Check if the response contains flagged content
+        $flagged = (bool) $result["results"][0]["flagged"];
+        $content = [];
+
+        $content['results'] = [
+          '#theme' => 'item_list',
+          '#list_type' => 'ul',
+          '#items' => [],
+          '#empty' => t('The text does not violate any content policies noted by AI/ChatGPT.'),
+        ];
+
+        if ($flagged) {
+          $content['heading'] = [
+            '#markup' => '<p>' . t('Violation(s] found for these categories:') . '</p>',
+          ];
+
+          $violated_categories = array_filter($result['results'][0]['categories']);
+
+          foreach ($violated_categories as $category => $did_violate) {
+            if ($did_violate) {
+              $content['results']['#items'][] = mb_ucfirst($category);
+            }
+          }
+        }
+
+        // Ensure content is sorted before rendering
+        asort($content);
+
+        // Render the content to output
+        $output = render($content);
+
+      }
+
+      catch (\Exception $e) {
+        backdrop_set_message('Error: ' . $e->getMessage(), 'error');
+        $output = t('An error occurred while processing your request.');
+      }
+    } else {
+      $output = t('The @field field has no text. Please supply content to the @field field.', ['@field' => $target_field]);
+    }
+  } else {
+    $output = t('No field selected for analysis.');
+  }
+
+  $form['ai_moderate']['response']['#markup'] = $output;
+  return $form['ai_moderate']['response'];
+}
+
+if (!function_exists('mb_ucfirst')) {
+  function mb_ucfirst($string, $encoding = 'UTF-8') {
+    $firstChar = mb_substr($string, 0, 1, $encoding);
+    $rest = mb_substr($string, 1, null, $encoding);
+    return mb_strtoupper($firstChar, $encoding) . $rest;
+  }
+}
+

@@ -1,0 +1,60 @@
+<?php
+/**
+ * @file
+ * Example provider module (ai_example_provider) packaged inside `ai/examples/`.
+ *
+ * Copy this folder to `modules/contrib/ai_example_provider/` to enable it.
+ */
+
+/**
+ * Implements hook_autoload_info().
+ */
+function ai_example_provider_autoload_info() {
+  return [
+    'AIExampleAdapter' => 'includes/AiExampleAdapter.php',
+  ];
+}
+
+/**
+ * Implements hook_ai_provider_info().
+ */
+function ai_example_provider_ai_provider_info() {
+  return [
+    'example' => [
+      'label' => t('Example Provider'),
+      'description' => t('A small example provider module packaged with ai for developers.'),
+      'class' => 'AIExampleAdapter',
+      'website' => 'https://example.com/',
+      'key_url' => 'https://example.com/docs/api-keys',
+      'models_url' => 'https://example.com/models',
+    ],
+  ];
+}
+
+/**
+ * Provide minimal settings inside the central AI settings form.
+ */
+function ai_example_provider_ai_provider_settings_alter(&$settings, $context) {
+  if ($context['provider'] !== 'example') {
+    return;
+  }
+
+  $available_keys = function_exists('key_get_key_names_as_options') ? key_get_key_names_as_options() : [];
+
+  $settings['api_key_example'] = [
+    '#type' => 'key_select',
+    '#title' => t('Example Provider API Key'),
+    '#default_value' => config_get('ai.settings', 'api_key_example') ?: '',
+    '#options' => $available_keys,
+    '#key_filters' => ['type' => 'authentication'],
+    '#description' => t('Use the Key module to store your provider API key and select it here.'),
+  ];
+
+  if (isset($context['form'])) {
+    $context['form']['#submit'][] = 'ai_example_provider_settings_submit';
+  }
+}
+
+function ai_example_provider_settings_submit($form, &$form_state) {
+  // Example: write provider-specific config if you added fields.
+}

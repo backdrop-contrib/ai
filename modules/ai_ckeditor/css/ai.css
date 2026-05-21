@@ -1,0 +1,74 @@
+.ck-ai-form-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background-color: white;
+  border: 1px solid #ccc;
+  border-radius: 10px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+  padding: 20px;
+  z-index: 10000;
+  width: 350px;
+}
+
+.ck-form-buttons {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 15px;
+}
+
+.ck-input {
+  width: calc(100% - 10px);
+  min-height: 50px;
+  max-height: 300px; /* Prevents it from growing indefinitely */
+  margin-bottom: 10px;
+  padding: 5px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+  font-size: 1em;
+  line-height: 1.5; /* For consistent line spacing */
+  resize: none; /* Disables manual resizing */
+  overflow: hidden; /* Prevents scrollbars */
+  box-sizing: border-box; /* Ensures padding is included in dimensions */
+}
+
+.ck-form-buttons {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 15px;
+}
+
+.ck-button-save,
+.ck-button-cancel {
+  flex: 1;
+  /* Make the buttons take up equal width */
+  margin: 0 5px;
+  /* Add spacing between buttons */
+  padding: 5px 10px;
+  border-radius: 4px;
+  border: 1px solid #999;
+  background-color: #f0f0f0;
+  cursor: pointer;
+  text-align: center;
+}
+
+.ck-icon.ai-button-icon {
+  background-image: url('../icons/ai.svg');
+  width: 16px;
+  height: 16px;
+  display: inline-block;
+  background-size: contain;
+  background-repeat: no-repeat;
+}
+
+.ck-ai-status {
+  font-family: Arial, sans-serif;
+  font-size: 14px;
+  color: #333;
+  background-color: #f1f1f1;
+  border: 1px solid #ccc;
+  padding: 5px 10px;
+  border-radius: 5px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}

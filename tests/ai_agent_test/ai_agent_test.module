@@ -1,0 +1,247 @@
+<?php
+
+/**
+ * @file
+ * Hidden helper module for AI test coverage.
+ */
+
+/**
+ * Implements hook_autoload_info().
+ */
+function ai_agent_test_autoload_info() {
+  return [
+    'AITestSupportAdapter' => 'includes/AITestSupportAdapter.php',
+  ];
+}
+
+/**
+ * Implements hook_ai_chat_messages_alter().
+ */
+function ai_agent_test_ai_chat_messages_alter(array &$messages, array &$context) {
+  if (empty($context['test_prepend_system_message'])) {
+    return;
+  }
+
+  array_unshift($messages, [
+    'role' => 'system',
+    'content' => 'Injected by ai_agent_test.',
+  ]);
+}
+
+/**
+ * Implements hook_ai_chat_response_alter().
+ */
+function ai_agent_test_ai_chat_response_alter(&$response, array &$context) {
+  if (empty($context['test_suffix_response']) || !is_string($response)) {
+    return;
+  }
+
+  $response .= ' [post-altered]';
+}
+
+/**
+ * Implements hook_ai_provider_info().
+ */
+function ai_agent_test_ai_provider_info() {
+  return [
+    'agent_test' => [
+      'label' => t('Agent Test Provider'),
+      'description' => t('Deterministic fake provider for AI suite tests.'),
+      'class' => 'AITestSupportAdapter',
+    ],
+  ];
+}
+
+/**
+ * Implements hook_ai_tools().
+ */
+function ai_agent_test_ai_tools() {
+  return [
+    'test_echo_message' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'test_echo_message',
+          'description' => 'Echo a message for deterministic agent tests.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'message' => [
+                'type' => 'string',
+                'description' => 'Message to echo back.',
+              ],
+            ],
+            'required' => ['message'],
+          ],
+        ],
+      ],
+      'execute' => 'ai_agent_test_execute_test_echo_message',
+      'module' => 'ai_agent_test',
+      'category' => 'test',
+      'operation' => 'transform',
+      'destructive' => FALSE,
+    ],
+    'test_controlled_message' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'test_controlled_message',
+          'description' => 'Echo a controlled channel and message for constraint tests.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'channel' => [
+                'type' => 'string',
+                'description' => 'Channel selected by the agent configuration.',
+              ],
+              'message' => [
+                'type' => 'string',
+                'description' => 'Message to echo back.',
+              ],
+            ],
+            'required' => ['channel', 'message'],
+          ],
+        ],
+      ],
+      'execute' => 'ai_agent_test_execute_test_controlled_message',
+      'module' => 'ai_agent_test',
+      'category' => 'test',
+      'operation' => 'transform',
+      'destructive' => FALSE,
+    ],
+    'test_routed_message' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'test_routed_message',
+          'description' => 'Echo a channel and message for tool constraint tests.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'channel' => [
+                'type' => 'string',
+                'description' => 'Channel selected by the agent configuration.',
+              ],
+              'message' => [
+                'type' => 'string',
+                'description' => 'Message to echo back.',
+              ],
+            ],
+            'required' => ['channel', 'message'],
+          ],
+        ],
+      ],
+      'execute' => 'ai_agent_test_execute_test_routed_message',
+      'module' => 'ai_agent_test',
+      'category' => 'test',
+      'operation' => 'trigger',
+      'destructive' => FALSE,
+    ],
+    'test_write_message' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'test_write_message',
+          'description' => 'Echo a write-like message for approval tests.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'channel' => [
+                'type' => 'string',
+                'description' => 'Channel selected by the agent configuration.',
+              ],
+              'message' => [
+                'type' => 'string',
+                'description' => 'Message to echo back.',
+              ],
+            ],
+            'required' => ['channel', 'message'],
+          ],
+        ],
+      ],
+      'execute' => 'ai_agent_test_execute_test_write_message',
+      'module' => 'ai_agent_test',
+      'category' => 'test',
+      'operation' => 'write',
+      'destructive' => FALSE,
+    ],
+  ];
+}
+
+/**
+ * Implements hook_ai_async_callbacks().
+ */
+function ai_agent_test_ai_async_callbacks() {
+  return [
+    'ai_agent_test_async_echo' => t('Deterministic async echo callback for tests.'),
+  ];
+}
+
+/**
+ * Tool executor for deterministic tests.
+ */
+function ai_agent_test_execute_test_echo_message(array $args) {
+  return [
+    'echo' => isset($args['message']) ? (string) $args['message'] : '',
+  ];
+}
+
+/**
+ * Tool executor used by constraint tests.
+ */
+function ai_agent_test_execute_test_controlled_message(array $args) {
+  return [
+    'channel' => isset($args['channel']) ? (string) $args['channel'] : '',
+    'message' => isset($args['message']) ? (string) $args['message'] : '',
+  ];
+}
+
+/**
+ * Tool executor used by constraint tests.
+ */
+function ai_agent_test_execute_test_routed_message(array $args) {
+  return [
+    'channel' => isset($args['channel']) ? (string) $args['channel'] : '',
+    'message' => isset($args['message']) ? (string) $args['message'] : '',
+  ];
+}
+
+/**
+ * Tool executor used by approval tests.
+ */
+function ai_agent_test_execute_test_write_message(array $args) {
+  return [
+    'channel' => isset($args['channel']) ? (string) $args['channel'] : '',
+    'message' => isset($args['message']) ? (string) $args['message'] : '',
+  ];
+}
+
+/**
+ * Pre-execute hook for deterministic agent tests.
+ */
+function ai_agent_test_ai_agent_tool_pre_execute($tool_name, &$args, $agent_config) {
+  if ($tool_name === 'test_controlled_message') {
+    if (isset($args['message'])) {
+      $args['message'] = 'Hooked: ' . $args['message'];
+    }
+    return TRUE;
+  }
+
+  if ($tool_name === 'test_write_message') {
+    if (isset($args['message'])) {
+      $args['message'] = 'Approved: ' . $args['message'];
+    }
+    return TRUE;
+  }
+
+  return TRUE;
+}
+
+/**
+ * Async callback used by worker tests.
+ */
+function ai_agent_test_async_echo(array $data) {
+  return [
+    'echo' => isset($data['message']) ? (string) $data['message'] : '',
+  ];
+}

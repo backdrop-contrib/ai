@@ -1,0 +1,6 @@
+[AIMcpTestCase]
+name = AI MCP Server Test
+description = AI  MCP Server module.
+group = AI
+file = tests/ai_mcp.test
+backdrop = 1.x

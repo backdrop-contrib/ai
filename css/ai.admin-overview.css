@@ -1,0 +1,165 @@
+/* Shared section and card layout for AI admin pages (overview, explorer, settings). */
+
+.ai-admin-overview-grid {
+  /* Plain block container — sections stack on small screens. */
+}
+
+.ai-admin-overview-section {
+  border: 1px solid #d9dde3;
+  border-radius: 6px;
+  background: #fff;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.ai-admin-overview-section > h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+}
+
+.ai-admin-overview-cards {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+.ai-admin-overview-card {
+  border: 1px solid #e6e9ee;
+  border-radius: 4px;
+  padding: 0.75rem;
+  background: #fafbfc;
+}
+
+.ai-admin-overview-card h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+}
+
+.ai-admin-overview-card p {
+  margin: 0;
+  color: #4e5b69;
+}
+
+/* Two-column masonry layout for the main overview page. */
+@media (min-width: 960px) {
+  .ai-admin-overview-grid--masonry {
+    column-count: 2;
+    column-gap: 1.25rem;
+  }
+
+  /* Disable inner card grid so cards stack vertically within each section. */
+  .ai-admin-overview-grid--masonry .ai-admin-overview-cards {
+    display: block;
+  }
+
+  .ai-admin-overview-grid--masonry .ai-admin-overview-card {
+    margin-bottom: 0.75rem;
+  }
+
+  .ai-admin-overview-grid--masonry .ai-admin-overview-card:last-child {
+    margin-bottom: 0;
+  }
+}
+
+/* ── Settings page ────────────────────────────────────────────────────────── */
+
+/* Strip native <fieldset> border so provider cards aren't boxed inside a box. */
+.ai-providers-form fieldset.ai-providers-section,
+.ai-settings-form fieldset.ai-settings-section {
+  border: none;
+  padding: 0;
+  margin: 0 0 1.25rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Style legend like an h2 to match overview section headings. */
+.ai-providers-form fieldset.ai-providers-section > legend,
+.ai-settings-form fieldset.ai-settings-section > legend {
+  font-size: 1.1rem;
+  font-weight: bold;
+  margin-bottom: 0.75rem;
+  padding: 0;
+  float: none;
+  color: inherit;
+}
+
+/* Provider checkbox titles match standard form-label weight/size. */
+.ai-provider-card .form-type-checkbox > label,
+.ai-provider-card .form-type-checkbox > label.option {
+  font-size: 1em;
+  font-weight: bold;
+  color: #000;
+  display: inline;
+}
+
+.ai-provider-card .form-type-checkbox > input[type="checkbox"] {
+  vertical-align: middle;
+  margin-right: 0.4rem;
+}
+
+/* Provider cards — same style as overview cards for visual consistency. */
+.ai-provider-card {
+  border: 1px solid #e6e9ee;
+  border-radius: 4px;
+  background: #fafbfc;
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.ai-provider-card > .form-item {
+  margin-bottom: 0.35rem;
+}
+
+.ai-provider-card-settings {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #e6e9ee;
+}
+
+/* Description spans full width above the card columns. */
+.ai-providers-section .fieldset-wrapper > .fieldset-description,
+.ai-providers-section .fieldset-wrapper > .description,
+.ai-providers-section .fieldset-wrapper > .form-item.description {
+  width: 100%;
+  margin: 0 0 0.75rem;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+/* Two-column masonry for provider cards on wide screens. */
+@media (min-width: 1100px) {
+  .ai-providers-section .fieldset-wrapper {
+    display: block;
+    column-count: 2;
+    column-gap: 1.25rem;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .ai-providers-section .fieldset-wrapper > .fieldset-description,
+  .ai-providers-section .fieldset-wrapper > .description,
+  .ai-providers-section .fieldset-wrapper > .form-item.description {
+    display: block;
+    width: 100%;
+    margin: 0 0 0.75rem;
+    column-span: all;
+  }
+
+  .ai-providers-section .ai-provider-card {
+    display: block;
+    margin: 0 0 1rem;
+    break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .ai-providers-section .ai-provider-card:last-child {
+    margin-bottom: 0;
+  }
+}

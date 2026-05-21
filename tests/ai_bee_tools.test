@@ -1,0 +1,36 @@
+<?php
+
+/**
+ * @file
+ * Tests for AI Bee discovery tools.
+ */
+
+class AIBeeToolsTestCase extends BackdropWebTestCase {
+
+  public function setUp() {
+    parent::setUp(['ai', 'ai_tools', 'ai_agent']);
+  }
+
+  public function testBeeToolsRegistry() {
+    $tools = ai_tools_get_tools();
+
+    $this->assertTrue(isset($tools['get_bee_commands']), 'Bee command list tool is registered.');
+    $this->assertTrue(isset($tools['get_bee_command_help']), 'Bee command help tool is registered.');
+  }
+
+  public function testBeeToolsDispatch() {
+    $commands = json_decode(ai_tools_dispatch('get_bee_commands', []), TRUE);
+    $this->assertTrue(!empty($commands['commands']), 'Bee command list returned results.');
+
+    $names = [];
+    foreach ($commands['commands'] as $command) {
+      $names[] = $command['name'];
+    }
+    $this->assertTrue(in_array('agent-run', $names, TRUE), 'Agent run command is present.');
+    $this->assertTrue(in_array('help', $names, TRUE), 'Help command is present.');
+
+    $help = json_decode(ai_tools_dispatch('get_bee_command_help', ['command' => 'agent-run']), TRUE);
+    $this->assertEqual('agent-run', $help['command'], 'Bee help returned the expected command.');
+    $this->assertTrue(strpos($help['help'], 'Run an AI agent') !== FALSE, 'Bee help text includes the command description.');
+  }
+}

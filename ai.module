@@ -1,0 +1,867 @@
+<?php
+
+/**
+ * @file
+ * Core AI module.
+ */
+
+/**
+ * Implements hook_config_info().
+ */
+function ai_config_info() {
+  return [
+    'ai.settings' => [
+      'label' => t('AI Settings'),
+      'group' => t('AI'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_autoload_info().
+ */
+function ai_autoload_info() {
+  return [
+    'AIProviderClient' => 'includes/AIProviderClient.php',
+    'AIAdapterBase' => 'includes/AIAdapterBase.php',
+    'AIApi' => 'includes/AIApi.php',
+    'AIException' => 'includes/AIException.php',
+    'AIConfigurationException' => 'includes/AIConfigurationException.php',
+    'AIRateLimitException' => 'includes/AIRateLimitException.php',
+    'AIUnsupportedCapabilityException' => 'includes/AIUnsupportedCapabilityException.php',
+    'AIProviderResponseException' => 'includes/AIProviderResponseException.php',
+    'AICompatibleTrait' => 'includes/AICompatibleTrait.php',
+    'AIContentExtractor' => 'includes/AIContentExtractor.php',
+    'AILog' => 'includes/AILog.inc',
+    'AIStreamingResponse' => 'includes/AIStreamingResponse.php',
+    'AIStringHelper' => 'includes/AIStringHelper.php',
+  ];
+}
+
+/**
+ * Implements hook_entity_info().
+ */
+function ai_entity_info() {
+  $info['ai_log'] = [
+    'label' => t('AI Log'),
+    'controller class' => 'DefaultEntityController',
+    'entity class' => 'AILog',
+    'base table' => 'ai_log',
+    'entity keys' => [
+      'id' => 'id',
+    ],
+    'module' => 'ai',
+  ];
+
+  return $info;
+}
+
+/**
+ * Load a single log entry.
+ */
+function ai_log_load($id) {
+  $log = entity_load('ai_log', [$id]);
+  return $log ? reset($log) : FALSE;
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ai_menu() {
+  $items = [];
+
+  $items['admin/config/ai'] = [
+    'title' => 'AI',
+    'description' => 'Configure AI providers, defaults, and upgrade tools.',
+    'page callback' => 'ai_admin_overview',
+    'access arguments' => ['administer site configuration'],
+    'type' => MENU_NORMAL_ITEM,
+  ];
+
+  $items['admin/config/ai/settings'] = [
+    'title' => 'Settings',
+    'description' => 'Manage AI providers, API keys, and default models.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_providers_form'],
+    'access arguments' => ['administer site configuration'],
+    'file' => 'ai.admin.inc',
+    'type' => MENU_NORMAL_ITEM,
+    'weight' => -10,
+  ];
+
+  $items['admin/config/ai/settings/providers'] = [
+    'title' => 'Providers',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => -10,
+  ];
+
+  $items['admin/config/ai/settings/defaults'] = [
+    'title' => 'Default Models',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_defaults_form'],
+    'access arguments' => ['administer site configuration'],
+    'file' => 'ai.admin.inc',
+    'type' => MENU_LOCAL_TASK,
+    'weight' => -9,
+  ];
+
+  $items['admin/config/ai/settings/logging'] = [
+    'title' => 'API Logging',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_logging_form'],
+    'access arguments' => ['administer site configuration'],
+    'file' => 'ai.admin.inc',
+    'type' => MENU_LOCAL_TASK,
+    'weight' => -8,
+  ];
+
+  $items['admin/reports/ai'] = [
+    'title' => 'AI Logs',
+    'description' => 'AI reports and log entries.',
+    'page callback' => 'ai_log_list_page',
+    'access arguments' => ['access site reports'],
+    'file' => 'ai.logs.pages.inc',
+  ];
+
+  $items['admin/reports/ai/%ai_log'] = [
+    'title' => 'View AI Log',
+    'page callback' => 'ai_log_view_page',
+    'page arguments' => [3],
+    'access arguments' => ['access site reports'],
+    'file' => 'ai.logs.pages.inc',
+  ];
+
+
+  return $items;
+}
+
+/**
+ * Build provider documentation links for the settings UI.
+ *
+ * @param array $provider_info
+ *   Provider metadata from hook_ai_provider_info().
+ *
+ * @return string
+ *   HTML link markup prefixed with a space when links exist.
+ */
+function ai_provider_links_markup(array $provider_info) {
+  $links = [];
+
+  if (!empty($provider_info['website'])) {
+    $links[] = '<a href="' . check_url($provider_info['website']) . '" target="_blank">' . t('Learn more') . '</a>';
+  }
+
+  if (!empty($provider_info['models_url'])) {
+    $links[] = '<a href="' . check_url($provider_info['models_url']) . '" target="_blank">' . t('Supported models') . '</a>';
+  }
+
+  return !empty($links) ? ' ' . implode(' | ', $links) : '';
+}
+
+/**
+ * Page callback for the AI admin overview page.
+ */
+function ai_admin_overview() {
+  $sections = [
+    'Core' => [],
+    'Content and Editorial' => [],
+    'Safety and Governance' => [],
+    'Agents and Automation' => [],
+    'Integrations' => [],
+    'Diagnostics' => [],
+    'Other' => [],
+  ];
+  backdrop_add_css(backdrop_get_path('module', 'ai') . '/css/ai.admin-overview.css');
+
+  $menu_links = db_query("SELECT path, title, description, tab_parent, type FROM {menu_router} WHERE path LIKE :path ORDER BY title ASC", [':path' => 'admin/config/ai/%'])->fetchAll();
+
+  foreach ($menu_links as $link) {
+    if (!empty($link->tab_parent) || (int) $link->type !== MENU_NORMAL_ITEM) {
+      continue;
+    }
+
+    $path = $link->path;
+    if ($path === 'admin/config/ai') {
+      continue;
+    }
+
+    if ($path === 'admin/config/ai/openrouter') {
+      continue;
+    }
+
+    // Keep the overview focused on top-level destinations. Explorer tool
+    // entries are listed on the AI Explorer landing page instead.
+    if (strpos($path, 'admin/config/ai/ai-explorer/') === 0 || strpos($path, 'admin/config/ai/explorer/') === 0) {
+      continue;
+    }
+
+    if (preg_match('/(\/edit|\/delete|\/add)$/', $path) || strpos($path, '%') !== FALSE) {
+      continue;
+    }
+
+    $title = !empty($link->title) ? t($link->title) : t(ucwords(str_replace('_', ' ', basename($path))));
+    if (in_array($title, ['Dashboard', 'Overview'], TRUE)) {
+      continue;
+    }
+    $description = !empty($link->description) ? t($link->description) : '';
+    $category = ai_admin_overview_category($path, $title);
+    $sections[$category][] = [
+      'title' => $title,
+      'description' => $description,
+      'path' => $path,
+    ];
+  }
+
+  // Surface MCP in AI overview, even though its canonical path is under
+  // Web services.
+  if (module_exists('ai_mcp')) {
+    $mcp_item = menu_get_item('admin/config/services/mcp');
+    if (!empty($mcp_item['access'])) {
+      $sections['Integrations'][] = [
+        'title' => t('MCP Servers'),
+        'description' => t('Manage MCP server configurations and API tool exposure.'),
+        'path' => 'admin/config/services/mcp',
+      ];
+    }
+  }
+
+  $output = '<div class="ai-admin-overview-grid ai-admin-overview-grid--masonry">';
+  foreach ($sections as $heading => $links) {
+    if (empty($links)) {
+      continue;
+    }
+    usort($links, function ($a, $b) {
+      return strcasecmp($a['title'], $b['title']);
+    });
+
+    $output .= '<section class="ai-admin-overview-section">';
+    $output .= '<h2>' . check_plain($heading) . '</h2>';
+    $output .= '<div class="ai-admin-overview-cards">';
+
+    foreach ($links as $item) {
+      $output .= '<article class="ai-admin-overview-card">';
+      $output .= '<h3>' . l($item['title'], $item['path']) . '</h3>';
+      if (!empty($item['description'])) {
+        $output .= '<p>' . check_plain($item['description']) . '</p>';
+      }
+      $output .= '</article>';
+    }
+
+    $output .= '</div>';
+    $output .= '</section>';
+  }
+  $output .= '</div>';
+
+  return ['#markup' => $output];
+}
+
+/**
+ * Group AI admin links into overview categories.
+ */
+function ai_admin_overview_category($path, $title) {
+  if (in_array($path, ['admin/config/ai/settings', 'admin/config/ai/upgrade'], TRUE)) {
+    return 'Core';
+  }
+
+  $path_lc = strtolower($path);
+  $title_lc = strtolower($title);
+
+  if (strpos($path_lc, 'site-context') !== FALSE || strpos($title_lc, 'site context') !== FALSE) {
+    return 'Core';
+  }
+
+  if (strpos($path_lc, 'ai-agents') !== FALSE || strpos($path_lc, 'field-automator') !== FALSE) {
+    return 'Agents and Automation';
+  }
+
+  foreach (['guardrails', 'privacy', 'moderation', 'rate-limit', 'lifecycle'] as $keyword) {
+    if (strpos($path_lc, $keyword) !== FALSE || strpos($title_lc, $keyword) !== FALSE) {
+      return 'Safety and Governance';
+    }
+  }
+
+  foreach (['alt', 'content', 'related', 'seo', 'metatag', 'assistants'] as $keyword) {
+    if (strpos($path_lc, $keyword) !== FALSE || strpos($title_lc, $keyword) !== FALSE) {
+      return 'Content and Editorial';
+    }
+  }
+
+  foreach (['dblog', 'devel', 'explorer', 'openrouter'] as $keyword) {
+    if (strpos($path_lc, $keyword) !== FALSE || strpos($title_lc, $keyword) !== FALSE) {
+      return 'Developer and Diagnostics';
+    }
+  }
+
+  return 'Other';
+}
+
+/**
+ * Implements hook_menu_local_tasks_alter().
+ */
+function ai_menu_local_tasks_alter(&$data, $router_item, $root_path) {
+  if ($root_path === 'admin/config/ai' && !empty($router_item['path']) && $router_item['path'] === 'admin/config/ai') {
+    $data['tabs'][0]['output'] = [];
+    $data['tabs'][1]['output'] = [];
+  }
+}
+
+/**
+ * Page callback for the AI reports overview page.
+ */
+function ai_admin_reports_overview() {
+  $items = [];
+  $menu_links = db_query("SELECT path, title, description, tab_parent FROM {menu_router} WHERE path LIKE :path ORDER BY title ASC", [':path' => 'admin/reports/ai/%'])->fetchAll();
+
+  foreach ($menu_links as $link) {
+    if (!empty($link->tab_parent)) {
+      continue;
+    }
+
+    $path = $link->path;
+    if ($path === 'admin/reports/ai') {
+      continue;
+    }
+
+    if (preg_match('/(\/edit|\/delete|\/add)$/', $path) || strpos($path, '%') !== FALSE) {
+      continue;
+    }
+
+    $title = !empty($link->title) ? t($link->title) : t(ucwords(str_replace('_', ' ', basename($path))));
+    $description = !empty($link->description) ? t($link->description) : '';
+    $items[$title] = '<dt>' . l($title, $path) . '</dt><dd>' . $description . '</dd>';
+  }
+
+  ksort($items);
+
+  return '<dl>' . implode("\n", $items) . '</dl>';
+}
+/**
+ * Implements hook_cron().
+ */
+function ai_cron() {
+  $max_age = config_get('ai.settings', 'ai_log_max_age');
+  if ($max_age > 0) {
+    $cutoff = REQUEST_TIME - $max_age;
+    db_delete('ai_log')
+      ->condition('timestamp', $cutoff, '<')
+      ->execute();
+  }
+}
+
+/**
+ * Return provider metadata from hook_ai_provider_info().
+ *
+ * @param bool $include_builtin
+ *   Unused for now. Reserved for future built-in providers.
+ *
+ * @return array
+ *   Provider info keyed by provider ID.
+ */
+function ai_get_providers($include_builtin = FALSE) {
+  $providers = module_invoke_all('ai_provider_info');
+
+  uasort($providers, function ($a, $b) {
+    $label_a = isset($a['label']) ? (string) $a['label'] : '';
+    $label_b = isset($b['label']) ? (string) $b['label'] : '';
+    return strcasecmp($label_a, $label_b);
+  });
+
+  return $providers;
+}
+
+/**
+ * Get a readable label for a provider ID.
+ */
+function ai_get_provider_label($provider_id) {
+  $providers = ai_get_providers();
+  if (!empty($providers[$provider_id]['label'])) {
+    return $providers[$provider_id]['label'];
+  }
+
+  $providers_root = config_get('ai.settings', 'providers') ?: [];
+  if (!empty($providers_root[$provider_id]['label'])) {
+    return $providers_root[$provider_id]['label'];
+  }
+
+  return ucfirst((string) $provider_id);
+}
+
+/**
+ * Build a cache key for provider model discovery.
+ */
+function ai_models_cache_key($provider_id, $method, array $method_args = []) {
+  return 'ai:models:' . $provider_id . ':' . $method . ':' . hash('sha256', serialize($method_args));
+}
+
+/**
+ * Clear cached provider model discovery results.
+ */
+function ai_clear_models_cache() {
+  $providers_root = config_get('ai.settings', 'providers') ?: [];
+
+  foreach (array_keys($providers_root) as $provider_id) {
+    cache_clear_all('ai:models:' . $provider_id . ':', 'cache', TRUE);
+  }
+}
+
+/**
+ * Returns a single setting from the central AI providers config.
+ *
+ * @param string $provider
+ *   Provider key as stored in config, e.g. 'ollama', 'aws_bedrock'.
+ * @param string $key
+ *   Setting key within that provider's sub-array.
+ * @param mixed $default
+ *   Value to return when the key is absent or empty.
+ *
+ * @return mixed
+ */
+function ai_get_provider_setting($provider, $key, $default = NULL) {
+  $providers = config_get('ai.settings', 'providers') ?: [];
+  $value = isset($providers[$provider][$key]) ? $providers[$provider][$key] : NULL;
+  return ($value !== NULL && $value !== '') ? $value : $default;
+}
+
+/**
+ * Return a user-safe message for an AI-related exception.
+ */
+function ai_exception_user_message(\Throwable $exception, $fallback = 'AI request failed.') {
+  if ($exception instanceof AIException) {
+    return $exception->getUserSafeMessage();
+  }
+
+  return (string) $fallback;
+}
+
+/**
+ * Return structured exception context for logging.
+ */
+function ai_exception_context(\Throwable $exception): array {
+  if ($exception instanceof AIException) {
+    return $exception->toArray();
+  }
+
+  return [
+    'type' => get_class($exception),
+    'message' => $exception->getMessage(),
+  ];
+}
+
+/**
+ * Parse a provider-prefixed model ID.
+ *
+ * @return array
+ *   Two-element array: [provider, model_id].
+ */
+function ai_parse_model_id($prefixed_model) {
+  if (strpos($prefixed_model, '/') !== FALSE) {
+    return explode('/', $prefixed_model, 2);
+  }
+  return [NULL, $prefixed_model];
+}
+
+/**
+ * Pick the default provider ID for unprefixed model requests.
+ */
+function ai_default_provider_id() {
+  $providers_root = config_get('ai.settings', 'providers') ?: [];
+  foreach ($providers_root as $provider_id => $provider_config) {
+    if (!empty($provider_config['enabled'])) {
+      return $provider_id;
+    }
+  }
+
+  return '';
+}
+
+/**
+ * Get a provider API wrapper.
+ *
+ * @param string $provider_id
+ *   Provider ID.
+ *
+ * @return AIApi|null
+ *   API wrapper or NULL when provider is unavailable.
+ */
+function ai_get_api($provider_id = NULL) {
+  $provider_id = $provider_id ?: ai_default_provider_id();
+  $providers_root = config_get('ai.settings', 'providers') ?: [];
+  $api_key_name = !empty($providers_root[$provider_id]['api_key']) ? $providers_root[$provider_id]['api_key'] : '';
+
+  $providers_info = ai_get_providers();
+  if (empty($providers_info[$provider_id]['class'])) {
+    return NULL;
+  }
+
+  $class = $providers_info[$provider_id]['class'];
+  $provider_module = 'ai_provider_' . $provider_id;
+  if (!class_exists($class) && module_exists($provider_module)) {
+    @module_load_include('php', $provider_module, 'includes/' . $class);
+  }
+
+  if (!class_exists($class)) {
+    return NULL;
+  }
+
+  try {
+    $api_key = '';
+    if ($api_key_name !== '') {
+      $api_key = key_get_key_value($api_key_name);
+    }
+
+    return new AIApi($api_key ?: '', $provider_id);
+  }
+  catch (\Exception $e) {
+    watchdog('ai', 'Failed to instantiate API wrapper for @provider: @message', [
+      '@provider' => $provider_id,
+      '@message' => $e->getMessage(),
+    ], WATCHDOG_WARNING);
+    return NULL;
+  }
+}
+
+/**
+ * Get a provider API wrapper for a model ID.
+ */
+function ai_get_api_for_model($model_id, &$stripped_model_id = NULL) {
+  if (empty($model_id)) {
+    return NULL;
+  }
+
+  list($provider, $model_without_provider) = ai_parse_model_id($model_id);
+  $stripped_model_id = $model_without_provider;
+
+  if (!empty($provider)) {
+    return ai_get_api($provider);
+  }
+
+  return ai_get_api(ai_default_provider_id());
+}
+
+/**
+ * Get embedding dimension for a model.
+ *
+ * @param string $model_id
+ *   The model ID. May include provider prefix.
+ * @param string $provider_id
+ *   The provider ID.
+ *
+ * @return int
+ *   The embedding dimension.
+ */
+function ai_get_embedding_dimension($model_id, $provider_id = NULL) {
+  $provider_id = $provider_id ?: ai_default_provider_id();
+  $dynamic_dimension = ai_detect_embedding_dimension($model_id, $provider_id);
+  if ($dynamic_dimension > 0) {
+    $dimension = $dynamic_dimension;
+  }
+  else {
+    $known_dimensions = [
+      'text-embedding-ada-002' => 1536,
+      'text-embedding-3-small' => 1536,
+      'text-embedding-3-large' => 3072,
+      'openai/text-embedding-3-large' => 3072,
+      'openai/text-embedding-3-small' => 1536,
+      'openai/text-embedding-ada-002' => 1536,
+      'voyage-ai/voyage-3' => 1024,
+      'voyage-ai/voyage-3-lite' => 512,
+      'cohere/embed-english-v3.0' => 1024,
+      'cohere/embed-multilingual-v3.0' => 1024,
+    ];
+
+    $dimension = isset($known_dimensions[$model_id]) ? $known_dimensions[$model_id] : 1536;
+  }
+
+  backdrop_alter('ai_embedding_dimension', $dimension, $model_id, $provider_id);
+
+  return $dimension;
+}
+
+/**
+ * Get all embedding models from all enabled providers with dimension info.
+ */
+function ai_get_all_embedding_models_with_dimensions() {
+  $models = [];
+  $providers_root = config_get('ai.settings', 'providers') ?: [];
+
+  foreach ($providers_root as $provider_id => $provider_config) {
+    if (empty($provider_config['enabled'])) {
+      continue;
+    }
+
+    try {
+      $provider_api = ai_get_api($provider_id);
+      if (!$provider_api) {
+        continue;
+      }
+
+      $provider_models = $provider_api->getEmbeddingModels();
+      if (!empty($provider_models)) {
+        foreach ($provider_models as $model_id => $model_name) {
+          $dimension = ai_get_embedding_dimension($model_id, $provider_id);
+
+          // Only include models that actually support embeddings (dimension > 0)
+          if ($dimension <= 0) {
+            continue;
+          }
+
+          // Prefix model ID with provider to create fully-qualified name
+          $qualified_id = $provider_id . '/' . $model_id;
+
+          $models[$qualified_id] = [
+            'name' => $model_name,
+            'provider' => $provider_id,
+            'dimension' => $dimension,
+            'label' => $model_name . ' (' . ai_get_provider_label($provider_id) . ')',
+          ];
+        }
+      }
+    }
+    catch (\Exception $e) {
+      watchdog('openai', 'Failed to fetch embedding models from @provider: @message', [
+        '@provider' => $provider_id,
+        '@message' => $e->getMessage(),
+      ], WATCHDOG_WARNING);
+    }
+  }
+
+  return $models;
+}
+
+/**
+ * Dynamically detect embedding dimension by making a test API call.
+ *
+ * @param string $model_id
+ *   The model ID.
+ * @param string $provider_id
+ *   The provider ID.
+ *
+ * @return int
+ *   The detected dimension, or 0 if detection failed.
+ */
+function ai_detect_embedding_dimension($model_id, $provider_id) {
+  $cache_key = "ai:embedding_dim:{$provider_id}:{$model_id}";
+  $cached = cache_get($cache_key);
+  if ($cached && isset($cached->data)) {
+    return (int) $cached->data;
+  }
+
+  try {
+    $api = ai_get_api($provider_id);
+    if (!$api || !method_exists($api, 'embedding')) {
+      return 0;
+    }
+
+    $test_embedding = $api->embedding('test', $model_id, FALSE);
+    if (empty($test_embedding) || !is_array($test_embedding)) {
+      cache_set($cache_key, 0, 'cache', time() + 3600);
+      return 0;
+    }
+
+    $dimension = count($test_embedding);
+    if ($dimension > 0) {
+      cache_set($cache_key, $dimension, 'cache', time() + 86400);
+      return $dimension;
+    }
+  }
+  catch (\Exception $e) {
+    watchdog('ai', 'Failed to detect embedding dimension for @model: @error', [
+      '@model' => $model_id,
+      '@error' => $e->getMessage(),
+    ], WATCHDOG_DEBUG);
+  }
+
+  return 0;
+}
+
+/**
+ * Apply caller context to adapters that support it.
+ */
+function ai_assign_api_caller_module($api) {
+  if (!$api || !method_exists($api, 'setCallerModule')) {
+    return;
+  }
+
+  foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 10) as $step) {
+    if (!empty($step['function']) && preg_match('/^(ai_[a-z0-9_]+?)_/', $step['function'], $matches)) {
+      $api->setCallerModule($matches[1]);
+      return;
+    }
+  }
+}
+
+/**
+ * Wrapper function for chat completions.
+ */
+function ai_chat($model, array $messages, $temperature = 0.7, $max_tokens = 1024, $stream_response = FALSE, array $context_extra = []) {
+  $stripped_model = '';
+  $api = ai_get_api_for_model($model, $stripped_model);
+
+  if (!$api) {
+    throw new Exception(t('No API provider is configured for model @model.', ['@model' => $model]));
+  }
+
+  return $api->chat($stripped_model, $messages, $temperature, $max_tokens, $stream_response, $context_extra);
+}
+
+/**
+ * Wrapper function for moderation.
+ */
+function ai_moderation($input, $model = 'omni-moderation-latest') {
+  $stripped_model = '';
+  $api = ai_get_api_for_model($model, $stripped_model);
+
+  if (!$api) {
+    throw new Exception(t('No API provider is configured for moderation.'));
+  }
+
+  return $api->moderation($input, $stripped_model);
+}
+
+/**
+ * Get all models from enabled providers.
+ */
+function ai_get_all_models() {
+  return ai_get_all_models_for_method('getModels');
+}
+
+/**
+ * Get all chat models from enabled providers.
+ */
+function ai_get_all_chat_models() {
+  return ai_get_all_models_for_method('getChatModels');
+}
+
+/**
+ * Get all image models from enabled providers.
+ */
+function ai_get_all_image_models() {
+  return ai_get_all_models_for_method('getImageModels');
+}
+
+/**
+ * Get all vision models from enabled providers.
+ */
+function ai_get_all_vision_models() {
+  return ai_get_all_models_for_method('getVisionModels');
+}
+
+/**
+ * Get all text-to-speech models from enabled providers.
+ */
+function ai_get_all_tts_models() {
+  return ai_get_all_models_for_method('getModelsByCapability', ['tts']);
+}
+
+/**
+ * Get all speech-to-text models from enabled providers.
+ */
+function ai_get_all_stt_models() {
+  return ai_get_all_models_for_method('getModelsByCapability', ['stt']);
+}
+
+/**
+ * Get all moderation models from enabled providers.
+ */
+function ai_get_all_moderation_models() {
+  return ai_get_all_models_for_method('getModelsByCapability', ['moderation']);
+}
+
+/**
+ * Generic model collector for enabled providers.
+ */
+function ai_get_all_models_for_method($method, array $method_args = []) {
+  $models = [];
+  $providers_root = config_get('ai.settings', 'providers') ?: [];
+
+  foreach ($providers_root as $provider_id => $provider_config) {
+    if (empty($provider_config['enabled'])) {
+      continue;
+    }
+
+    try {
+      $cache_key = ai_models_cache_key($provider_id, $method, $method_args);
+      $cached = cache_get($cache_key);
+      if ($cached && is_array($cached->data)) {
+        $provider_models = $cached->data;
+      }
+      else {
+        $provider_api = ai_get_api($provider_id);
+        if (!$provider_api) {
+          continue;
+        }
+
+        if ($method === 'getModelsByCapability') {
+          $provider_models = $provider_api->getModelsByCapability($method_args[0] ?? '');
+        }
+        elseif (method_exists($provider_api, $method)) {
+          $provider_models = $provider_api->{$method}();
+        }
+        else {
+          $provider_models = $provider_api->getModels();
+        }
+
+        if (is_array($provider_models)) {
+          cache_set($cache_key, $provider_models, 'cache', REQUEST_TIME + 21600);
+        }
+      }
+
+      if (empty($provider_models)) {
+        continue;
+      }
+
+      $provider_label = ai_get_provider_label($provider_id);
+      foreach ($provider_models as $model_id => $model_name) {
+        $prefixed_id = $provider_id . '/' . $model_id;
+        $models[$provider_label][$prefixed_id] = $model_name;
+      }
+    }
+    catch (\Exception $e) {
+      watchdog('ai', 'Failed to fetch models from @provider: @message', [
+        '@provider' => $provider_id,
+        '@message' => $e->getMessage(),
+      ], WATCHDOG_WARNING);
+    }
+  }
+
+  ksort($models);
+  return $models;
+}
+
+/**
+ * Flattens a grouped models array into a single id => label map.
+ */
+function ai_flatten_models(array $grouped) {
+  $flat = [];
+  foreach ($grouped as $key => $value) {
+    if (is_array($value)) {
+      foreach ($value as $k => $v) {
+        $flat[$k] = $v;
+      }
+    }
+    else {
+      $flat[$key] = $value;
+    }
+  }
+  return $flat;
+}
+
+/**
+ * Picks the best available default model from a grouped models array.
+ */
+function ai_default_model(array $grouped, $preferred = NULL, array $fallbacks = []) {
+  $flat = ai_flatten_models($grouped);
+  if (empty($flat)) {
+    return $preferred;
+  }
+  if ($preferred && isset($flat[$preferred])) {
+    return $preferred;
+  }
+  foreach ($fallbacks as $candidate) {
+    if (isset($flat[$candidate])) {
+      return $candidate;
+    }
+  }
+  reset($flat);
+  return key($flat);
+}

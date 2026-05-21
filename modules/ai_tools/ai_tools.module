@@ -1,0 +1,240 @@
+<?php
+
+/**
+ * @file
+ * AI Tools registry module.
+ *
+ * Provides ai_tools_get_tools() and ai_tools_dispatch() as the
+ * canonical API for tool-calling workflows. Built-in tools are organised
+ * in includes/ by domain. Any module may extend the registry via
+ * hook_ai_tools() and hook_ai_tools_alter().
+ *
+ * Each tool entry shape:
+ * @code
+ * 'tool_key' => [
+ *   'definition' => [...tool-calling schema...],
+ *   'execute'    => 'callback_function_name',
+ *   'module'     => 'mymodule',   // informational
+ *   'category'   => 'node',       // for grouping in UIs
+ * ]
+ * @endcode
+ */
+
+// -----------------------------------------------------------------------
+// Public API
+// -----------------------------------------------------------------------
+
+/**
+ * Returns all registered tools, merged and altered.
+ *
+ * @return array
+ *   Keyed by tool name.
+ */
+function ai_tools_get_tools() {
+  $tools = module_invoke_all('ai_tools');
+  backdrop_alter('ai_tools', $tools);
+
+  $filtered = [];
+  foreach ($tools as $key => $tool) {
+    $prepared = ai_tools_prepare_tool($key, $tool);
+    if (!empty($prepared)) {
+      $filtered[$key] = $prepared;
+    }
+  }
+
+  return $filtered;
+}
+
+/**
+ * Normalizes and filters a tool definition for the current user.
+ */
+function ai_tools_prepare_tool($tool_key, array $tool) {
+  if (empty($tool['definition']['function']['name'])) {
+    return [];
+  }
+
+  $tool['definition'] = ai_tools_normalize_definition_schema($tool['definition']);
+
+  $tool += [
+    'operation' => 'read',
+    'destructive' => FALSE,
+    'permission' => '',
+    'requirements' => NULL,
+  ];
+
+  if (!ai_tools_requirements_met($tool['requirements'])) {
+    return [];
+  }
+
+  if (!empty($tool['permission']) && !user_access($tool['permission'])) {
+    return [];
+  }
+
+  return $tool;
+}
+
+/**
+ * Normalizes tool JSON schema fragments before sending them to providers.
+ */
+function ai_tools_normalize_definition_schema(array $definition) {
+  if (isset($definition['function']['parameters']) && is_array($definition['function']['parameters'])) {
+    $definition['function']['parameters'] = ai_tools_normalize_json_schema($definition['function']['parameters']);
+  }
+
+  return $definition;
+}
+
+/**
+ * Keeps empty JSON Schema object maps encoded as JSON objects, not arrays.
+ */
+function ai_tools_normalize_json_schema(array $schema) {
+  if (isset($schema['properties']) && is_array($schema['properties']) && empty($schema['properties'])) {
+    $schema['properties'] = new stdClass();
+  }
+
+  foreach ($schema as $key => $value) {
+    if ($value instanceof stdClass) {
+      continue;
+    }
+    if (is_array($value)) {
+      $schema[$key] = ai_tools_normalize_json_schema($value);
+    }
+  }
+
+  return $schema;
+}
+
+/**
+ * Checks whether tool requirements are met.
+ */
+function ai_tools_requirements_met($requirements) {
+  if (empty($requirements)) {
+    return TRUE;
+  }
+
+  if (is_string($requirements) && function_exists($requirements)) {
+    return (bool) call_user_func($requirements);
+  }
+
+  if (is_callable($requirements)) {
+    return (bool) call_user_func($requirements);
+  }
+
+  return FALSE;
+}
+
+/**
+ * Dispatches a tool call by name and returns a JSON-encoded result string.
+ *
+ * @param string $name
+ *   Tool name matching the 'name' key in its function definition.
+ * @param array $arguments
+ *   Decoded arguments from the model.
+ *
+ * @return string
+ *   JSON-encoded result suitable for returning as a tool message.
+ */
+function ai_tools_dispatch($name, array $arguments) {
+  $tools = ai_tools_get_tools();
+  if (!isset($tools[$name])) {
+    return json_encode(['error' => "Unknown tool: $name"]);
+  }
+  $tool = $tools[$name];
+  $callback = $tool['execute'];
+  if (!function_exists($callback)) {
+    return json_encode(['error' => "Executor not found for tool: $name"]);
+  }
+  // Merge any static args declared in the tool definition before calling.
+  if (!empty($tool['execute_args']) && is_array($tool['execute_args'])) {
+    foreach ($tool['execute_args'] as $key => $value) {
+      $arguments['_' . $key] = $value;
+    }
+  }
+  $result = $callback($arguments);
+  return is_string($result) ? $result : json_encode($result);
+}
+
+// -----------------------------------------------------------------------
+// Explorer UI
+// -----------------------------------------------------------------------
+
+/**
+ * Implements hook_menu().
+ */
+function ai_tools_menu() {
+  $items['admin/config/ai/ai-explorer/tool-explorer'] = [
+    'title'            => 'Tool Explorer',
+    'description'      => 'Interactively test tool/function calling against any configured provider and model.',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_tools_explorer_form'],
+    'access arguments' => ['administer site configuration'],
+    'file'             => 'includes/explorer.inc',
+    'type'             => MENU_NORMAL_ITEM,
+    'weight'           => -1,
+  ];
+  return $items;
+}
+
+// -----------------------------------------------------------------------
+// Built-in tools via hook_ai_tools()
+// -----------------------------------------------------------------------
+
+/**
+ * Implements hook_ai_tools().
+ */
+function ai_tools_ai_tools() {
+  $tools = [];
+
+  module_load_include('inc', 'ai_tools', 'includes/node.tools');
+  $tools += ai_tools_node_definitions();
+
+  module_load_include('inc', 'ai_tools', 'includes/site.tools');
+  $tools += ai_tools_site_definitions();
+
+  module_load_include('inc', 'ai_tools', 'includes/bee.tools');
+  $tools += ai_tools_bee_definitions();
+
+  module_load_include('inc', 'ai_tools', 'includes/taxonomy.tools');
+  $tools += ai_tools_taxonomy_definitions();
+
+  module_load_include('inc', 'ai_tools', 'includes/user.tools');
+  $tools += ai_tools_user_definitions();
+
+  module_load_include('inc', 'ai_tools', 'includes/content_type.tools');
+  $tools += ai_tools_content_type_definitions();
+
+  module_load_include('inc', 'ai_tools', 'includes/field.tools');
+  $tools += ai_tools_field_definitions();
+
+  module_load_include('inc', 'ai_tools', 'includes/entity.tools');
+  $tools += ai_tools_entity_definitions();
+
+  module_load_include('inc', 'ai_tools', 'includes/media.tools');
+  $tools += ai_tools_media_definitions();
+
+  module_load_include('inc', 'ai_tools', 'includes/config.tools');
+  $tools += ai_tools_config_definitions();
+
+  if (module_exists('views')) {
+    module_load_include('inc', 'ai_tools', 'includes/views.tools');
+    $tools += ai_tools_views_definitions();
+  }
+
+  return $tools;
+}
+
+/**
+ * Implements hook_ai_explorer_explorers_alter().
+ *
+ * Adds the Tool Explorer to the AI Explorer overview page if user has access.
+ */
+function ai_tools_ai_explorer_explorers_alter(&$explorers) {
+  $tool_item = menu_get_item('admin/config/ai/ai-explorer/tool-explorer');
+  if (!empty($tool_item['access'])) {
+    $explorers[] = [
+      'title' => t('Tool Explorer'),
+      'path' => 'admin/config/ai/ai-explorer/tool-explorer',
+      'description' => t('Interactively test tool/function calling against configured providers.'),
+    ];
+  }
+}

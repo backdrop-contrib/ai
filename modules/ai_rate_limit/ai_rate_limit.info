@@ -1,0 +1,7 @@
+name = AI Rate Limit
+description = Enforces per-provider request rate limits for all external AI API calls. Prevents runaway costs and respects upstream provider rate limits by tracking calls in the database and blocking requests that exceed configured thresholds.
+package = AI
+backdrop = 1.x
+type = module
+dependencies[] = ai
+configure = admin/config/ai/ai-rate-limit

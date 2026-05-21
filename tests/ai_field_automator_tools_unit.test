@@ -1,0 +1,113 @@
+<?php
+
+/**
+ * @file
+ * Unit tests for tool-aware Field Automator plugin routing.
+ *
+ * These cover the pure decision logic around which tool list each plugin
+ * passes to callAIWithTools() when the candidate set is large. They override
+ * the decision point and the AI call so no DB, hooks, or site install are
+ * required.
+ */
+
+require_once backdrop_get_path('module', 'ai_field_automator') . '/includes/AIFieldAutomatorInterface.inc';
+require_once backdrop_get_path('module', 'ai_field_automator') . '/includes/AIFieldAutomatorBase.inc';
+require_once backdrop_get_path('module', 'ai_field_automator') . '/includes/plugins/reference/TaxonomyTerms.inc';
+require_once backdrop_get_path('module', 'ai_field_automator') . '/includes/plugins/reference/EntityReference.inc';
+
+use ai_field_automator\includes\plugins\reference\AIFieldAutomatorEntityReference;
+use ai_field_automator\includes\plugins\reference\AIFieldAutomatorTaxonomyTerms;
+
+class AIFieldAutomatorTaxonomyUnitProbe extends AIFieldAutomatorTaxonomyTerms {
+
+  public $captured_tools = [];
+  protected $allowed_terms = [];
+
+  public function __construct(array $allowed_terms = []) {
+    $this->allowed_terms = $allowed_terms;
+  }
+
+  protected function buildPrompts($entity, array $config) {
+    return ['Classify this content.'];
+  }
+
+  protected function getAllowedTerms($field_name) {
+    return $this->allowed_terms;
+  }
+
+  protected function shouldUseToolLookup(array $term_map, array $config) {
+    return !empty($term_map) && count($term_map) > 50;
+  }
+
+  protected function callAIWithTools(array $messages, array $tools, array $config, $max_rounds = 3) {
+    $this->captured_tools = $tools;
+    return '[{"value":"News"}]';
+  }
+}
+
+class AIFieldAutomatorEntityReferenceUnitProbe extends AIFieldAutomatorEntityReference {
+
+  public $captured_tools = [];
+  protected $referenceable_options = [];
+
+  public function __construct(array $referenceable_options = []) {
+    $this->referenceable_options = $referenceable_options;
+  }
+
+  protected function buildPrompts($entity, array $config) {
+    return ['Find the best reference.'];
+  }
+
+  protected function getReferenceableOptions($field_name, array $config) {
+    return $this->referenceable_options;
+  }
+
+  protected function shouldUseToolLookup($field_name, array $options, array $config) {
+    return TRUE;
+  }
+
+  protected function callAIWithTools(array $messages, array $tools, array $config, $max_rounds = 3) {
+    $this->captured_tools = $tools;
+    return '[{"value":"13"}]';
+  }
+}
+
+class AIFieldAutomatorToolsUnitTestCase extends BackdropUnitTestCase {
+
+  public function setUp() {
+    parent::setUp();
+  }
+
+  public function testTaxonomyTermsUsesToolsForLargeLists() {
+    $terms = [];
+    for ($i = 1; $i <= 51; $i++) {
+      $terms[$i] = 'Term ' . $i;
+    }
+
+    $probe = new AIFieldAutomatorTaxonomyUnitProbe($terms);
+    $result = $probe->generate((object) [], 'field_tags', [
+      'model' => 'agent_test/gpt-4o-mini',
+      'taxonomy_auto_create' => FALSE,
+    ]);
+
+    $this->assertEqual(['News'], $result, 'Taxonomy plugin returned the tool-generated value.');
+    $this->assertEqual(['get_vocabularies', 'get_taxonomy_terms'], $probe->captured_tools, 'Taxonomy plugin passes the expected tool list when tool lookup is selected.');
+  }
+
+  public function testEntityReferenceUsesToolsForLargeLists() {
+    $options = [];
+    for ($i = 1; $i <= 101; $i++) {
+      $options[$i] = 'Node ' . $i;
+    }
+
+    $probe = new AIFieldAutomatorEntityReferenceUnitProbe($options);
+    $result = $probe->generate((object) [], 'field_reference', [
+      'model' => 'agent_test/gpt-4o-mini',
+      'entity_type' => 'node',
+      'bundle' => 'page',
+    ]);
+
+    $this->assertEqual([13], $result, 'Entity reference plugin returned the tool-generated ID.');
+    $this->assertEqual(['search_nodes', 'get_node_info', 'get_nodes_by_type'], $probe->captured_tools, 'Entity reference plugin passes the expected node tool list when tool lookup is selected.');
+  }
+}

@@ -1,0 +1,40 @@
+.ai-tools-explorer-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.ai-tools-explorer-cards .form-checkboxes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.ai-tools-explorer-cards .form-checkboxes .form-item {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #d7dde5;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.ai-tools-explorer-cards .form-checkboxes .form-item:hover {
+  border-color: #6b7d93;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.ai-tools-explorer-cards .form-checkboxes .form-item input[type="checkbox"] {
+  margin-top: 2px;
+}
+
+.ai-tools-explorer-cards .form-checkboxes .form-item label {
+  display: block;
+  margin-left: 24px;
+  line-height: 1.35;
+}
+
+.ai-tools-explorer-cards .form-checkboxes .form-item input[type="checkbox"]:focus + label {
+  outline: 2px solid #0a58ca;
+  outline-offset: 2px;
+}
+

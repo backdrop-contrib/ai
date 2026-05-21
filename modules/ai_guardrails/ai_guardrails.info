@@ -1,0 +1,7 @@
+name = AI Guardrails
+description = Active input and output guardrails for AI interactions. Blocks injection attacks, PII leakage, and configurable content violations.
+backdrop = 1.x
+type = module
+package = AI
+dependencies[] = ai
+configure=admin/config/ai/ai-guardrails

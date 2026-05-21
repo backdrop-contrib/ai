@@ -1,0 +1,46 @@
+<?php
+
+/**
+ * @file
+ * Tests for the seeded alt text agent config.
+ */
+
+class AIAltTextAgentTestCase extends BackdropWebTestCase {
+
+  public function setUp() {
+    parent::setUp(['ai', 'ai_tools', 'ai_agent', 'ai_alt_tools', 'image_entity_alt']);
+  }
+
+  public function testAltTextAgentConfigIsSeeded() {
+    $agents = ai_agent_get_agents();
+    $this->assertTrue(isset($agents['alt_text_agent']), 'Alt text agent is seeded in config.');
+
+    $agent = $agents['alt_text_agent'];
+    $this->assertEqual('Alt Text Agent', $agent['label'], 'Alt text agent label matches the seeded config.');
+    $tools = !empty($agent['tools']) && is_array($agent['tools']) ? $agent['tools'] : [];
+
+    $expected_tools = [
+      'find_images_missing_alt',
+      'get_image_details',
+      'copy_usage_alt_to_global',
+      'seed_alt_for_image_from_usage',
+      'generate_alt_for_image',
+      'rename_file_for_image',
+      'set_alt_for_image',
+    ];
+    foreach ($expected_tools as $tool_name) {
+      $this->assertTrue(in_array($tool_name, $tools, TRUE), 'Alt text agent includes ' . $tool_name . '.');
+    }
+  }
+
+  public function testAltTextToolsAreRegistered() {
+    $tools = ai_tools_get_tools();
+    $this->assertTrue(isset($tools['find_images_missing_alt']), 'Find missing alt tool is registered.');
+    $this->assertTrue(isset($tools['get_image_details']), 'Get image details tool is registered.');
+    $this->assertTrue(isset($tools['copy_usage_alt_to_global']), 'Copy usage alt tool is registered.');
+    $this->assertTrue(isset($tools['seed_alt_for_image_from_usage']), 'Seed alt tool is registered.');
+    $this->assertTrue(isset($tools['generate_alt_for_image']), 'Generate alt tool is registered.');
+    $this->assertTrue(isset($tools['rename_file_for_image']), 'Rename file tool is registered.');
+    $this->assertTrue(isset($tools['set_alt_for_image']), 'Set alt tool is registered.');
+  }
+}

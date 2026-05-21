@@ -1,0 +1,21 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the AI Alt Bulk module.
+ */
+
+/**
+ * Implements hook_uninstall().
+ */
+function ai_alt_bulk_uninstall() {
+  // Delete the view config.
+  $config = config('views.view.ai_alt_bulk');
+  $config->delete();
+
+  // Delete the menu link created by the view.
+  $result = db_query("SELECT mlid FROM {menu_links} WHERE link_path = :path", [':path' => 'admin/config/ai/ai-alt-bulk'])->fetchField();
+  if ($result) {
+    menu_link_delete($result);
+  }
+}

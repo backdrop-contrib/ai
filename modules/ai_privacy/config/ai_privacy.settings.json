@@ -1,0 +1,7 @@
+{
+  "_config_name": "ai_privacy.settings",
+  "global_enabled": true,
+  "denied_entity_bundles": {},
+  "denied_roles": [],
+  "log_redact_content": false
+}

@@ -1,7 +1,0 @@
-name = OpenAI ChatGPT Explorer
-type = module
-description = Adds a form in the admin to interact with OpenAI over the ChatGPT API endpoint.
-package = OpenAI
-backdrop = 1.x
-configure = admin/config/openai/chatgpt
-dependencies[] = openai

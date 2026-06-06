@@ -424,8 +424,13 @@ class AIApi {
     }
 
     if ($sendImageData) {
-      $imageData = base64_encode(file_get_contents($imageUrl));
-      $imageUrl = 'data:image/jpeg;base64,' . $imageData;
+      $data_uri = $this->buildImageDataUri($imageUrl);
+      if ($data_uri) {
+        $imageUrl = $data_uri;
+      }
+      else {
+        watchdog('ai_alt', 'Failed to read image bytes for AI alt generation: @image', ['@image' => $imageUrl], WATCHDOG_WARNING);
+      }
     }
 
     $messages = [
@@ -440,5 +445,64 @@ class AIApi {
 
     $result = $this->client->chat($model, $messages, 0.4, 300);
     return trim((string) $result);
+  }
+
+  /**
+   * Build data URI from local file, stream wrapper URI, or readable URL.
+   */
+  protected function buildImageDataUri(string $imageUrl) {
+    if (strpos($imageUrl, 'data:') === 0) {
+      return $imageUrl;
+    }
+
+    $image_data = FALSE;
+    $mime_type = NULL;
+
+    $candidate_paths = [];
+
+    if (file_stream_wrapper_valid_scheme(file_uri_scheme($imageUrl))) {
+      $candidate_paths[] = backdrop_realpath($imageUrl);
+    }
+    elseif (is_file($imageUrl)) {
+      $candidate_paths[] = $imageUrl;
+    }
+    else {
+      $path = parse_url($imageUrl, PHP_URL_PATH);
+      if (!empty($path)) {
+        $candidate_paths[] = BACKDROP_ROOT . '/' . ltrim($path, '/');
+      }
+    }
+
+    foreach ($candidate_paths as $candidate_path) {
+      if (!empty($candidate_path) && is_file($candidate_path) && is_readable($candidate_path)) {
+        $image_data = file_get_contents($candidate_path);
+        if ($image_data !== FALSE) {
+          $mime_type = file_get_mimetype($candidate_path);
+          break;
+        }
+      }
+    }
+
+    if ($image_data === FALSE) {
+      $image_data = @file_get_contents($imageUrl);
+    }
+
+    if ($image_data === FALSE || $image_data === '') {
+      return FALSE;
+    }
+
+    if (empty($mime_type)) {
+      $finfo = finfo_open(FILEINFO_MIME_TYPE);
+      if ($finfo) {
+        $mime_type = finfo_buffer($finfo, $image_data) ?: NULL;
+        finfo_close($finfo);
+      }
+    }
+
+    if (empty($mime_type)) {
+      $mime_type = 'image/jpeg';
+    }
+
+    return 'data:' . $mime_type . ';base64,' . base64_encode($image_data);
   }
 }

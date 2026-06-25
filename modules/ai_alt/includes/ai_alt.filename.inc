@@ -101,8 +101,9 @@ function _ai_alt_move_file_to_filename($file, $new_filename) {
     return FALSE;
   }
 
-  ai_alt_rewrite_referenced_file_urls($moved_file, $old_uri, $moved_file->uri);
-  ai_alt_create_file_redirect($old_uri, $moved_file->uri);
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.references');
+  _ai_alt_rewrite_referenced_file_urls($moved_file, $old_uri, $moved_file->uri);
+  _ai_alt_create_file_redirect($old_uri, $moved_file->uri);
 
   return $moved_file;
 }

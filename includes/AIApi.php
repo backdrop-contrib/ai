@@ -55,8 +55,9 @@ class AIApi {
         if (in_array($step['function'], $skip_functions, TRUE)) {
           continue;
         }
-        if (preg_match('/^(ai_[a-z0-9_]+?)_/', $step['function'], $matches)) {
-          $module = $matches[1];
+        $candidate = function_exists('ai_caller_module_from_function') ? ai_caller_module_from_function($step['function']) : '';
+        if ($candidate !== '' && $candidate !== 'ai') {
+          $module = $candidate;
           break;
         }
       }
@@ -275,9 +276,13 @@ class AIApi {
   public function chat(string $model, array $messages, $temperature, $max_tokens = 1024, bool $stream_response = FALSE, array $context_extra = []) {
     $this->checkRateLimit('chat');
     $start_time = microtime(TRUE);
+    $log_messages = (isset($context_extra['log_messages']) && is_array($context_extra['log_messages'])) ? $context_extra['log_messages'] : $messages;
+    unset($context_extra['log_messages']);
     $context = $this->buildContext('chat', $model, $context_extra);
     $this->applyChatMessageAlter($messages, $context);
     if (!empty($context['guardrail_blocked'])) {
+      // Blocked requests are the ones an auditor most needs to see.
+      $this->log('chat', $model, $log_messages, (string) ($context['guardrail_message'] ?? ''), FALSE, microtime(TRUE) - $start_time, 'Blocked by guardrails before the provider call.');
       return (string) ($context['guardrail_message'] ?? '');
     }
 
@@ -285,7 +290,7 @@ class AIApi {
       $response = $this->client->chat($model, $messages, $temperature, $max_tokens, $stream_response, $context);
     }
     catch (\Throwable $e) {
-      $this->log('chat', $model, $messages, NULL, FALSE, microtime(TRUE) - $start_time, $e->getMessage());
+      $this->log('chat', $model, $log_messages, NULL, FALSE, microtime(TRUE) - $start_time, $e->getMessage());
       throw $this->normalizeException($e, 'chat', $context);
     }
     $this->finalizeContext($context);
@@ -293,11 +298,12 @@ class AIApi {
     if (!$stream_response) {
       $this->applyChatResponseAlter($response, $context);
       if (!empty($context['guardrail_blocked'])) {
+        $this->log('chat', $model, $log_messages, $response, FALSE, microtime(TRUE) - $start_time, 'Response blocked by guardrails.');
         return (string) ($context['guardrail_message'] ?? '');
       }
     }
 
-    $this->log('chat', $model, $messages, $stream_response ? '[stream]' : $response, TRUE, microtime(TRUE) - $start_time, NULL, $stream_response);
+    $this->log('chat', $model, $log_messages, $stream_response ? '[stream]' : $response, TRUE, microtime(TRUE) - $start_time, NULL, $stream_response);
 
     return $response;
   }
@@ -359,6 +365,8 @@ class AIApi {
     $context['tool_count'] = count($tools);
     $this->applyChatMessageAlter($messages, $context);
     if (!empty($context['guardrail_blocked'])) {
+      // Blocked requests are the ones an auditor most needs to see.
+      $this->log('chat', $model, $messages, (string) ($context['guardrail_message'] ?? ''), FALSE, microtime(TRUE) - $start_time, 'Blocked by guardrails before the provider call.');
       return [
         'finish_reason' => 'guardrail_blocked',
         'content' => (string) ($context['guardrail_message'] ?? ''),
@@ -407,8 +415,6 @@ class AIApi {
   }
 
   public function describeImage(string $imageUrl, bool $sendImageData = TRUE): string {
-    $this->checkRateLimit('chat');
-
     $config = config('ai_alt.settings');
     $describePrompt = $config->get('prompt');
     $model = $config->get('model');
@@ -418,14 +424,14 @@ class AIApi {
       return '';
     }
 
-    list($prefix, $bare) = ai_parse_model_id($model);
-    if (!empty($prefix) && $prefix === $this->provider) {
-      $model = $bare;
-    }
-
     if ($sendImageData) {
-      $imageData = base64_encode(file_get_contents($imageUrl));
-      $imageUrl = 'data:image/jpeg;base64,' . $imageData;
+      $data_uri = $this->buildImageDataUri($imageUrl);
+      if ($data_uri) {
+        $imageUrl = $data_uri;
+      }
+      else {
+        watchdog('ai_alt', 'Failed to read image bytes for AI alt generation: @image', ['@image' => $imageUrl], WATCHDOG_WARNING);
+      }
     }
 
     $messages = [
@@ -437,8 +443,113 @@ class AIApi {
         ],
       ],
     ];
+    $log_messages = $this->sanitizeMessagesForLog($messages);
 
-    $result = $this->client->chat($model, $messages, 0.4, 300);
+    // Route through the chat() wrapper so rate limits, guardrails, logging,
+    // and exception normalization apply to vision calls like any other chat.
+    // A model configured for a different provider resolves through the
+    // global wrapper instead of sending a prefixed id to this client.
+    list($prefix, $bare) = ai_parse_model_id($model);
+    if (!empty($prefix) && $prefix !== $this->provider && function_exists('ai_chat')) {
+      $result = ai_chat($model, $messages, 0.4, 300, FALSE, ['operation' => 'describe_image', 'log_messages' => $log_messages]);
+    }
+    else {
+      $result = $this->chat($bare, $messages, 0.4, 300, FALSE, ['operation' => 'describe_image', 'log_messages' => $log_messages]);
+    }
     return trim((string) $result);
+  }
+
+  /**
+   * Redact data URI image payloads before persisting request logs.
+   */
+  protected function sanitizeMessagesForLog(array $messages): array {
+    foreach ($messages as $m_index => $message) {
+      if (empty($message['content']) || !is_array($message['content'])) {
+        continue;
+      }
+      foreach ($message['content'] as $c_index => $item) {
+        if (empty($item['type']) || $item['type'] !== 'image_url') {
+          continue;
+        }
+        if (empty($item['image_url']['url']) || !is_string($item['image_url']['url'])) {
+          continue;
+        }
+        $url = $item['image_url']['url'];
+        if (strpos($url, 'data:') !== 0) {
+          $messages[$m_index]['content'][$c_index]['image_url']['url'] = '[redacted image-url]';
+          continue;
+        }
+
+        if (preg_match('/^data:([^;]+);base64,(.*)$/s', $url, $matches)) {
+          $mime = $matches[1];
+          $bytes = (int) floor(strlen(preg_replace('/\s+/', '', $matches[2])) * 3 / 4);
+          $messages[$m_index]['content'][$c_index]['image_url']['url'] = 'data:' . $mime . ';base64,[redacted ' . $bytes . ' bytes]';
+        }
+        else {
+          $messages[$m_index]['content'][$c_index]['image_url']['url'] = '[redacted data-uri]';
+        }
+      }
+    }
+
+    return $messages;
+  }
+
+  /**
+   * Build data URI from local file, stream wrapper URI, or readable URL.
+   */
+  protected function buildImageDataUri(string $imageUrl) {
+    if (strpos($imageUrl, 'data:') === 0) {
+      return $imageUrl;
+    }
+
+    $image_data = FALSE;
+    $mime_type = NULL;
+
+    $candidate_paths = [];
+
+    if (file_stream_wrapper_valid_scheme(file_uri_scheme($imageUrl))) {
+      $candidate_paths[] = backdrop_realpath($imageUrl);
+    }
+    elseif (is_file($imageUrl)) {
+      $candidate_paths[] = $imageUrl;
+    }
+    else {
+      $path = parse_url($imageUrl, PHP_URL_PATH);
+      if (!empty($path)) {
+        $candidate_paths[] = BACKDROP_ROOT . '/' . ltrim($path, '/');
+      }
+    }
+
+    foreach ($candidate_paths as $candidate_path) {
+      if (!empty($candidate_path) && is_file($candidate_path) && is_readable($candidate_path)) {
+        $image_data = file_get_contents($candidate_path);
+        if ($image_data !== FALSE) {
+          $mime_type = file_get_mimetype($candidate_path);
+          break;
+        }
+      }
+    }
+
+    if ($image_data === FALSE) {
+      $image_data = @file_get_contents($imageUrl);
+    }
+
+    if ($image_data === FALSE || $image_data === '') {
+      return FALSE;
+    }
+
+    if (empty($mime_type)) {
+      $finfo = finfo_open(FILEINFO_MIME_TYPE);
+      if ($finfo) {
+        $mime_type = finfo_buffer($finfo, $image_data) ?: NULL;
+        finfo_close($finfo);
+      }
+    }
+
+    if (empty($mime_type)) {
+      $mime_type = 'image/jpeg';
+    }
+
+    return 'data:' . $mime_type . ';base64,' . base64_encode($image_data);
   }
 }

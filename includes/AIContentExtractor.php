@@ -105,7 +105,10 @@ class AIContentExtractor {
     }
 
     // Render as anonymous user so admin-only elements (Edit, Delete, operations)
-    // are excluded from the output, producing cleaner embedding text.
+    // are excluded from the output, producing cleaner embedding text. The
+    // finally block guarantees the original user is restored even when the
+    // render throws a PHP Error — otherwise the rest of the request would
+    // keep running as anonymous.
     global $user;
     $original_user = $user;
     $user = backdrop_anonymous_user();
@@ -117,12 +120,13 @@ class AIContentExtractor {
       self::stripRenderNoise($build);
       $html = backdrop_render($build);
     }
-    catch (\Exception $e) {
-      $user = $original_user;
+    catch (\Throwable $e) {
       return '';
     }
+    finally {
+      $user = $original_user;
+    }
 
-    $user = $original_user;
     return !empty($html) ? self::htmlToMarkdown($html) : '';
   }
 
@@ -188,7 +192,6 @@ class AIContentExtractor {
     $html = preg_replace('/<hr\b[^>]*>/i', "\n\n---\n\n", $html);
     $html = preg_replace('/<\/p>/i', "\n\n", $html);
     $html = preg_replace('/<p\b[^>]*>/i', '', $html);
-    $html = preg_replace('/<(h[1-6])\b[^>]*>(.*?)<\/\1>/is', "\n\n# $2\n\n", $html);
     $html = preg_replace('/<\/(div|section|article|header|footer|main|aside)>/i', "\n\n", $html);
     $html = preg_replace('/<(div|section|article|header|footer|main|aside)\b[^>]*>/i', '', $html);
     $html = preg_replace('/<br\s*\/?>/i', "\n", $html);

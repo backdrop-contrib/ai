@@ -43,7 +43,10 @@ class AIDbLog {
         $prompt = 'What does this error mean on my Backdrop site and how can I fix it? The error is: "' . $message . '"';
         $result = $api->completions($model_to_use, $prompt, 0.4, 2048);
       }
-      return nl2br($result);
+      // The explanation is derived from the (attacker-influenceable) watchdog
+      // message and rendered as HTML in the admin report. Sanitize to a safe
+      // tag subset before it is returned or cached.
+      return filter_xss(nl2br((string) $result), ['br', 'p', 'strong', 'em', 'code', 'pre', 'ul', 'ol', 'li']);
     }
     catch (\Exception $e) {
       watchdog('ai_dblog', 'Error when trying to obtain a response from AI: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
@@ -66,7 +69,10 @@ class AIDbLog {
       ])
       ->fields([
         'message' => $message,
-        'explanation' => strip_tags(trim($explanation)),
+        // Store exactly what is rendered (already filter_xss'd in
+        // getAIExplanation) so a cache hit and a cache miss display the same
+        // sanitized HTML.
+        'explanation' => trim($explanation),
       ])
       ->execute();
   }
@@ -77,7 +83,7 @@ class AIDbLog {
 
     $existing_explanation = $this->hashSearch($hash);
     if ($existing_explanation) {
-      return $existing_explanation['explanation'];
+      return filter_xss($existing_explanation['explanation'], ['br', 'p', 'strong', 'em', 'code', 'pre', 'ul', 'ol', 'li']);
     }
 
     $explanation = $this->getAIExplanation($dblog);

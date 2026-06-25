@@ -194,22 +194,22 @@ function _ai_ckeditor_default_prompts() {
     'tone' => [
       'label'       => t('Adjust tone'),
       'prompt'      => "Please rewrite the following text with a tone that is {{tone}} while preserving the original meaning:\n{{selectedText}}",
-      'description' => t('Available placeholders: <code>{{selectedText}}</code> (selected editor content], <code>{{tone}}</code> (adjective entered by the user].'),
+      'description' => t('Available placeholders: <code>{{selectedText}}</code> (selected editor content), <code>{{tone}}</code> (adjective entered by the user).'),
     ],
     'summarize' => [
       'label'       => t('Summarize'),
       'prompt'      => "Create a concise summary of the following text, keeping the key points intact:\n{{selectedText}}",
-      'description' => t('Available placeholder: <code>{{selectedText}}</code> (selected editor content].'),
+      'description' => t('Available placeholder: <code>{{selectedText}}</code> (selected editor content).'),
     ],
     'translate' => [
       'label'       => t('Translate'),
       'prompt'      => "Please accurately translate the following text into {{language}}:\n{{selectedText}}",
-      'description' => t('Available placeholders: <code>{{selectedText}}</code> (selected editor content], <code>{{language}}</code> (language entered by the user].'),
+      'description' => t('Available placeholders: <code>{{selectedText}}</code> (selected editor content), <code>{{language}}</code> (language entered by the user).'),
     ],
     'reformat' => [
       'label'       => t('Reformat / correct HTML'),
       'prompt'      => "Please fix this text to be marked up with semantic HTML using only lists, headers, or paragraph tags: {{selectedText}}",
-      'description' => t('Available placeholder: <code>{{selectedText}}</code> (selected editor content].'),
+      'description' => t('Available placeholder: <code>{{selectedText}}</code> (selected editor content).'),
     ],
   ];
 }

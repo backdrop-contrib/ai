@@ -1,0 +1,88 @@
+
+[AIAltTextAgentTestCase]
+name = AI Alt text agent
+description = Verifies AI Alt text agent behavior.
+group = AI
+file = tests/ai_alt_text_agent.test
+backdrop = 1.x
+php = 8.0
+
+[AIAssistantTestCase]
+name = AI assistant
+description = Verifies assistant behavior in the AI module.
+group = AI
+file = tests/ai_assistant.test
+backdrop = 1.x
+php = 8.0
+
+[AIAsyncWorkerTestCase]
+name = AI async worker
+description = Verifies asynchronous worker behavior in the AI module.
+group = AI
+file = tests/ai_async.test
+backdrop = 1.x
+php = 8.0
+
+[AIBeeToolsTestCase]
+name = AI Bee tools
+description = Verifies Bee tool integration in the AI module.
+group = AI
+file = tests/ai_bee_tools.test
+backdrop = 1.x
+php = 8.0
+
+[AITestCase]
+name = AI connection
+description = Verifies core AI module integration and provider connectivity.
+group = AI
+file = tests/ai_connection.test
+backdrop = 1.x
+php = 8.0
+
+[AIContentExtractorTestCase]
+name = AI content extractor
+description = Verifies content extraction helpers used by the AI module.
+group = AI
+file = tests/ai_content_extractor.test
+backdrop = 1.x
+php = 8.0
+
+[AIFieldAutomatorToolsTestCase]
+name = AI field automator tools
+description = Verifies Field Automator tool integration behavior.
+group = AI
+file = tests/ai_field_automator_tools.test
+backdrop = 1.x
+php = 8.0
+
+[AIFieldAutomatorToolsUnitTestCase]
+name = AI field automator tools unit
+description = Verifies Field Automator tool routing logic in unit tests.
+group = AI
+file = tests/ai_field_automator_tools_unit.test
+backdrop = 1.x
+php = 8.0
+
+[AIProviderResolutionTestCase]
+name = AI provider resolution
+description = Verifies provider resolution behavior in the AI module.
+group = AI
+file = tests/ai_provider.test
+backdrop = 1.x
+php = 8.0
+
+[AIStringHelperTestCase]
+name = AI string helper
+description = Verifies string helper behavior.
+group = AI
+file = tests/ai_string_helper.test
+backdrop = 1.x
+php = 8.0
+
+[AIToolsRegistryTestCase]
+name = AI tools registry
+description = Verifies tool registry behavior in the AI module.
+group = AI
+file = tests/ai_tools.test
+backdrop = 1.x
+php = 8.0

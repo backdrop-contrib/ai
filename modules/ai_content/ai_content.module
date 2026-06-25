@@ -1,6 +1,17 @@
 <?php
 
 /**
+ * Sanitize AI model output for direct rendering in form #markup.
+ *
+ * Model output is influenced by site content, so it is untrusted — a crafted
+ * body field could otherwise reflect script into the editor's browser via
+ * these AJAX responses.
+ */
+function _ai_content_safe_markup($text) {
+  return filter_xss((string) $text, ['p', 'br', 'strong', 'em', 'ul', 'ol', 'li', 'h3', 'h4', 'blockquote', 'code']);
+}
+
+/**
  * Implements hook_config_info().
  */
 function ai_content_config_info() {
@@ -432,7 +443,7 @@ function ai_content_form_node_form_alter(&$form, &$form_state, $form_id) {
 
         $form[$fieldset]['target_field_note'] = [
           '#type' => 'markup',
-          '#markup' => '<p>' . t('Using the entire node content (including paragraph text].') . '</p>',
+          '#markup' => '<p>' . t('Using the entire node content (including paragraph text).') . '</p>',
         ];
 
         // Add extra fields if defined.
@@ -490,7 +501,7 @@ function _ai_content_get_all_text_with_summary_fields($entity) {
     }
     elseif ($field['type'] === 'paragraphs') {
       // Include paragraph reference fields and extract their text recursively.
-      $options[$field_name] = t('@label (paragraph content]', ['@label' => $field_info['label']]);
+      $options[$field_name] = t('@label (paragraph content)', ['@label' => $field_info['label']]);
     }
   }
 
@@ -641,7 +652,7 @@ function ai_content_entity_adjust_tone($form, &$form_state) {
     $text = t('No field selected for tone adjustment.');
   }
 
-  $form['ai_tone_edit']['response']['#markup'] = $text;
+  $form['ai_tone_edit']['response']['#markup'] = _ai_content_safe_markup($text);
   return $form['ai_tone_edit']['response'];
 }
 
@@ -704,7 +715,7 @@ function ai_content_entity_field_summarize($form, &$form_state) {
     $text = t('No field selected for summarization.');
   }
 
-  $form['ai_summarize']['response']['#markup'] = $text;
+  $form['ai_summarize']['response']['#markup'] = _ai_content_safe_markup($text);
   return $form['ai_summarize']['response'];
 }
 
@@ -767,7 +778,7 @@ function ai_content_suggest_title($form, &$form_state) {
     $text = t('No field selected for title suggestion.');
   }
 
-  $form['ai_suggest_title']['response']['#markup'] = $text;
+  $form['ai_suggest_title']['response']['#markup'] = _ai_content_safe_markup($text);
   return $form['ai_suggest_title']['response'];
 }
 
@@ -828,7 +839,7 @@ function ai_content_entity_suggest_taxonomy($form, &$form_state) {
     $text = t('No field selected for suggestion.');
   }
 
-  $form['ai_suggest']['response']['#markup'] = $text;
+  $form['ai_suggest']['response']['#markup'] = _ai_content_safe_markup($text);
   return $form['ai_suggest']['response'];
 }
 
@@ -874,7 +885,7 @@ function ai_content_entity_analyze_content($form, &$form_state) {
 
         if ($flagged) {
           $content['heading'] = [
-            '#markup' => '<p>' . t('Violation(s] found for these categories:') . '</p>',
+            '#markup' => '<p>' . t('Violation(s) found for these categories:') . '</p>',
           ];
 
           $violated_categories = array_filter($result['results'][0]['categories']);

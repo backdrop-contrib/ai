@@ -16,7 +16,109 @@ class AIStreamingResponse {
     $this->extractor = $extractor;
   }
 
+  /**
+   * Stream the provider response to the client as chunks arrive.
+   *
+   * Uses a cURL write callback so each SSE line is echoed the moment it is
+   * received. backdrop_http_request() buffers the whole body, which would
+   * turn "streaming" into wait-then-dump — it remains only as the fallback
+   * when cURL is unavailable.
+   */
   public function send(): void {
+    if (function_exists('curl_init') && $this->canUseCurlStreaming()) {
+      $this->sendStreaming();
+      return;
+    }
+    $this->sendBuffered();
+  }
+
+  /**
+   * Whether request options can be faithfully represented by cURL streaming.
+   */
+  protected function canUseCurlStreaming(): bool {
+    $supported = ['method', 'headers', 'data', 'timeout'];
+    foreach ($this->options as $key => $value) {
+      if (!in_array($key, $supported, TRUE)) {
+        return FALSE;
+      }
+    }
+    return TRUE;
+  }
+
+  /**
+   * Real incremental streaming over cURL.
+   */
+  protected function sendStreaming(): void {
+    $headers = [];
+    foreach (($this->options['headers'] ?? []) as $name => $value) {
+      $headers[] = $name . ': ' . $value;
+    }
+
+    $line_buffer = '';
+    $error_body = '';
+    $status_code = 0;
+    $done = FALSE;
+
+    $ch = curl_init($this->url);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, strtoupper((string) ($this->options['method'] ?? 'POST')));
+    if (isset($this->options['data'])) {
+      curl_setopt($ch, CURLOPT_POSTFIELDS, $this->options['data']);
+    }
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_TIMEOUT, (int) ($this->options['timeout'] ?? 300));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, FALSE);
+    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($handle, $chunk) use (&$line_buffer, &$error_body, &$status_code, &$done) {
+      if (!$status_code) {
+        $status_code = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+      }
+      if ($status_code !== 200) {
+        // Collect the error body instead of echoing it to the client.
+        if (strlen($error_body) < 500) {
+          $error_body .= $chunk;
+          if (strlen($error_body) > 500) {
+            $error_body = substr($error_body, 0, 500);
+          }
+        }
+        return strlen($chunk);
+      }
+
+      $line_buffer .= $chunk;
+      while (($pos = strpos($line_buffer, "\n")) !== FALSE) {
+        $line = substr($line_buffer, 0, $pos);
+        $line_buffer = substr($line_buffer, $pos + 1);
+        if ($this->processLine(rtrim($line, "\r"))) {
+          $done = TRUE;
+          // Abort transfer once terminal event is seen.
+          return 0;
+        }
+      }
+      return strlen($chunk);
+    });
+
+    $ok = curl_exec($ch);
+    if (!$status_code) {
+      $status_code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    }
+    $curl_error = curl_error($ch);
+    curl_close($ch);
+
+    if (!$done && $status_code === 200 && $line_buffer !== '') {
+      $done = $this->processLine(rtrim($line_buffer, "\r"));
+    }
+
+    if (!$done && $ok === FALSE && $curl_error !== '') {
+      throw new \Exception('Streaming transport error: ' . $curl_error);
+    }
+    if ($status_code && $status_code !== 200) {
+      $detail = $error_body !== '' ? ': ' . substr(trim(strip_tags($error_body)), 0, 500) : '';
+      throw new \Exception('Streaming API error (' . $status_code . ')' . $detail);
+    }
+  }
+
+  /**
+   * Fallback: fetch the whole body, then emit the chunks.
+   */
+  protected function sendBuffered(): void {
     $response = backdrop_http_request($this->url, $this->options);
 
     if (!isset($response->code) || (int) $response->code !== 200) {
@@ -28,24 +130,34 @@ class AIStreamingResponse {
     }
 
     foreach (explode("\n", $response->data) as $line) {
-      if (strpos($line, 'data: ') !== 0) {
-        continue;
-      }
-      $json = substr($line, 6);
-      if ($json === '[DONE]') {
+      if ($this->processLine(rtrim($line, "\r"))) {
         break;
       }
-      $data = json_decode($json, TRUE);
-      if (!is_array($data)) {
-        continue;
-      }
-      $text = ($this->extractor)($data);
-      if ($text !== NULL && $text !== '') {
-        echo $text;
-        @ob_flush();
-        @flush();
-      }
     }
+  }
+
+  /**
+   * Decode one SSE line and echo any extracted text.
+   */
+  protected function processLine(string $line): bool {
+    if (strpos($line, 'data:') !== 0) {
+      return FALSE;
+    }
+    $json = ltrim(substr($line, 5), ' ');
+    if ($json === '[DONE]') {
+      return TRUE;
+    }
+    $data = json_decode($json, TRUE);
+    if (!is_array($data)) {
+      return FALSE;
+    }
+    $text = ($this->extractor)($data);
+    if ($text !== NULL && $text !== '') {
+      echo $text;
+      @ob_flush();
+      @flush();
+    }
+    return FALSE;
   }
 
 }

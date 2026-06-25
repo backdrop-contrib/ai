@@ -85,7 +85,62 @@ function _ai_mcp_post_handler() {
     exit;
   }
 
-  $result = ai_mcp_jsonrpc_dispatch($body, $server);
+  // Run the dispatch as the server's configured user. The Bearer token is
+  // the credential here — the request itself arrives as anonymous, and the
+  // ai_tools registry filters out every permission-gated tool for anonymous,
+  // which would make those tools silently unavailable over MCP.
+  $uid = NULL;
+  if (array_key_exists('uid', $server) && $server['uid'] !== '' && $server['uid'] !== NULL) {
+    $uid = (int) $server['uid'];
+  }
+  $account = ($uid !== NULL && $uid > 0) ? user_load($uid) : FALSE;
+  $blocked = FALSE;
+  if ($account && empty($account->status)) {
+    watchdog('ai_mcp', 'MCP server %server is configured to run as uid @uid, but that account is blocked. Falling back to anonymous — permission-gated tools will be unavailable.', [
+      '%server' => isset($server['id']) ? $server['id'] : '(unknown)',
+      '@uid'    => $uid,
+    ], WATCHDOG_WARNING);
+    $account = FALSE;
+    $blocked = TRUE;
+  }
+  global $user;
+  $original_user = $user;
+  $execution_user = $account;
+  if (!$execution_user) {
+    if ($uid !== NULL && $uid > 0 && !$blocked) {
+      watchdog('ai_mcp', 'MCP server %server is configured to run as uid @uid, but that user could not be loaded. Falling back to anonymous — permission-gated tools will be unavailable.', [
+        '%server' => isset($server['id']) ? $server['id'] : '(unknown)',
+        '@uid'    => $uid,
+      ], WATCHDOG_WARNING);
+    }
+    $execution_user = function_exists('backdrop_anonymous_user')
+      ? backdrop_anonymous_user()
+      : (object) ['uid' => 0, 'roles' => [], 'name' => ''];
+  }
+  $session_state = backdrop_save_session();
+  $original_session = isset($_SESSION) ? $_SESSION : NULL;
+  backdrop_save_session(FALSE);
+  $_SESSION = [];
+  $user = $execution_user;
+  try {
+    $result = ai_mcp_jsonrpc_dispatch($body, $server);
+  }
+  finally {
+    $user = $original_user;
+    if ($original_session === NULL) {
+      unset($_SESSION);
+    }
+    else {
+      $_SESSION = $original_session;
+    }
+    backdrop_save_session($session_state);
+  }
+
+  // JSON-RPC notifications get an acknowledgement with no body.
+  if ($result === NULL) {
+    http_response_code(202);
+    exit;
+  }
 
   header('Content-Type: application/json');
   print json_encode($result);

@@ -73,19 +73,19 @@ function ai_alt_bulk_action_info() {
   return [
     'ai_alt_bulk_generate_action' => [
       'type' => 'file',
-      'label' => t('Generate alt text using AI (skip if not empty]'),
+      'label' => t('Generate alt text using AI (skip if not empty)'),
       'callback' => 'ai_alt_bulk_generate_action',
       'vbo' => TRUE,
     ],
     'ai_alt_bulk_generate_force_action' => [
       'type' => 'file',
-      'label' => t('Generate alt text using AI (overwrite existing]'),
+      'label' => t('Generate alt text using AI (overwrite existing)'),
       'callback' => 'ai_alt_bulk_generate_force_action',
       'vbo' => TRUE,
     ],
     'ai_alt_bulk_seed_from_usage_action' => [
       'type' => 'file',
-      'label' => t('Copy usage alt to global alt (skip if not empty]'),
+      'label' => t('Copy usage alt to global alt (skip if not empty)'),
       'callback' => 'ai_alt_bulk_seed_from_usage_action',
       'vbo' => TRUE,
     ],
@@ -570,7 +570,7 @@ function _ai_alt_bulk_src_to_fid($src) {
     $file_path = substr($src, strlen($public_path) + 1);
 
     // Strip image style derivative prefix (e.g. "styles/large/public/…" → original path).
-    if (preg_match('#^styles/[^/]+/public/(.+]$#', $file_path, $m)) {
+    if (preg_match('#^styles/[^/]+/public/(.+)$#', $file_path, $m)) {
       $file_path = $m[1];
     }
 
@@ -579,7 +579,7 @@ function _ai_alt_bulk_src_to_fid($src) {
   elseif ($private_path && strpos($src, $private_path . '/') === 0) {
     $file_path = substr($src, strlen($private_path) + 1);
 
-    if (preg_match('#^styles/[^/]+/private/(.+]$#', $file_path, $m)) {
+    if (preg_match('#^styles/[^/]+/private/(.+)$#', $file_path, $m)) {
       $file_path = $m[1];
     }
 
@@ -618,12 +618,7 @@ function _ai_alt_bulk_parse_img_tags($html) {
     $info = [];
 
     // data-file-id (quoted or unquoted).
-    if (preg_match('/data-file-id\s*=\s*["\']?(\d+]["\']?/i', $tag, $m)) {
-      $info['fid'] = (int) $m[1];
-    }
-
-    // alt attribute.
-    if (preg_match('/\balt\s*=\s*(["\']](.*?]\1/is', $tag, $m)) {
+  if (!preg_match_all('/<img\b(?:"[^"]*"|\'[^\']*\'|[^\'">])*>/is', $html, $matches)) {
       $alt = trim(html_entity_decode($m[2], ENT_QUOTES, 'UTF-8'));
       if ($alt !== '') {
         $info['alt'] = $alt;
@@ -631,7 +626,7 @@ function _ai_alt_bulk_parse_img_tags($html) {
     }
 
     // src attribute.
-    if (preg_match('/\bsrc\s*=\s*(["\']](.*?]\1/is', $tag, $m)) {
+    if (preg_match('/\bsrc\s*=\s*(["\'])(.*?)\1/is', $tag, $m)) {
       $info['src'] = $m[2];
     }
 

@@ -24,6 +24,7 @@ function ai_tools_entity_definitions() {
       'execute'  => 'ai_tools_execute_list_entity_types',
       'module'   => 'ai_tools',
       'category' => 'entity',
+      'permission' => 'access content overview',
     ],
     'list_bundles' => [
       'definition' => [
@@ -46,6 +47,7 @@ function ai_tools_entity_definitions() {
       'execute'  => 'ai_tools_execute_list_bundles',
       'module'   => 'ai_tools',
       'category' => 'entity',
+      'permission' => 'access content overview',
     ],
     'list_content_entities' => [
       'definition' => [
@@ -76,6 +78,7 @@ function ai_tools_entity_definitions() {
       'execute'  => 'ai_tools_execute_list_content_entities',
       'module'   => 'ai_tools',
       'category' => 'entity',
+      'permission' => 'access content overview',
     ],
   ];
 }

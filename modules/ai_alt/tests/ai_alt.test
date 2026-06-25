@@ -1,0 +1,219 @@
+<?php
+
+/**
+ * @file
+ * Tests for AI Alt module helpers and hook entrypoints.
+ */
+
+class AIAltModuleTestCase extends BackdropUnitTestCase {
+
+  /**
+   * Sets up the test environment.
+   */
+  public function setUp() {
+    parent::setUp();
+    module_load_include('module', 'ai_alt');
+    module_load_include('module', 'ai_alt_bulk');
+    module_load_include('inc', 'ai_alt', 'includes/ai_alt.filename');
+  }
+
+  /**
+   * Test that config info registers the AI Alt settings object.
+   */
+  public function testConfigInfoRegistersSettings() {
+    $info = ai_alt_config_info();
+
+    $this->assertTrue(isset($info['ai_alt.settings']), 'The AI Alt settings object is registered.');
+    $this->assertEqual('AI Alt Settings', $info['ai_alt.settings']['label'], 'The AI Alt settings label is correct.');
+  }
+
+  /**
+   * Test that menu callbacks are registered for the AI Alt UI endpoints.
+   */
+  public function testMenuRegistersExpectedRoutes() {
+    $items = ai_alt_menu();
+
+    $this->assertTrue(isset($items['admin/config/ai/ai-alt']), 'The admin settings route is registered.');
+    $this->assertEqual('backdrop_get_form', $items['admin/config/ai/ai-alt']['page callback'], 'The admin route uses the form callback.');
+    $this->assertTrue(isset($items['ai-alt/generate-alt-text']), 'The JSON alt-text callback route is registered.');
+    $this->assertTrue(isset($items['ai-alt/ckeditor-autogenerate']), 'The CKEditor autogeneration route is registered.');
+  }
+
+  /**
+   * Test that filename labels are normalized and limited.
+   */
+  public function testBuildFilenameFromLabelNormalizesWords() {
+    $filename = ai_alt_build_filename_from_label('  Bright, Clean Kitchen With Lots of Natural Light!!!  ');
+    $this->assertEqual(
+      'bright-clean-kitchen-with-lots-of',
+      $filename,
+      'Filename labels are normalized and trimmed to six words.'
+    );
+  }
+
+  /**
+   * Test that empty labels fall back to a stable filename.
+   */
+  public function testBuildFilenameFromLabelFallsBackToImage() {
+    $filename = ai_alt_build_filename_from_label('!!!');
+    $this->assertEqual(
+      'image',
+      $filename,
+      'Empty normalized labels fall back to "image".'
+    );
+  }
+
+  /**
+   * Test that file extensions are appended in lowercase.
+   */
+  public function testBuildFilenameFromLabelAppendsExtension() {
+    $filename = ai_alt_build_filename_from_label('Museum Entrance', 'JPG');
+    $this->assertEqual(
+      'museum-entrance.jpg',
+      $filename,
+      'Filename extensions are appended in lowercase.'
+    );
+  }
+
+  /**
+   * Test that local stream wrappers are detected correctly.
+   */
+  public function testFileUsesLocalStreamWrapper() {
+    $this->assertTrue(
+      ai_alt_file_uses_local_stream_wrapper('public://example.jpg'),
+      'The public stream wrapper is treated as local.'
+    );
+    $this->assertFalse(
+      ai_alt_file_uses_local_stream_wrapper('https://example.com/example.jpg'),
+      'Remote URLs are not treated as local stream wrappers.'
+    );
+  }
+
+  /**
+   * Test that the widget wrapper bails out cleanly when no alt field exists.
+   */
+  public function testImageFieldProcessReturnsUnchangedElementWithoutAlt() {
+    $element = [
+      '#value' => ['fid' => 99],
+      '#id' => 'edit-field-image-und-0',
+    ];
+    $form_state = [];
+    $form = [];
+
+    $processed = ai_alt_image_field_process($element, $form_state, $form);
+    $this->assertEqual($element, $processed, 'Elements without an alt value are returned unchanged.');
+  }
+
+  /**
+   * Test that non-CKEditor forms are ignored by the form alter wrapper.
+   */
+  public function testFormAlterIgnoresOtherForms() {
+    $form = [
+      'title' => ['#type' => 'textfield'],
+    ];
+    $original_form = $form;
+    $form_state = [];
+
+    ai_alt_form_alter($form, $form_state, 'node_form');
+    $this->assertEqual($original_form, $form, 'Unrelated forms are not altered.');
+  }
+
+  /**
+   * Test that bulk HTML parsing extracts img src values reliably.
+   */
+  public function testBulkParseImgTagsExtractsSrcValues() {
+    $html = '<p><img data-file-id="12" alt="Cat &amp; Dog" src="/files/cat.jpg"></p>'
+      . '<div><img class="media-image" src="https://example.com/files/styles/large/public/hero.jpg?itok=abc"></div>'
+      . '<p><img alt="Quote test: &quot;value&gt;text&quot;" src="/files/special.jpg"></p>';
+
+    $parsed = _ai_alt_bulk_parse_img_tags($html);
+
+    $this->assertEqual(3, count($parsed), 'Three img tags are parsed from the HTML input.');
+    $this->assertEqual('/files/cat.jpg', $parsed[0]['src'], 'The first img src is extracted.');
+    $this->assertEqual(12, $parsed[0]['fid'], 'The first img data-file-id is extracted as an integer.');
+    $this->assertEqual('Cat & Dog', $parsed[0]['alt'], 'The first img alt text is extracted and decoded.');
+    $this->assertEqual('https://example.com/files/styles/large/public/hero.jpg?itok=abc', $parsed[1]['src'], 'The second img src is extracted intact.');
+    $this->assertEqual('/files/special.jpg', $parsed[2]['src'], 'The third img src is extracted correctly.');
+    $this->assertEqual('Quote test: "value>text"', $parsed[2]['alt'], 'Alt text with literal > in quoted attribute is extracted and decoded.');
+  }
+}
+
+/**
+ * Database-backed tests for the bulk src-to-fid URL resolver.
+ *
+ * Uses BackdropWebTestCase so db_insert() and config_set() run against an
+ * isolated test database rather than the live site.
+ */
+class AIAltBulkSrcResolverTestCase extends BackdropWebTestCase {
+
+  /**
+   * Sets up the test environment with an isolated database.
+   */
+  public function setUp() {
+    parent::setUp(['ai_alt', 'ai_alt_bulk']);
+    module_load_include('module', 'ai_alt_bulk');
+  }
+
+  /**
+   * Test that bulk src-to-fid resolves styled public and private image URLs.
+   */
+  public function testBulkSrcToFidResolvesStyledPublicAndPrivateUrls() {
+    $public_uri = 'public://bulk-src-to-fid-public.jpg';
+    $private_uri = 'private://bulk-src-to-fid-private.jpg';
+    $encoded_uri = 'public://bulk%20src-to-fid%20encoded.jpg';
+
+    $public_fid = db_insert('file_managed')
+      ->fields([
+        'uid' => 1,
+        'filename' => 'bulk-src-to-fid-public.jpg',
+        'uri' => $public_uri,
+        'filemime' => 'image/jpeg',
+        'filesize' => 1,
+        'status' => 1,
+        'timestamp' => REQUEST_TIME,
+      ])
+      ->execute();
+
+    $private_fid = db_insert('file_managed')
+      ->fields([
+        'uid' => 1,
+        'filename' => 'bulk-src-to-fid-private.jpg',
+        'uri' => $private_uri,
+        'filemime' => 'image/jpeg',
+        'filesize' => 1,
+        'status' => 1,
+        'timestamp' => REQUEST_TIME,
+      ])
+      ->execute();
+
+    $encoded_fid = db_insert('file_managed')
+      ->fields([
+        'uid' => 1,
+        'filename' => 'bulk src-to-fid encoded.jpg',
+        'uri' => $encoded_uri,
+        'filemime' => 'image/jpeg',
+        'filesize' => 1,
+        'status' => 1,
+        'timestamp' => REQUEST_TIME,
+      ])
+      ->execute();
+
+    $public_path = rtrim(config_get('system.core', 'file_public_path') ?: 'files', '/');
+    $old_private_path = config_get('system.core', 'file_private_path');
+    $private_path = 'private-files';
+    config_set('system.core', 'file_private_path', $private_path);
+
+    try {
+      $resolved_public = _ai_alt_bulk_src_to_fid('/' . $public_path . '/styles/large/public/bulk-src-to-fid-public.jpg?itok=abc');
+      $resolved_private = _ai_alt_bulk_src_to_fid('/' . $private_path . '/styles/large/private/bulk-src-to-fid-private.jpg');
+      $resolved_encoded = _ai_alt_bulk_src_to_fid('/' . $public_path . '/styles/large/public/bulk%20src-to-fid%20encoded.jpg');
+
+      $this->assertEqual((int) $public_fid, (int) $resolved_public, 'Styled public image URLs resolve to the original public fid.');
+      $this->assertEqual((int) $private_fid, (int) $resolved_private, 'Styled private image URLs resolve to the original private fid.');
+      $this->assertEqual((int) $encoded_fid, (int) $resolved_encoded, 'Styled public image URLs with percent-encoded paths resolve to the original fid.');
+    }
+    finally {
+      config_set('system.core', 'file_private_path', $old_private_path);
+    }
+  }
+}

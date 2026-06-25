@@ -115,6 +115,14 @@ function ai_mcp_server_form(array $form, array &$form_state, $server = NULL) {
     '#attributes'    => ['autocomplete' => 'off'],
   ];
 
+  $form['uid'] = [
+    '#type'          => 'number',
+    '#title'         => t('Run tool calls as user ID'),
+    '#default_value' => $is_new ? 0 : (isset($server['uid']) ? (int) $server['uid'] : 0),
+    '#min'           => 0,
+    '#description'   => t('Tool permission checks run as this user. Use a dedicated low-privilege service account; 0 runs as anonymous.'),
+  ];
+
   // Build tool checkboxes from the registry.
   $all_tools  = ai_tools_get_tools();
   $tool_options = [];
@@ -158,6 +166,30 @@ function ai_mcp_server_form_validate(array $form, array &$form_state) {
   if (empty($auth_key)) {
     form_set_error('auth_key', t('Auth key is required.'));
   }
+
+  $uid_raw = isset($form_state['values']['uid']) ? trim((string) $form_state['values']['uid']) : '';
+  if ($uid_raw !== '') {
+    if (!ctype_digit($uid_raw)) {
+      form_set_error('uid', t('User ID must be a non-negative integer.'));
+    }
+    else {
+      $uid = (int) $uid_raw;
+      if ($uid > 0) {
+        if ($uid == 1) {
+          form_set_error('uid', t('User ID 1 (the site superuser) bypasses all permission checks and cannot be used as the execution user. Use a dedicated low-privilege account.'));
+        }
+        $account = user_load($uid);
+        if (!$account) {
+          form_set_error('uid', t('The selected user ID does not exist.'));
+        }
+        elseif (empty($account->status)) {
+          form_set_error('uid', t('The selected user account is blocked and cannot be used as the execution user.'));
+        }
+      }
+      // Normalize so submit sees the cast value, not the raw string.
+      $form_state['values']['uid'] = $uid;
+    }
+  }
 }
 
 /**
@@ -166,6 +198,7 @@ function ai_mcp_server_form_validate(array $form, array &$form_state) {
 function ai_mcp_server_form_submit(array $form, array &$form_state) {
   $values  = $form_state['values'];
   $is_new  = empty($form['#server']);
+  $uid_raw = isset($values['uid']) ? trim((string) $values['uid']) : '';
 
   // Collect selected tools (checkboxes returns key => 0|key).
   $raw_tools   = isset($values['tools']) ? $values['tools'] : [];
@@ -175,6 +208,7 @@ function ai_mcp_server_form_submit(array $form, array &$form_state) {
     'id'           => $values['id'],
     'label'        => $values['label'],
     'auth_key'     => trim($values['auth_key']),
+    'uid'          => $uid_raw === '' ? 0 : (int) $uid_raw,
     'tools'        => $tools_clean,
     'oauth_enabled'=> FALSE,
   ];

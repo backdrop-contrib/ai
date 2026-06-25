@@ -61,7 +61,7 @@ function ai_dblog_settings_form($form, &$form_state) {
 
   $form['levels'] = [
     '#type' => 'checkboxes',
-    '#title' => t('Log level(s] to analyze'),
+    '#title' => t('Log level(s) to analyze'),
     '#options' => $options,
     '#default_value' => $default_levels,
     '#description' => t('Select which log levels should be analyzed when viewed. Non-error levels like notice and debug may cause wasted API usage.'),
@@ -151,7 +151,7 @@ function ai_dblog_event_details($id) {
   $result = db_query('SELECT w.*, u.name, w.uid FROM {watchdog} w LEFT JOIN {users} u ON w.uid = u.uid WHERE w.wid = :id', [':id' => $id])->fetchObject();
   if ($dblog = $result) {
     if (!empty($dblog->uid) && empty($dblog->name)) {
-      $user_label = t('User ID (deleted]');
+      $user_label = t('User ID (deleted)');
       $user_info = $dblog->uid;
     }
     else {

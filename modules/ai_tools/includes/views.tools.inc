@@ -501,6 +501,9 @@ function ai_tools_execute_get_views_result(array $args) {
   }
 
   $view->set_display($display_id);
+  if (!$view->access($display_id)) {
+    return ['error' => 'Access denied: You do not have permission to access this view display.'];
+  }
   $view->set_arguments($arguments);
   $view->set_items_per_page($limit);
   $view->execute();

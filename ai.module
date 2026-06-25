@@ -552,7 +552,9 @@ function ai_get_api_for_model($model_id, &$stripped_model_id = NULL) {
  *   The embedding dimension.
  */
 function ai_get_embedding_dimension($model_id, $provider_id = NULL) {
-  $provider_id = $provider_id ?: ai_default_provider_id();
+  list($qualified_provider_id, $stripped_model_id) = ai_parse_model_id($model_id);
+  $provider_id = !empty($qualified_provider_id) ? $qualified_provider_id : ($provider_id ?: ai_default_provider_id());
+  $lookup_model_id = !empty($qualified_provider_id) ? $stripped_model_id : $model_id;
 
   // Known models resolve from the table without a network round-trip; the
   // live detection call below is billable and only worth it for models the
@@ -570,15 +572,15 @@ function ai_get_embedding_dimension($model_id, $provider_id = NULL) {
     'cohere/embed-multilingual-v3.0' => 1024,
   ];
 
-  $qualified_model_id = $provider_id . '/' . $model_id;
+  $qualified_model_id = $provider_id . '/' . $lookup_model_id;
   if (isset($known_dimensions[$qualified_model_id])) {
     $dimension = $known_dimensions[$qualified_model_id];
   }
-  elseif (isset($known_dimensions[$model_id])) {
-    $dimension = $known_dimensions[$model_id];
+  elseif (isset($known_dimensions[$lookup_model_id])) {
+    $dimension = $known_dimensions[$lookup_model_id];
   }
   else {
-    $dynamic_dimension = ai_detect_embedding_dimension($model_id, $provider_id);
+    $dynamic_dimension = ai_detect_embedding_dimension($lookup_model_id, $provider_id);
     $dimension = $dynamic_dimension > 0 ? $dynamic_dimension : 1536;
   }
 

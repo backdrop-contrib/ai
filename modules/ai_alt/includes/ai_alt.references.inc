@@ -139,7 +139,7 @@ function _ai_alt_rewrite_entity_file_urls($entity_type, &$entity, $old_url, $new
             if (empty($children[$item['value']])) {
               continue;
             }
-            ai_alt_rewrite_entity_file_urls('paragraphs_item', $children[$item['value']], $old_url, $new_url, $visited);
+            _ai_alt_rewrite_entity_file_urls('paragraphs_item', $children[$item['value']], $old_url, $new_url, $visited);
           }
           break;
       }

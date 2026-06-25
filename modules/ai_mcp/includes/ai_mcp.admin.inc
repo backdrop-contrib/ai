@@ -166,6 +166,14 @@ function ai_mcp_server_form_validate(array $form, array &$form_state) {
   if (empty($auth_key)) {
     form_set_error('auth_key', t('Auth key is required.'));
   }
+
+  $uid_raw = isset($form_state['values']['uid']) ? trim((string) $form_state['values']['uid']) : '';
+  if ($uid_raw !== '') {
+    $uid = (int) $uid_raw;
+    if ($uid > 0 && !user_load($uid)) {
+      form_set_error('uid', t('The selected user ID does not exist.'));
+    }
+  }
 }
 
 /**
@@ -184,7 +192,7 @@ function ai_mcp_server_form_submit(array $form, array &$form_state) {
     'id'           => $values['id'],
     'label'        => $values['label'],
     'auth_key'     => trim($values['auth_key']),
-    'uid'          => $uid_raw === '' ? 1 : (int) $uid_raw,
+    'uid'          => $uid_raw === '' ? 0 : (int) $uid_raw,
     'tools'        => $tools_clean,
     'oauth_enabled'=> FALSE,
   ];

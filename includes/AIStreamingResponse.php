@@ -25,11 +25,24 @@ class AIStreamingResponse {
    * when cURL is unavailable.
    */
   public function send(): void {
-    if (function_exists('curl_init')) {
+    if (function_exists('curl_init') && $this->canUseCurlStreaming()) {
       $this->sendStreaming();
       return;
     }
     $this->sendBuffered();
+  }
+
+  /**
+   * Whether request options can be faithfully represented by cURL streaming.
+   */
+  protected function canUseCurlStreaming(): bool {
+    $supported = ['method', 'headers', 'data', 'timeout'];
+    foreach ($this->options as $key => $value) {
+      if (!in_array($key, $supported, TRUE)) {
+        return FALSE;
+      }
+    }
+    return TRUE;
   }
 
   /**

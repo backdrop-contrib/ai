@@ -103,13 +103,21 @@ function _ai_mcp_post_handler() {
       : (object) ['uid' => 0, 'roles' => [], 'name' => ''];
   }
   $session_state = backdrop_save_session();
+  $original_session = isset($_SESSION) ? $_SESSION : NULL;
   backdrop_save_session(FALSE);
+  $_SESSION = [];
   $user = $execution_user;
   try {
     $result = ai_mcp_jsonrpc_dispatch($body, $server);
   }
   finally {
     $user = $original_user;
+    if ($original_session === NULL) {
+      unset($_SESSION);
+    }
+    else {
+      $_SESSION = $original_session;
+    }
     backdrop_save_session($session_state);
   }
 

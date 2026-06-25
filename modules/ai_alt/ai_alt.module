@@ -1189,6 +1189,7 @@ function ai_alt_create_file_redirect($old_uri, $new_uri) {
  */
 function ai_alt_form_file_add_form_alter(&$form, &$form_state) {
   if (isset($form['#step']) && $form['#step'] == 4) {
+    module_load_include('inc', 'ai_alt', 'includes/ai_alt.widget');
     _ai_alt_attach_to_file_form($form, $form_state);
   }
 }
@@ -1197,79 +1198,8 @@ function ai_alt_form_file_add_form_alter(&$form, &$form_state) {
  * Implements hook_form_FORM_ID_alter() for file_manage_form.
  */
 function ai_alt_form_file_manage_form_alter(&$form, &$form_state) {
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.widget');
   _ai_alt_attach_to_file_form($form, $form_state);
-}
-
-/**
- * Helper to attach AI generation button to file forms.
- */
-function _ai_alt_attach_to_file_form(&$form, &$form_state) {
-  if (!module_exists('image_entity_alt')) {
-    return;
-  }
-
-  $autogenerate = config_get('ai_alt.settings', 'autogenerate');
-  $hide_button = config_get('ai_alt.settings', 'hide_button');
-
-  // Only for image file types.
-  $file = NULL;
-  if (isset($form_state['file'])) {
-    $file = $form_state['file'];
-  }
-  elseif (isset($form_state['storage']['upload'])) {
-    $file = file_load($form_state['storage']['upload']);
-  }
-
-  if (!$file || strpos($file->filemime, 'image/') !== 0) {
-    return;
-  }
-
-  $alt_field = image_entity_alt_field_name();
-  if (!isset($form[$alt_field])) {
-    return;
-  }
-
-  $lang = isset($form[$alt_field]['#language']) ? $form[$alt_field]['#language'] : LANGUAGE_NONE;
-  if (isset($form[$alt_field][$lang][0]['value'])) {
-    $wrapper_id = 'ai-alt-file-wrapper';
-
-    // Add wrapper to the textfield.
-    $form[$alt_field][$lang][0]['value']['#prefix'] = '<div id="' . $wrapper_id . '">';
-    $form[$alt_field][$lang][0]['value']['#suffix'] = '</div>';
-
-    // Add the button.
-    $form[$alt_field][$lang][0]['generate_button'] = [
-      '#type' => 'button',
-      '#value' => t('AI Generate Alt Text'),
-      '#ajax' => [
-        'callback' => 'ai_alt_file_form_ajax_callback',
-        'wrapper' => $wrapper_id,
-      ],
-      '#weight' => 10,
-      '#attributes' => [
-        'class' => ['ai-alt-file-generate-button'],
-      ],
-    ];
-
-    // Hide the button via CSS if hide_button is set (it will still be triggered via JS if autogenerate is true).
-    if ($hide_button && $autogenerate) {
-      $form[$alt_field][$lang][0]['generate_button']['#attributes']['style'] = 'display: none;';
-    }
-
-    // Ensure the button doesn't trigger form submission.
-    $form[$alt_field][$lang][0]['generate_button']['#limit_validation_errors'] = [];
-
-    // Attach settings and JS for autogeneration.
-    $form['#attached']['js'][] = [
-      'data' => [
-        'aiAltFile' => [
-          'autogenerate' => (bool) $autogenerate,
-        ],
-      ],
-      'type' => 'setting',
-    ];
-    $form['#attached']['js'][] = backdrop_get_path('module', 'ai_alt') . '/js/ai_alt_file_form.js';
-  }
 }
 
 /**

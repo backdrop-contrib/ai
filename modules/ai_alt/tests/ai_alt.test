@@ -154,13 +154,16 @@ class AIAltModuleTestCase extends BackdropUnitTestCase {
     $private_path = 'private-files';
     config_set('system.core', 'file_private_path', $private_path);
 
-    $resolved_public = _ai_alt_bulk_src_to_fid('/' . $public_path . '/styles/large/public/bulk-src-to-fid-public.jpg?itok=abc');
-    $resolved_private = _ai_alt_bulk_src_to_fid('/' . $private_path . '/styles/large/private/bulk-src-to-fid-private.jpg');
+    try {
+      $resolved_public = _ai_alt_bulk_src_to_fid('/' . $public_path . '/styles/large/public/bulk-src-to-fid-public.jpg?itok=abc');
+      $resolved_private = _ai_alt_bulk_src_to_fid('/' . $private_path . '/styles/large/private/bulk-src-to-fid-private.jpg');
 
-    $this->assertEqual((int) $public_fid, (int) $resolved_public, 'Styled public image URLs resolve to the original public fid.');
-    $this->assertEqual((int) $private_fid, (int) $resolved_private, 'Styled private image URLs resolve to the original private fid.');
-
-    config_set('system.core', 'file_private_path', $old_private_path);
+      $this->assertEqual((int) $public_fid, (int) $resolved_public, 'Styled public image URLs resolve to the original public fid.');
+      $this->assertEqual((int) $private_fid, (int) $resolved_private, 'Styled private image URLs resolve to the original private fid.');
+    }
+    finally {
+      config_set('system.core', 'file_private_path', $old_private_path);
+    }
   }
 
   /**

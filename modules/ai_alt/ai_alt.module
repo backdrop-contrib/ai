@@ -251,11 +251,13 @@ function ai_alt_form_alter(&$form, &$form_state, $form_id) {
  * AJAX callback to generate alt text in CKEditor modal.
  */
 function ai_alt_generate_alt_text_for_ckeditor($form, &$form_state) {
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.generate');
   module_load_include('inc', 'ai_alt', 'includes/ai_alt.ajax');
   return _ai_alt_generate_alt_text_for_ckeditor($form, $form_state);
 }
 
 function ai_alt_generate_alt_text_for_ckeditor_autogenerate() {
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.generate');
   module_load_include('inc', 'ai_alt', 'includes/ai_alt.ajax');
   return _ai_alt_generate_alt_text_for_ckeditor_autogenerate();
 }
@@ -264,6 +266,7 @@ function ai_alt_generate_alt_text_for_ckeditor_autogenerate() {
  * AJAX callback for manual "Generate Alt Text" button.
  */
 function ai_alt_generate_alt_text_ajax($form, &$form_state) {
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.generate');
   module_load_include('inc', 'ai_alt', 'includes/ai_alt.ajax');
   return _ai_alt_generate_alt_text_ajax($form, $form_state);
 }
@@ -272,6 +275,7 @@ function ai_alt_generate_alt_text_ajax($form, &$form_state) {
  * Handles AJAX requests to generate alt text.
  */
 function ai_alt_generate_alt_text_callback() {
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.generate');
   module_load_include('inc', 'ai_alt', 'includes/ai_alt.ajax');
   return _ai_alt_generate_alt_text_callback();
 }

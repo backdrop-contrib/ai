@@ -476,6 +476,7 @@ class AIApi {
         }
         $url = $item['image_url']['url'];
         if (strpos($url, 'data:') !== 0) {
+          $messages[$m_index]['content'][$c_index]['image_url']['url'] = '[redacted image-url]';
           continue;
         }
 

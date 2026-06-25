@@ -33,6 +33,9 @@ function _ai_alt_generate_alt_text_for_ckeditor($form, array &$form_state) {
     watchdog('ai_alt', 'Failed to load file with fid: @fid', ['@fid' => $fid], WATCHDOG_WARNING);
     return _ai_alt_ajax_alert(t('Failed to load the image file. Please try again.'));
   }
+  if (function_exists('file_access') && !file_access('view', $file)) {
+    return _ai_alt_ajax_alert(t('Access denied.'));
+  }
 
   try {
     $generated_alt_text = _ai_alt_generate_from_file($file, FALSE);
@@ -135,6 +138,9 @@ function _ai_alt_generate_alt_text_ajax($form, array &$form_state) {
   if (!$file) {
     backdrop_set_message(t('File not found for the given file ID.'), 'error');
     return _ai_alt_ajax_alert(t('File not found for the given file ID.'));
+  }
+  if (function_exists('file_access') && !file_access('view', $file)) {
+    return _ai_alt_ajax_alert(t('Access denied.'));
   }
 
   try {

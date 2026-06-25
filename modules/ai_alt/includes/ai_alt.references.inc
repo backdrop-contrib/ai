@@ -83,8 +83,8 @@ function _ai_alt_collect_file_usage_refs($file) {
  * Recursively rewrite exact file URLs within an entity tree.
  */
 function _ai_alt_rewrite_entity_file_urls($entity_type, &$entity, $old_url, $new_url, array &$visited) {
-  list($entity_id) = entity_extract_ids($entity_type, $entity);
-  $visit_key = $entity_type . ':' . (string) $entity_id;
+  list($entity_id, $revision_id) = entity_extract_ids($entity_type, $entity);
+  $visit_key = $entity_type . ':' . (string) $entity_id . ':' . (string) $revision_id;
   if (isset($visited[$visit_key])) {
     return FALSE;
   }

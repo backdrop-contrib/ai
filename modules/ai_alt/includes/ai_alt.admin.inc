@@ -146,7 +146,7 @@ function _ai_alt_settings_form(array $form, array &$form_state) {
     ],
   ];
 
-  $form['#validate'][] = 'ai_alt_settings_form_validate';
+  $form['#validate'][] = '_ai_alt_settings_form_validate';
 
   return system_settings_form($form);
 }

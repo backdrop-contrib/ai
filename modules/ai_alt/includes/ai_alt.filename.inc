@@ -9,13 +9,14 @@
  * Normalize an AI response into a safe filename stem.
  */
 function _ai_alt_build_filename_from_label($label, $extension = '') {
-  $label = strtolower(trim((string) $label));
-  $label = preg_replace('/[^a-z0-9\-_ ]+/', '', $label);
-  $label = preg_replace('/\s+/', '-', $label);
+  $label = trim((string) $label);
   $label = system_transliterate_machine_name($label, [
     'replace' => '-',
     'maxlength' => 96,
   ]);
+  $label = strtolower($label);
+  $label = preg_replace('/[^a-z0-9\-_ ]+/', '', $label);
+  $label = preg_replace('/\s+/', '-', $label);
   $parts = array_values(array_filter(explode('-', $label), 'strlen'));
   $parts = array_slice($parts, 0, 6);
   $filename = trim(implode('-', $parts), '-');

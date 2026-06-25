@@ -21,18 +21,24 @@ function _ai_alt_convert_svg_to_png($svg_uri) {
     return FALSE;
   }
 
-  $output_uri = preg_replace('/\.svg$/i', '.png', $svg_real_path);
+  $output_uri = preg_replace('/\.svg$/i', '.png', $svg_uri);
+  $output_real_path = preg_replace('/\.svg$/i', '.png', $svg_real_path);
+
+  if (!function_exists('shell_exec')) {
+    watchdog('ai_alt', 'shell_exec() is not available; cannot convert SVG to PNG.');
+    return FALSE;
+  }
 
   if (!shell_exec('which convert')) {
     watchdog('ai_alt', 'ImageMagick `convert` command not found.');
     return FALSE;
   }
 
-  $command = 'convert ' . escapeshellarg($svg_real_path) . ' PNG32:' . escapeshellarg($output_uri);
+  $command = 'convert ' . escapeshellarg($svg_real_path) . ' PNG32:' . escapeshellarg($output_real_path);
   watchdog('ai_alt', 'Running command: @command', ['@command' => $command]);
   shell_exec($command);
 
-  if (!file_exists($output_uri)) {
+  if (!file_exists($output_real_path)) {
     watchdog('ai_alt', 'Failed to convert SVG to PNG: @uri', ['@uri' => $output_uri]);
     return FALSE;
   }

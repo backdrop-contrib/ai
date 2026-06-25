@@ -73,7 +73,12 @@ class AIStreamingResponse {
       }
       if ($status_code !== 200) {
         // Collect the error body instead of echoing it to the client.
-        $error_body .= $chunk;
+        if (strlen($error_body) < 500) {
+          $error_body .= $chunk;
+          if (strlen($error_body) > 500) {
+            $error_body = substr($error_body, 0, 500);
+          }
+        }
         return strlen($chunk);
       }
 

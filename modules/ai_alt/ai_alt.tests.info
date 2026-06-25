@@ -1,0 +1,7 @@
+[AIAltModuleTestCase]
+name = AI Alt module helpers
+description = Verifies AI Alt helper behavior and low-risk hook entrypoints.
+group = AI Alt
+file = tests/ai_alt.test
+backdrop = 1.x
+php = 8.0

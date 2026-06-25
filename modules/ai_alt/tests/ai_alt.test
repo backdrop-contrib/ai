@@ -1,0 +1,119 @@
+<?php
+
+/**
+ * @file
+ * Tests for AI Alt module helpers and hook entrypoints.
+ */
+
+class AIAltModuleTestCase extends BackdropUnitTestCase {
+
+  /**
+   * Sets up the test environment.
+   */
+  public function setUp() {
+    parent::setUp();
+    module_load_include('module', 'ai_alt');
+    module_load_include('inc', 'ai_alt', 'includes/ai_alt.filename');
+  }
+
+  /**
+   * Test that config info registers the AI Alt settings object.
+   */
+  public function testConfigInfoRegistersSettings() {
+    $info = ai_alt_config_info();
+
+    $this->assertTrue(isset($info['ai_alt.settings']), 'The AI Alt settings object is registered.');
+    $this->assertEqual('AI Alt Settings', $info['ai_alt.settings']['label'], 'The AI Alt settings label is correct.');
+  }
+
+  /**
+   * Test that menu callbacks are registered for the AI Alt UI endpoints.
+   */
+  public function testMenuRegistersExpectedRoutes() {
+    $items = ai_alt_menu();
+
+    $this->assertTrue(isset($items['admin/config/ai/ai-alt']), 'The admin settings route is registered.');
+    $this->assertEqual('backdrop_get_form', $items['admin/config/ai/ai-alt']['page callback'], 'The admin route uses the form callback.');
+    $this->assertTrue(isset($items['ai-alt/generate-alt-text']), 'The JSON alt-text callback route is registered.');
+    $this->assertTrue(isset($items['ai-alt/ckeditor-autogenerate']), 'The CKEditor autogeneration route is registered.');
+  }
+
+  /**
+   * Test that filename labels are normalized and limited.
+   */
+  public function testBuildFilenameFromLabelNormalizesWords() {
+    $filename = ai_alt_build_filename_from_label('  Bright, Clean Kitchen With Lots of Natural Light!!!  ');
+    $this->assertEqual(
+      'bright-clean-kitchen-with-lots-of',
+      $filename,
+      'Filename labels are normalized and trimmed to six words.'
+    );
+  }
+
+  /**
+   * Test that empty labels fall back to a stable filename.
+   */
+  public function testBuildFilenameFromLabelFallsBackToImage() {
+    $filename = ai_alt_build_filename_from_label('!!!');
+    $this->assertEqual(
+      'image',
+      $filename,
+      'Empty normalized labels fall back to "image".'
+    );
+  }
+
+  /**
+   * Test that file extensions are appended in lowercase.
+   */
+  public function testBuildFilenameFromLabelAppendsExtension() {
+    $filename = ai_alt_build_filename_from_label('Museum Entrance', 'JPG');
+    $this->assertEqual(
+      'museum-entrance.jpg',
+      $filename,
+      'Filename extensions are appended in lowercase.'
+    );
+  }
+
+  /**
+   * Test that local stream wrappers are detected correctly.
+   */
+  public function testFileUsesLocalStreamWrapper() {
+    $this->assertTrue(
+      ai_alt_file_uses_local_stream_wrapper('public://example.jpg'),
+      'The public stream wrapper is treated as local.'
+    );
+    $this->assertFalse(
+      ai_alt_file_uses_local_stream_wrapper('https://example.com/example.jpg'),
+      'Remote URLs are not treated as local stream wrappers.'
+    );
+  }
+
+  /**
+   * Test that the widget wrapper bails out cleanly when no alt field exists.
+   */
+  public function testImageFieldProcessReturnsUnchangedElementWithoutAlt() {
+    $element = [
+      '#value' => ['fid' => 99],
+      '#id' => 'edit-field-image-und-0',
+    ];
+    $form_state = [];
+    $form = [];
+
+    $processed = ai_alt_image_field_process($element, $form_state, $form);
+    $this->assertEqual($element, $processed, 'Elements without an alt value are returned unchanged.');
+  }
+
+  /**
+   * Test that non-CKEditor forms are ignored by the form alter wrapper.
+   */
+  public function testFormAlterIgnoresOtherForms() {
+    $form = [
+      'title' => ['#type' => 'textfield'],
+    ];
+    $original_form = $form;
+    $form_state = [];
+
+    ai_alt_form_alter($form, $form_state, 'node_form');
+    $this->assertEqual($original_form, $form, 'Unrelated forms are not altered.');
+  }
+}

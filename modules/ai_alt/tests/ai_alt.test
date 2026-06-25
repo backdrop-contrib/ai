@@ -119,6 +119,42 @@ class AIAltModuleTestCase extends BackdropUnitTestCase {
   }
 
   /**
+   * Test that bulk HTML parsing extracts img src values reliably.
+   */
+  public function testBulkParseImgTagsExtractsSrcValues() {
+    $html = '<p><img data-file-id="12" alt="Cat &amp; Dog" src="/files/cat.jpg"></p>'
+      . '<div><img class="media-image" src="https://example.com/files/styles/large/public/hero.jpg?itok=abc"></div>'
+      . '<p><img alt="Quote test: &quot;value&gt;text&quot;" src="/files/special.jpg"></p>';
+
+    $parsed = _ai_alt_bulk_parse_img_tags($html);
+
+    $this->assertEqual(3, count($parsed), 'Three img tags are parsed from the HTML input.');
+    $this->assertEqual('/files/cat.jpg', $parsed[0]['src'], 'The first img src is extracted.');
+    $this->assertEqual(12, $parsed[0]['fid'], 'The first img data-file-id is extracted as an integer.');
+    $this->assertEqual('Cat & Dog', $parsed[0]['alt'], 'The first img alt text is extracted and decoded.');
+    $this->assertEqual('https://example.com/files/styles/large/public/hero.jpg?itok=abc', $parsed[1]['src'], 'The second img src is extracted intact.');
+    $this->assertEqual('/files/special.jpg', $parsed[2]['src'], 'The third img src is extracted correctly.');
+    $this->assertEqual('Quote test: "value>text"', $parsed[2]['alt'], 'Alt text with literal > in quoted attribute is extracted and decoded.');
+  }
+}
+
+/**
+ * Database-backed tests for the bulk src-to-fid URL resolver.
+ *
+ * Uses BackdropWebTestCase so db_insert() and config_set() run against an
+ * isolated test database rather than the live site.
+ */
+class AIAltBulkSrcResolverTestCase extends BackdropWebTestCase {
+
+  /**
+   * Sets up the test environment with an isolated database.
+   */
+  public function setUp() {
+    parent::setUp(['ai_alt', 'ai_alt_bulk']);
+    module_load_include('module', 'ai_alt_bulk');
+  }
+
+  /**
    * Test that bulk src-to-fid resolves styled public and private image URLs.
    */
   public function testBulkSrcToFidResolvesStyledPublicAndPrivateUrls() {
@@ -179,24 +215,5 @@ class AIAltModuleTestCase extends BackdropUnitTestCase {
     finally {
       config_set('system.core', 'file_private_path', $old_private_path);
     }
-  }
-
-  /**
-   * Test that bulk HTML parsing extracts img src values reliably.
-   */
-  public function testBulkParseImgTagsExtractsSrcValues() {
-    $html = '<p><img data-file-id="12" alt="Cat &amp; Dog" src="/files/cat.jpg"></p>'
-      . '<div><img class="media-image" src="https://example.com/files/styles/large/public/hero.jpg?itok=abc"></div>'
-      . '<p><img alt="Quote test: &quot;value&gt;text&quot;" src="/files/special.jpg"></p>';
-
-    $parsed = _ai_alt_bulk_parse_img_tags($html);
-
-    $this->assertEqual(3, count($parsed), 'Three img tags are parsed from the HTML input.');
-    $this->assertEqual('/files/cat.jpg', $parsed[0]['src'], 'The first img src is extracted.');
-    $this->assertEqual(12, $parsed[0]['fid'], 'The first img data-file-id is extracted as an integer.');
-    $this->assertEqual('Cat & Dog', $parsed[0]['alt'], 'The first img alt text is extracted and decoded.');
-    $this->assertEqual('https://example.com/files/styles/large/public/hero.jpg?itok=abc', $parsed[1]['src'], 'The second img src is extracted intact.');
-    $this->assertEqual('/files/special.jpg', $parsed[2]['src'], 'The third img src is extracted correctly.');
-    $this->assertEqual('Quote test: "value>text"', $parsed[2]['alt'], 'Alt text with literal > in quoted attribute is extracted and decoded.');
   }
 }

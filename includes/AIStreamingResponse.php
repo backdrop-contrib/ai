@@ -101,7 +101,7 @@ class AIStreamingResponse {
       $done = $this->processLine(rtrim($line_buffer, "\r"));
     }
 
-    if (!$done && !$status_code && $ok === FALSE && $curl_error !== '') {
+    if (!$done && $ok === FALSE && $curl_error !== '') {
       throw new \Exception('Streaming transport error: ' . $curl_error);
     }
     if ($status_code && $status_code !== 200) {
@@ -135,10 +135,10 @@ class AIStreamingResponse {
    * Decode one SSE line and echo any extracted text.
    */
   protected function processLine(string $line): bool {
-    if (strpos($line, 'data: ') !== 0) {
+    if (strpos($line, 'data:') !== 0) {
       return FALSE;
     }
-    $json = substr($line, 6);
+    $json = ltrim(substr($line, 5), ' ');
     if ($json === '[DONE]') {
       return TRUE;
     }

@@ -276,11 +276,13 @@ class AIApi {
   public function chat(string $model, array $messages, $temperature, $max_tokens = 1024, bool $stream_response = FALSE, array $context_extra = []) {
     $this->checkRateLimit('chat');
     $start_time = microtime(TRUE);
+    $log_messages = (isset($context_extra['log_messages']) && is_array($context_extra['log_messages'])) ? $context_extra['log_messages'] : $messages;
+    unset($context_extra['log_messages']);
     $context = $this->buildContext('chat', $model, $context_extra);
     $this->applyChatMessageAlter($messages, $context);
     if (!empty($context['guardrail_blocked'])) {
       // Blocked requests are the ones an auditor most needs to see.
-      $this->log('chat', $model, $messages, (string) ($context['guardrail_message'] ?? ''), FALSE, microtime(TRUE) - $start_time, 'Blocked by guardrails before the provider call.');
+      $this->log('chat', $model, $log_messages, (string) ($context['guardrail_message'] ?? ''), FALSE, microtime(TRUE) - $start_time, 'Blocked by guardrails before the provider call.');
       return (string) ($context['guardrail_message'] ?? '');
     }
 
@@ -288,7 +290,7 @@ class AIApi {
       $response = $this->client->chat($model, $messages, $temperature, $max_tokens, $stream_response, $context);
     }
     catch (\Throwable $e) {
-      $this->log('chat', $model, $messages, NULL, FALSE, microtime(TRUE) - $start_time, $e->getMessage());
+      $this->log('chat', $model, $log_messages, NULL, FALSE, microtime(TRUE) - $start_time, $e->getMessage());
       throw $this->normalizeException($e, 'chat', $context);
     }
     $this->finalizeContext($context);
@@ -296,12 +298,12 @@ class AIApi {
     if (!$stream_response) {
       $this->applyChatResponseAlter($response, $context);
       if (!empty($context['guardrail_blocked'])) {
-        $this->log('chat', $model, $messages, $response, FALSE, microtime(TRUE) - $start_time, 'Response blocked by guardrails.');
+        $this->log('chat', $model, $log_messages, $response, FALSE, microtime(TRUE) - $start_time, 'Response blocked by guardrails.');
         return (string) ($context['guardrail_message'] ?? '');
       }
     }
 
-    $this->log('chat', $model, $messages, $stream_response ? '[stream]' : $response, TRUE, microtime(TRUE) - $start_time, NULL, $stream_response);
+    $this->log('chat', $model, $log_messages, $stream_response ? '[stream]' : $response, TRUE, microtime(TRUE) - $start_time, NULL, $stream_response);
 
     return $response;
   }
@@ -441,6 +443,7 @@ class AIApi {
         ],
       ],
     ];
+    $log_messages = $sendImageData ? $this->sanitizeMessagesForLog($messages) : $messages;
 
     // Route through the chat() wrapper so rate limits, guardrails, logging,
     // and exception normalization apply to vision calls like any other chat.
@@ -448,12 +451,46 @@ class AIApi {
     // global wrapper instead of sending a prefixed id to this client.
     list($prefix, $bare) = ai_parse_model_id($model);
     if (!empty($prefix) && $prefix !== $this->provider && function_exists('ai_chat')) {
-      $result = ai_chat($model, $messages, 0.4, 300, FALSE, ['operation' => 'describe_image']);
+      $result = ai_chat($model, $messages, 0.4, 300, FALSE, ['operation' => 'describe_image', 'log_messages' => $log_messages]);
     }
     else {
-      $result = $this->chat($bare, $messages, 0.4, 300, FALSE, ['operation' => 'describe_image']);
+      $result = $this->chat($bare, $messages, 0.4, 300, FALSE, ['operation' => 'describe_image', 'log_messages' => $log_messages]);
     }
     return trim((string) $result);
+  }
+
+  /**
+   * Redact data URI image payloads before persisting request logs.
+   */
+  protected function sanitizeMessagesForLog(array $messages): array {
+    foreach ($messages as $m_index => $message) {
+      if (empty($message['content']) || !is_array($message['content'])) {
+        continue;
+      }
+      foreach ($message['content'] as $c_index => $item) {
+        if (empty($item['type']) || $item['type'] !== 'image_url') {
+          continue;
+        }
+        if (empty($item['image_url']['url']) || !is_string($item['image_url']['url'])) {
+          continue;
+        }
+        $url = $item['image_url']['url'];
+        if (strpos($url, 'data:') !== 0) {
+          continue;
+        }
+
+        if (preg_match('/^data:([^;]+);base64,(.*)$/s', $url, $matches)) {
+          $mime = $matches[1];
+          $bytes = (int) floor(strlen(preg_replace('/\s+/', '', $matches[2])) * 3 / 4);
+          $messages[$m_index]['content'][$c_index]['image_url']['url'] = 'data:' . $mime . ';base64,[redacted ' . $bytes . ' bytes]';
+        }
+        else {
+          $messages[$m_index]['content'][$c_index]['image_url']['url'] = '[redacted data-uri]';
+        }
+      }
+    }
+
+    return $messages;
   }
 
   /**

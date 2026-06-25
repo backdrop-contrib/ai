@@ -199,11 +199,11 @@ function ai_admin_overview() {
       continue;
     }
 
-    $title = !empty($link->title) ? $link->title : ucwords(str_replace('_', ' ', basename($path)));
+    $title = !empty($link->title) ? t($link->title) : ucwords(str_replace('_', ' ', basename($path)));
     if (in_array($title, ['Dashboard', 'Overview'], TRUE)) {
       continue;
     }
-    $description = !empty($link->description) ? $link->description : '';
+    $description = !empty($link->description) ? t($link->description) : '';
     $category = ai_admin_overview_category($path, $title);
     $sections[$category][] = [
       'title' => $title,
@@ -326,8 +326,8 @@ function ai_admin_reports_overview() {
       continue;
     }
 
-    $title = !empty($link->title) ? $link->title : ucwords(str_replace('_', ' ', basename($path)));
-    $description = !empty($link->description) ? $link->description : '';
+    $title = !empty($link->title) ? t($link->title) : ucwords(str_replace('_', ' ', basename($path)));
+    $description = !empty($link->description) ? t($link->description) : '';
     $items[$title] = '<dt>' . l($title, $path) . '</dt><dd>' . check_plain($description) . '</dd>';
   }
 

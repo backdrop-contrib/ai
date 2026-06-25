@@ -85,8 +85,8 @@ function _ai_alt_settings_form(array $form, array &$form_state) {
     }
 
     if (isset($flat_all_models[$current_model])) {
-      $models = $all_models;
-      $flat_models = $flat_all_models;
+      $models[t('Current selection')][$current_model] = $flat_all_models[$current_model] . ' ' . t('(currently selected, non-vision)');
+      $flat_models[$current_model] = $flat_all_models[$current_model];
     }
     else {
       $parts = explode('/', $current_model);

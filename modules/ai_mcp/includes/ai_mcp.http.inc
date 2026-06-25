@@ -89,15 +89,22 @@ function _ai_mcp_post_handler() {
   // the credential here — the request itself arrives as anonymous, and the
   // ai_tools registry filters out every permission-gated tool for anonymous,
   // which would make those tools silently unavailable over MCP.
-  $uid = isset($server['uid']) ? (int) $server['uid'] : 1;
-  $account = $uid ? user_load($uid) : FALSE;
+  $uid = NULL;
+  if (array_key_exists('uid', $server) && $server['uid'] !== '' && $server['uid'] !== NULL) {
+    $uid = (int) $server['uid'];
+  }
+  $account = ($uid !== NULL && $uid > 0) ? user_load($uid) : FALSE;
   global $user;
   $original_user = $user;
+  $execution_user = $account;
+  if (!$execution_user) {
+    $execution_user = function_exists('backdrop_anonymous_user')
+      ? backdrop_anonymous_user()
+      : (object) ['uid' => 0, 'roles' => [], 'name' => ''];
+  }
   $session_state = backdrop_save_session();
   backdrop_save_session(FALSE);
-  if ($account) {
-    $user = $account;
-  }
+  $user = $execution_user;
   try {
     $result = ai_mcp_jsonrpc_dispatch($body, $server);
   }

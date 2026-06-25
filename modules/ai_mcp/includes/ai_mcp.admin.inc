@@ -118,9 +118,9 @@ function ai_mcp_server_form(array $form, array &$form_state, $server = NULL) {
   $form['uid'] = [
     '#type'          => 'number',
     '#title'         => t('Run tool calls as user ID'),
-    '#default_value' => $is_new ? 1 : (isset($server['uid']) ? (int) $server['uid'] : 1),
+    '#default_value' => $is_new ? 0 : (isset($server['uid']) ? (int) $server['uid'] : 0),
     '#min'           => 0,
-    '#description'   => t('Tool permission checks run as this user. Defaults to user 1. Setting 0 runs as anonymous, which hides every permission-gated tool.'),
+    '#description'   => t('Tool permission checks run as this user. Use a dedicated low-privilege service account; 0 runs as anonymous.'),
   ];
 
   // Build tool checkboxes from the registry.
@@ -174,6 +174,7 @@ function ai_mcp_server_form_validate(array $form, array &$form_state) {
 function ai_mcp_server_form_submit(array $form, array &$form_state) {
   $values  = $form_state['values'];
   $is_new  = empty($form['#server']);
+  $uid_raw = isset($values['uid']) ? trim((string) $values['uid']) : '';
 
   // Collect selected tools (checkboxes returns key => 0|key).
   $raw_tools   = isset($values['tools']) ? $values['tools'] : [];
@@ -183,7 +184,7 @@ function ai_mcp_server_form_submit(array $form, array &$form_state) {
     'id'           => $values['id'],
     'label'        => $values['label'],
     'auth_key'     => trim($values['auth_key']),
-    'uid'          => isset($values['uid']) ? (int) $values['uid'] : 1,
+    'uid'          => $uid_raw === '' ? 1 : (int) $uid_raw,
     'tools'        => $tools_clean,
     'oauth_enabled'=> FALSE,
   ];

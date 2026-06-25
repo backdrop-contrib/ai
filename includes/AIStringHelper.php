@@ -24,7 +24,7 @@ class AIStringHelper {
       }
     }
     $wrapper = $dom->getElementsByTagName('div')->item(0);
-    $text = $wrapper ? $dom->saveHTML($wrapper) : $wrapped;
+    $text = $wrapper ? $dom->saveHTML($wrapper) : $dom->saveHTML();
     $text = html_entity_decode(strip_tags($text));
     $text = preg_replace('/\s+/', ' ', $text);
     $text = preg_replace('/[^\w.?!,%\x27\x22\x20]/u', '', $text);

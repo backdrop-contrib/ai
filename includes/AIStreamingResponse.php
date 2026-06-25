@@ -44,6 +44,7 @@ class AIStreamingResponse {
     $line_buffer = '';
     $error_body = '';
     $status_code = 0;
+    $done = FALSE;
 
     $ch = curl_init($this->url);
     curl_setopt($ch, CURLOPT_CUSTOMREQUEST, strtoupper((string) ($this->options['method'] ?? 'POST')));
@@ -53,7 +54,7 @@ class AIStreamingResponse {
     curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
     curl_setopt($ch, CURLOPT_TIMEOUT, (int) ($this->options['timeout'] ?? 300));
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, FALSE);
-    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($handle, $chunk) use (&$line_buffer, &$error_body, &$status_code) {
+    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($handle, $chunk) use (&$line_buffer, &$error_body, &$status_code, &$done) {
       if (!$status_code) {
         $status_code = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
       }
@@ -67,7 +68,11 @@ class AIStreamingResponse {
       while (($pos = strpos($line_buffer, "\n")) !== FALSE) {
         $line = substr($line_buffer, 0, $pos);
         $line_buffer = substr($line_buffer, $pos + 1);
-        $this->processLine(rtrim($line, "\r"));
+        if ($this->processLine(rtrim($line, "\r"))) {
+          $done = TRUE;
+          // Abort transfer once terminal event is seen.
+          return 0;
+        }
       }
       return strlen($chunk);
     });
@@ -79,16 +84,16 @@ class AIStreamingResponse {
     $curl_error = curl_error($ch);
     curl_close($ch);
 
-    if ($status_code === 200 && $line_buffer !== '') {
-      $this->processLine(rtrim($line_buffer, "\r"));
+    if (!$done && $status_code === 200 && $line_buffer !== '') {
+      $done = $this->processLine(rtrim($line_buffer, "\r"));
     }
 
-    if ($status_code !== 200) {
-      $detail = $error_body !== '' ? ': ' . substr(trim(strip_tags($error_body)), 0, 500) : '';
-      throw new \Exception('Streaming API error (' . ($status_code ?: 'unknown') . ')' . $detail);
-    }
-    if ($ok === FALSE && $curl_error !== '') {
+    if (!$done && !$status_code && $ok === FALSE && $curl_error !== '') {
       throw new \Exception('Streaming transport error: ' . $curl_error);
+    }
+    if ($status_code && $status_code !== 200) {
+      $detail = $error_body !== '' ? ': ' . substr(trim(strip_tags($error_body)), 0, 500) : '';
+      throw new \Exception('Streaming API error (' . $status_code . ')' . $detail);
     }
   }
 
@@ -107,24 +112,26 @@ class AIStreamingResponse {
     }
 
     foreach (explode("\n", $response->data) as $line) {
-      $this->processLine(rtrim($line, "\r"));
+      if ($this->processLine(rtrim($line, "\r"))) {
+        break;
+      }
     }
   }
 
   /**
    * Decode one SSE line and echo any extracted text.
    */
-  protected function processLine(string $line): void {
+  protected function processLine(string $line): bool {
     if (strpos($line, 'data: ') !== 0) {
-      return;
+      return FALSE;
     }
     $json = substr($line, 6);
     if ($json === '[DONE]') {
-      return;
+      return TRUE;
     }
     $data = json_decode($json, TRUE);
     if (!is_array($data)) {
-      return;
+      return FALSE;
     }
     $text = ($this->extractor)($data);
     if ($text !== NULL && $text !== '') {
@@ -132,6 +139,7 @@ class AIStreamingResponse {
       @ob_flush();
       @flush();
     }
+    return FALSE;
   }
 
 }

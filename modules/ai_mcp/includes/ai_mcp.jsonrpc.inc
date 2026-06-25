@@ -203,6 +203,10 @@ function ai_mcp_method_tools_call($id, array $params, array $server) {
     ];
   }
   catch (\Throwable $e) {
+    watchdog('ai_mcp', 'Tool execution error for @tool: @error', [
+      '@tool' => $tool_name,
+      '@error' => $e->getMessage(),
+    ], WATCHDOG_ERROR);
     return [
       'jsonrpc' => '2.0',
       'id'      => $id,
@@ -210,7 +214,7 @@ function ai_mcp_method_tools_call($id, array $params, array $server) {
         'content' => [
           [
             'type' => 'text',
-            'text' => 'Tool execution error: ' . $e->getMessage(),
+            'text' => 'Tool execution error.',
           ],
         ],
         'isError' => TRUE,

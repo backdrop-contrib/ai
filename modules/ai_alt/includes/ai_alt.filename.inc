@@ -54,7 +54,7 @@ function _ai_alt_generate_short_filename_for_file($file) {
       'role' => 'user',
       'content' => [
         ['type' => 'text', 'text' => $prompt],
-        ['type' => 'image_url', 'image_url' => ['url' => $image_url, 'detaifal' => 'high']],
+        ['type' => 'image_url', 'image_url' => ['url' => $image_url, 'detail' => 'high']],
       ],
     ],
   ];

@@ -11,6 +11,7 @@
 function _ai_alt_image_field_process($element, array &$form_state, $form) {
   $delta = 0;
   $field_name = 'unknown_field';
+  $field_lang = isset($element['#language']) ? $element['#language'] : LANGUAGE_NONE;
 
   if (empty($element['#value']) || !isset($element['#value']['alt'])) {
     return $element;
@@ -50,6 +51,7 @@ function _ai_alt_image_field_process($element, array &$form_state, $form) {
         'data-file-id' => isset($element['#value']['fid']) ? $element['#value']['fid'] : NULL,
         'data-field-name' => $field_name,
         'data-delta' => $delta,
+        'data-field-lang' => $field_lang,
       ],
       '#weight' => 1,
     ];

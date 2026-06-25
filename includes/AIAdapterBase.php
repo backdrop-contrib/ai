@@ -126,7 +126,7 @@ abstract class AIAdapterBase implements AIProviderClient {
       if (is_array($value) && isset($value['path'])) {
         $filename = !empty($value['filename']) ? $value['filename'] : basename($value['path']);
         // Quotes or CRLF in a filename would corrupt the multipart framing.
-        $filename = str_replace(['"', "\r", "\n"], '', $filename);
+        $filename = str_replace(['\\', '"', "\r", "\n"], '', $filename);
         $contents = file_get_contents($value['path']);
         if ($contents === FALSE) {
           throw new \Exception('Unable to read file: ' . $value['path']);

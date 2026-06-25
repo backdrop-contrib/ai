@@ -99,45 +99,50 @@ function _ai_alt_rewrite_entity_file_urls($entity_type, &$entity, $old_url, $new
   $bundle_key = !empty($entity_info['entity keys']['bundle']) ? $entity_info['entity keys']['bundle'] : NULL;
   $bundle = $bundle_key && isset($entity->{$bundle_key}) ? $entity->{$bundle_key} : $entity_type;
   $instances = field_info_instances($entity_type, $bundle);
-  $lang = LANGUAGE_NONE;
   $changed = FALSE;
 
   foreach ($instances as $field_name => $instance) {
     $field_info = field_info_field($field_name);
-    if (empty($entity->{$field_name}[$lang])) {
+    if (empty($entity->{$field_name}) || !is_array($entity->{$field_name})) {
       continue;
     }
 
-    switch ($field_info['type']) {
-      case 'text':
-      case 'text_long':
-      case 'text_with_summary':
-        foreach ($entity->{$field_name}[$lang] as $delta => $item) {
-          $item_changed = FALSE;
-          if (!empty($item['value']) && strpos($item['value'], $old_url) !== FALSE) {
-            $entity->{$field_name}[$lang][$delta]['value'] = str_replace($old_url, $new_url, $item['value']);
-            $item_changed = TRUE;
-          }
-          if (isset($item['summary']) && !empty($item['summary']) && strpos($item['summary'], $old_url) !== FALSE) {
-            $entity->{$field_name}[$lang][$delta]['summary'] = str_replace($old_url, $new_url, $item['summary']);
-            $item_changed = TRUE;
-          }
-          $changed = $changed || $item_changed;
-        }
-        break;
+    foreach ($entity->{$field_name} as $lang => $items) {
+      if (empty($items) || !is_array($items)) {
+        continue;
+      }
 
-      case 'paragraphs':
-        foreach ($entity->{$field_name}[$lang] as $item) {
-          if (empty($item['value'])) {
-            continue;
+      switch ($field_info['type']) {
+        case 'text':
+        case 'text_long':
+        case 'text_with_summary':
+          foreach ($items as $delta => $item) {
+            $item_changed = FALSE;
+            if (!empty($item['value']) && strpos($item['value'], $old_url) !== FALSE) {
+              $entity->{$field_name}[$lang][$delta]['value'] = str_replace($old_url, $new_url, $item['value']);
+              $item_changed = TRUE;
+            }
+            if (isset($item['summary']) && !empty($item['summary']) && strpos($item['summary'], $old_url) !== FALSE) {
+              $entity->{$field_name}[$lang][$delta]['summary'] = str_replace($old_url, $new_url, $item['summary']);
+              $item_changed = TRUE;
+            }
+            $changed = $changed || $item_changed;
           }
-          $children = entity_load('paragraphs_item', [$item['value']]);
-          if (empty($children[$item['value']])) {
-            continue;
+          break;
+
+        case 'paragraphs':
+          foreach ($items as $item) {
+            if (empty($item['value'])) {
+              continue;
+            }
+            $children = entity_load('paragraphs_item', [$item['value']]);
+            if (empty($children[$item['value']])) {
+              continue;
+            }
+            ai_alt_rewrite_entity_file_urls('paragraphs_item', $children[$item['value']], $old_url, $new_url, $visited);
           }
-          ai_alt_rewrite_entity_file_urls('paragraphs_item', $children[$item['value']], $old_url, $new_url, $visited);
-        }
-        break;
+          break;
+      }
     }
   }
 

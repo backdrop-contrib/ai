@@ -13,6 +13,7 @@ class AIAltModuleTestCase extends BackdropUnitTestCase {
   public function setUp() {
     parent::setUp();
     module_load_include('module', 'ai_alt');
+    module_load_include('module', 'ai_alt_bulk');
     module_load_include('inc', 'ai_alt', 'includes/ai_alt.filename');
   }
 
@@ -115,5 +116,66 @@ class AIAltModuleTestCase extends BackdropUnitTestCase {
 
     ai_alt_form_alter($form, $form_state, 'node_form');
     $this->assertEqual($original_form, $form, 'Unrelated forms are not altered.');
+  }
+
+  /**
+   * Test that bulk src-to-fid resolves styled public and private image URLs.
+   */
+  public function testBulkSrcToFidResolvesStyledPublicAndPrivateUrls() {
+    $public_uri = 'public://bulk-src-to-fid-public.jpg';
+    $private_uri = 'private://bulk-src-to-fid-private.jpg';
+
+    $public_fid = db_insert('file_managed')
+      ->fields([
+        'uid' => 1,
+        'filename' => 'bulk-src-to-fid-public.jpg',
+        'uri' => $public_uri,
+        'filemime' => 'image/jpeg',
+        'filesize' => 1,
+        'status' => 1,
+        'timestamp' => REQUEST_TIME,
+      ])
+      ->execute();
+
+    $private_fid = db_insert('file_managed')
+      ->fields([
+        'uid' => 1,
+        'filename' => 'bulk-src-to-fid-private.jpg',
+        'uri' => $private_uri,
+        'filemime' => 'image/jpeg',
+        'filesize' => 1,
+        'status' => 1,
+        'timestamp' => REQUEST_TIME,
+      ])
+      ->execute();
+
+    $public_path = rtrim(config_get('system.core', 'file_public_path') ?: 'files', '/');
+    $old_private_path = config_get('system.core', 'file_private_path');
+    $private_path = 'private-files';
+    config_set('system.core', 'file_private_path', $private_path);
+
+    $resolved_public = _ai_alt_bulk_src_to_fid('/' . $public_path . '/styles/large/public/bulk-src-to-fid-public.jpg?itok=abc');
+    $resolved_private = _ai_alt_bulk_src_to_fid('/' . $private_path . '/styles/large/private/bulk-src-to-fid-private.jpg');
+
+    $this->assertEqual((int) $public_fid, (int) $resolved_public, 'Styled public image URLs resolve to the original public fid.');
+    $this->assertEqual((int) $private_fid, (int) $resolved_private, 'Styled private image URLs resolve to the original private fid.');
+
+    config_set('system.core', 'file_private_path', $old_private_path);
+  }
+
+  /**
+   * Test that bulk HTML parsing extracts img src values reliably.
+   */
+  public function testBulkParseImgTagsExtractsSrcValues() {
+    $html = '<p><img data-file-id="12" alt="Cat &amp; Dog" src="/files/cat.jpg"></p>'
+      . '<div><img class="media-image" src="https://example.com/files/styles/large/public/hero.jpg?itok=abc"></div>';
+
+    $parsed = _ai_alt_bulk_parse_img_tags($html);
+
+    $this->assertEqual(2, count($parsed), 'Two img tags are parsed from the HTML input.');
+    $this->assertEqual('/files/cat.jpg', $parsed[0]['src'], 'The first img src is extracted.');
+    $this->assertEqual(12, $parsed[0]['fid'], 'The first img data-file-id is extracted as an integer.');
+    $this->assertEqual('Cat & Dog', $parsed[0]['alt'], 'The first img alt text is extracted and decoded.');
+    $this->assertEqual('https://example.com/files/styles/large/public/hero.jpg?itok=abc', $parsed[1]['src'], 'The second img src is extracted intact.');
   }
 }

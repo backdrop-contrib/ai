@@ -21,7 +21,7 @@ function _ai_alt_convert_svg_to_png($svg_uri) {
     return FALSE;
   }
 
-  $output_uri = str_replace('.svg', '.png', $svg_real_path);
+  $output_uri = preg_replace('/\.svg$/i', '.png', $svg_real_path);
 
   if (!shell_exec('which convert')) {
     watchdog('ai_alt', 'ImageMagick `convert` command not found.');

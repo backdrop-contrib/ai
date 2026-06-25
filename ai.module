@@ -401,6 +401,8 @@ function ai_clear_models_cache() {
 
   foreach (array_keys($providers_root) as $provider_id) {
     cache_clear_all('ai:models:' . $provider_id . ':', 'cache', TRUE);
+    // Backward-compatible cleanup for pre-namespace dimension cache keys.
+    cache_clear_all('ai:embedding_dim:' . $provider_id . ':', 'cache', TRUE);
   }
 }
 
@@ -568,7 +570,11 @@ function ai_get_embedding_dimension($model_id, $provider_id = NULL) {
     'cohere/embed-multilingual-v3.0' => 1024,
   ];
 
-  if (isset($known_dimensions[$model_id])) {
+  $qualified_model_id = $provider_id . '/' . $model_id;
+  if (isset($known_dimensions[$qualified_model_id])) {
+    $dimension = $known_dimensions[$qualified_model_id];
+  }
+  elseif (isset($known_dimensions[$model_id])) {
     $dimension = $known_dimensions[$model_id];
   }
   else {
@@ -644,7 +650,7 @@ function ai_get_all_embedding_models_with_dimensions() {
  *   The detected dimension, or 0 if detection failed.
  */
 function ai_detect_embedding_dimension($model_id, $provider_id) {
-  $cache_key = "ai:embedding_dim:{$provider_id}:{$model_id}";
+  $cache_key = "ai:models:{$provider_id}:embedding_dim:{$model_id}";
   $cached = cache_get($cache_key);
   if ($cached && isset($cached->data)) {
     return (int) $cached->data;

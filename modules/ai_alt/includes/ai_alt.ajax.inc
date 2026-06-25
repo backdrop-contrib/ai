@@ -105,6 +105,7 @@ function _ai_alt_generate_alt_text_ajax($form, array &$form_state) {
   $fid = isset($triggering_element['#attributes']['data-file-id']) ? $triggering_element['#attributes']['data-file-id'] : NULL;
   $field_name = isset($triggering_element['#attributes']['data-field-name']) ? $triggering_element['#attributes']['data-field-name'] : NULL;
   $delta = isset($triggering_element['#attributes']['data-delta']) ? $triggering_element['#attributes']['data-delta'] : NULL;
+  $field_lang = isset($triggering_element['#attributes']['data-field-lang']) ? $triggering_element['#attributes']['data-field-lang'] : LANGUAGE_NONE;
 
   if (!$field_name || $delta === NULL) {
     backdrop_set_message(t('Unable to determine field context.'), 'error');
@@ -123,9 +124,10 @@ function _ai_alt_generate_alt_text_ajax($form, array &$form_state) {
     return _ai_alt_ajax_alert(t('An error occurred while generating alt text. Please try again.'));
   }
 
-  watchdog('ai_alt', 'Generated alt text: @txt', ['@txt' => $generated_alt_text]);
+  $model = config_get('ai_alt.settings', 'model') ?: 'unknown';
+  watchdog('ai_alt', 'Generated alt text for fid @fid using model @model.', ['@fid' => $fid, '@model' => $model]);
 
-  $selector = "input[name='{$field_name}[und][{$delta}][alt]']";
+  $selector = "input[name='{$field_name}[{$field_lang}][{$delta}][alt]']";
   return [
     '#type' => 'ajax',
     '#commands' => [

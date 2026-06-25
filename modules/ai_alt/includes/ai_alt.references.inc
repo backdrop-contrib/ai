@@ -134,11 +134,26 @@ function _ai_alt_rewrite_entity_file_urls($entity_type, &$entity, $old_url, $new
             if (empty($item['value'])) {
               continue;
             }
-            $children = entity_load('paragraphs_item', [$item['value']]);
-            if (empty($children[$item['value']])) {
+            $pid = (int) $item['value'];
+            $vid = !empty($item['revision_id']) ? (int) $item['revision_id'] : NULL;
+
+            $child = NULL;
+            if ($vid) {
+              $controller = entity_get_controller('paragraphs_item');
+              if (method_exists($controller, 'loadRevision')) {
+                $child = $controller->loadRevision($vid);
+              }
+            }
+            if (!$child) {
+              $loaded = entity_load('paragraphs_item', [$pid]);
+              $child = isset($loaded[$pid]) ? $loaded[$pid] : NULL;
+            }
+            if (!$child) {
               continue;
             }
-            _ai_alt_rewrite_entity_file_urls('paragraphs_item', $children[$item['value']], $old_url, $new_url, $visited);
+            if (_ai_alt_rewrite_entity_file_urls('paragraphs_item', $child, $old_url, $new_url, $visited)) {
+              $changed = TRUE;
+            }
           }
           break;
       }

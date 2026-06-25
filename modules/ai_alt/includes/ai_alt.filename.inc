@@ -78,7 +78,7 @@ function _ai_alt_generate_short_filename_for_file($file) {
   }
 
   $extension = pathinfo($file->filename, PATHINFO_EXTENSION);
-  return ai_alt_build_filename_from_label($label, $extension);
+  return _ai_alt_build_filename_from_label($label, $extension);
 }
 
 /**

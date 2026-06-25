@@ -124,6 +124,7 @@ class AIAltModuleTestCase extends BackdropUnitTestCase {
   public function testBulkSrcToFidResolvesStyledPublicAndPrivateUrls() {
     $public_uri = 'public://bulk-src-to-fid-public.jpg';
     $private_uri = 'private://bulk-src-to-fid-private.jpg';
+    $encoded_uri = 'public://bulk%20src-to-fid%20encoded.jpg';
 
     $public_fid = db_insert('file_managed')
       ->fields([
@@ -149,6 +150,18 @@ class AIAltModuleTestCase extends BackdropUnitTestCase {
       ])
       ->execute();
 
+    $encoded_fid = db_insert('file_managed')
+      ->fields([
+        'uid' => 1,
+        'filename' => 'bulk src-to-fid encoded.jpg',
+        'uri' => $encoded_uri,
+        'filemime' => 'image/jpeg',
+        'filesize' => 1,
+        'status' => 1,
+        'timestamp' => REQUEST_TIME,
+      ])
+      ->execute();
+
     $public_path = rtrim(config_get('system.core', 'file_public_path') ?: 'files', '/');
     $old_private_path = config_get('system.core', 'file_private_path');
     $private_path = 'private-files';
@@ -157,9 +170,11 @@ class AIAltModuleTestCase extends BackdropUnitTestCase {
     try {
       $resolved_public = _ai_alt_bulk_src_to_fid('/' . $public_path . '/styles/large/public/bulk-src-to-fid-public.jpg?itok=abc');
       $resolved_private = _ai_alt_bulk_src_to_fid('/' . $private_path . '/styles/large/private/bulk-src-to-fid-private.jpg');
+      $resolved_encoded = _ai_alt_bulk_src_to_fid('/' . $public_path . '/styles/large/public/bulk%20src-to-fid%20encoded.jpg');
 
       $this->assertEqual((int) $public_fid, (int) $resolved_public, 'Styled public image URLs resolve to the original public fid.');
       $this->assertEqual((int) $private_fid, (int) $resolved_private, 'Styled private image URLs resolve to the original private fid.');
+      $this->assertEqual((int) $encoded_fid, (int) $resolved_encoded, 'Styled public image URLs with percent-encoded paths resolve to the original fid.');
     }
     finally {
       config_set('system.core', 'file_private_path', $old_private_path);
@@ -171,14 +186,17 @@ class AIAltModuleTestCase extends BackdropUnitTestCase {
    */
   public function testBulkParseImgTagsExtractsSrcValues() {
     $html = '<p><img data-file-id="12" alt="Cat &amp; Dog" src="/files/cat.jpg"></p>'
-      . '<div><img class="media-image" src="https://example.com/files/styles/large/public/hero.jpg?itok=abc"></div>';
+      . '<div><img class="media-image" src="https://example.com/files/styles/large/public/hero.jpg?itok=abc"></div>'
+      . '<p><img alt="Quote test: &quot;value&gt;text&quot;" src="/files/special.jpg"></p>';
 
     $parsed = _ai_alt_bulk_parse_img_tags($html);
 
-    $this->assertEqual(2, count($parsed), 'Two img tags are parsed from the HTML input.');
+    $this->assertEqual(3, count($parsed), 'Three img tags are parsed from the HTML input.');
     $this->assertEqual('/files/cat.jpg', $parsed[0]['src'], 'The first img src is extracted.');
     $this->assertEqual(12, $parsed[0]['fid'], 'The first img data-file-id is extracted as an integer.');
     $this->assertEqual('Cat & Dog', $parsed[0]['alt'], 'The first img alt text is extracted and decoded.');
     $this->assertEqual('https://example.com/files/styles/large/public/hero.jpg?itok=abc', $parsed[1]['src'], 'The second img src is extracted intact.');
+    $this->assertEqual('/files/special.jpg', $parsed[2]['src'], 'The third img src is extracted correctly.');
+    $this->assertEqual('Quote test: "value>text"', $parsed[2]['alt'], 'Alt text with literal > in quoted attribute is extracted and decoded.');
   }
 }

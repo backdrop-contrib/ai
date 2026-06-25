@@ -169,9 +169,16 @@ function ai_mcp_server_form_validate(array $form, array &$form_state) {
 
   $uid_raw = isset($form_state['values']['uid']) ? trim((string) $form_state['values']['uid']) : '';
   if ($uid_raw !== '') {
-    $uid = (int) $uid_raw;
-    if ($uid > 0 && !user_load($uid)) {
-      form_set_error('uid', t('The selected user ID does not exist.'));
+    if (!ctype_digit($uid_raw)) {
+      form_set_error('uid', t('User ID must be a non-negative integer.'));
+    }
+    else {
+      $uid = (int) $uid_raw;
+      if ($uid > 0 && !user_load($uid)) {
+        form_set_error('uid', t('The selected user ID does not exist.'));
+      }
+      // Normalize so submit sees the cast value, not the raw string.
+      $form_state['values']['uid'] = $uid;
     }
   }
 }

@@ -72,13 +72,32 @@ function _ai_alt_generate_alt_text_for_ckeditor_autogenerate() {
 
   try {
     if ($fid) {
-      $generated_alt_text = _ai_alt_generate_alt_text_from_fid($fid, TRUE);
+      $file = file_load($fid);
+      if (!$file) {
+        backdrop_json_output(['status' => 'error', 'message' => 'Failed to load image file.']);
+        return;
+      }
+      if (function_exists('file_access') && !file_access('view', $file)) {
+        backdrop_json_output(['status' => 'error', 'message' => 'Access denied.']);
+        return;
+      }
+      $generated_alt_text = _ai_alt_generate_from_file($file, TRUE);
       if (!$generated_alt_text) {
         backdrop_json_output(['status' => 'error', 'message' => 'Failed to load image file.']);
         return;
       }
     }
     else {
+      // Only allow local public images — reject external URLs and private URIs.
+      $src_scheme = file_uri_scheme($src);
+      if ($src_scheme !== FALSE && $src_scheme !== 'public') {
+        backdrop_json_output(['status' => 'error', 'message' => 'Only local public images are supported.']);
+        return;
+      }
+      if ($src_scheme === FALSE && (strpos($src, '//') === 0 || strpos($src, 'http') === 0)) {
+        backdrop_json_output(['status' => 'error', 'message' => 'External image sources are not allowed.']);
+        return;
+      }
       // Preserve existing behavior for library-selected images supplied as src.
       $generated_alt_text = _ai_alt_describe_image_url(file_create_url($src));
     }
@@ -161,6 +180,9 @@ function _ai_alt_generate_alt_text_callback() {
   if (!$file) {
     watchdog('ai_alt', 'File not found for fid: @fid', ['@fid' => $fid]);
     return ['status' => 'error', 'message' => 'File not found.'];
+  }
+  if (function_exists('file_access') && !file_access('view', $file)) {
+    return ['status' => 'error', 'message' => 'Access denied.'];
   }
 
   try {

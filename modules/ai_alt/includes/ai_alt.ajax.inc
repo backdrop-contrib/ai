@@ -118,7 +118,15 @@ function _ai_alt_generate_alt_text_ajax($form, array &$form_state) {
     return _ai_alt_ajax_alert(t('File not found for the given file ID.'));
   }
 
-  $generated_alt_text = _ai_alt_generate_from_file($file, TRUE);
+  try {
+    $generated_alt_text = _ai_alt_generate_from_file($file, TRUE);
+  }
+  catch (\Exception $e) {
+    watchdog('ai_alt', 'Error generating alt text: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
+    backdrop_set_message(t('An error occurred while generating alt text.'), 'error');
+    return _ai_alt_ajax_alert(t('An error occurred while generating alt text. Please try again.'));
+  }
+
   if (!$generated_alt_text) {
     backdrop_set_message(t('Failed to generate alt text. Please try again.'), 'error');
     return _ai_alt_ajax_alert(t('An error occurred while generating alt text. Please try again.'));
@@ -155,7 +163,14 @@ function _ai_alt_generate_alt_text_callback() {
     return ['status' => 'error', 'message' => 'File not found.'];
   }
 
-  $generated_alt_text = _ai_alt_generate_from_file($file, FALSE);
+  try {
+    $generated_alt_text = _ai_alt_generate_from_file($file, FALSE);
+  }
+  catch (\Exception $e) {
+    watchdog('ai_alt', 'Error generating alt text: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
+    return ['status' => 'error', 'message' => 'An error occurred while generating alt text.'];
+  }
+
   if (!$generated_alt_text) {
     return ['status' => 'error', 'message' => 'Alt text generation failed.'];
   }

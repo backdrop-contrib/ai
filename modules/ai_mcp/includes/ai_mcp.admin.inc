@@ -175,6 +175,9 @@ function ai_mcp_server_form_validate(array $form, array &$form_state) {
     else {
       $uid = (int) $uid_raw;
       if ($uid > 0) {
+        if ($uid == 1) {
+          form_set_error('uid', t('User ID 1 (the site superuser) bypasses all permission checks and cannot be used as the execution user. Use a dedicated low-privilege account.'));
+        }
         $account = user_load($uid);
         if (!$account) {
           form_set_error('uid', t('The selected user ID does not exist.'));

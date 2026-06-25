@@ -680,9 +680,9 @@ function ai_detect_embedding_dimension($model_id, $provider_id) {
 
     $dimension = count($test_embedding);
     if ($dimension > 0) {
-      // A model's dimension never changes; cache permanently so the billable
-      // detection call happens once per model, not once per day.
-      cache_set($cache_key, $dimension);
+      // Exact model dimensions are stable, but dynamic provider aliases can be
+      // repointed. Keep a TTL so changed aliases eventually self-correct.
+      cache_set($cache_key, $dimension, 'cache', REQUEST_TIME + 86400);
       return $dimension;
     }
   }

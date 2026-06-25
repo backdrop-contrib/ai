@@ -429,9 +429,10 @@ function ai_guardrails_run($text, $phase = 'pre', $operation = 'chat') {
       if ($matched === FALSE) {
         // A broken pattern must not silently pass — fail closed so the
         // guardrail still blocks while the admin fixes the regex.
-        watchdog('ai_guardrails', 'Guardrail @id has an invalid regex pattern and is NOT protecting anything: @pattern', [
+        watchdog('ai_guardrails', 'Guardrail @id has an invalid regex pattern; failing closed (blocking all @phase content) until it is fixed: @pattern', [
           '@id' => $id,
           '@pattern' => $pattern,
+          '@phase' => $phase,
         ], WATCHDOG_ERROR);
         $matched = TRUE;
       }

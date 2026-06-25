@@ -94,18 +94,20 @@ function _ai_mcp_post_handler() {
     $uid = (int) $server['uid'];
   }
   $account = ($uid !== NULL && $uid > 0) ? user_load($uid) : FALSE;
+  $blocked = FALSE;
   if ($account && empty($account->status)) {
     watchdog('ai_mcp', 'MCP server %server is configured to run as uid @uid, but that account is blocked. Falling back to anonymous — permission-gated tools will be unavailable.', [
       '%server' => isset($server['id']) ? $server['id'] : '(unknown)',
       '@uid'    => $uid,
     ], WATCHDOG_WARNING);
     $account = FALSE;
+    $blocked = TRUE;
   }
   global $user;
   $original_user = $user;
   $execution_user = $account;
   if (!$execution_user) {
-    if ($uid !== NULL && $uid > 0) {
+    if ($uid !== NULL && $uid > 0 && !$blocked) {
       watchdog('ai_mcp', 'MCP server %server is configured to run as uid @uid, but that user could not be loaded. Falling back to anonymous — permission-gated tools will be unavailable.', [
         '%server' => isset($server['id']) ? $server['id'] : '(unknown)',
         '@uid'    => $uid,

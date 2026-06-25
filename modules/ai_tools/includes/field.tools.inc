@@ -30,7 +30,7 @@ function ai_tools_field_definitions() {
       'module'     => 'ai_tools',
       'category'   => 'field',
       'operation'  => 'read',
-      'permission' => 'access content overview',
+      'permission' => 'administer fields',
     ],
     'get_field_values_and_context' => [
       'definition' => [

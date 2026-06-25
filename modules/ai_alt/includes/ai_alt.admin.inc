@@ -19,12 +19,14 @@ function ai_alt_settings_form(array $form, array &$form_state) {
 
   $prompt = $config->get('prompt');
 
-  $bulk_link = l(t('Bulk generate alt text'), 'admin/config/ai/ai-alt-bulk');
-  $form['bulk_link'] = [
-    '#type' => 'item',
-    '#markup' => t('You can also !link for existing images.', ['!link' => $bulk_link]),
-    '#weight' => -10,
-  ];
+  if (module_exists('ai_alt_bulk')) {
+    $bulk_link = l(t('Bulk generate alt text'), 'admin/config/ai/ai-alt-bulk');
+    $form['bulk_link'] = [
+      '#type' => 'item',
+      '#markup' => t('You can also !link for existing images.', ['!link' => $bulk_link]),
+      '#weight' => -10,
+    ];
+  }
 
   $form['prompt'] = [
     '#type' => 'textarea',
@@ -85,8 +87,9 @@ function ai_alt_settings_form(array $form, array &$form_state) {
     }
 
     if (isset($flat_all_models[$current_model])) {
-      $models[t('Current selection')][$current_model] = $flat_all_models[$current_model] . ' ' . t('(currently selected, non-vision)');
-      $flat_models[$current_model] = $flat_all_models[$current_model];
+      backdrop_set_message(t('The currently configured model %model is not a vision model and cannot generate alt text. Please select a vision-capable model.', [
+        '%model' => $flat_all_models[$current_model],
+      ]), 'warning');
     }
     else {
       $parts = explode('/', $current_model);
@@ -115,7 +118,7 @@ function ai_alt_settings_form(array $form, array &$form_state) {
     '#type' => 'select',
     '#title' => t('Model to use'),
     '#options' => $models,
-    '#default_value' => $config->get('model') ?: $default_model,
+    '#default_value' => isset($flat_models[$current_model]) ? $current_model : $default_model,
     '#required' => TRUE,
     '#description' => t('AI model to use for generating the alt text. If the desired model is not listed, ensure its provider is enabled in AI settings.'),
   ];

@@ -443,7 +443,7 @@ class AIApi {
         ],
       ],
     ];
-    $log_messages = $sendImageData ? $this->sanitizeMessagesForLog($messages) : $messages;
+    $log_messages = $this->sanitizeMessagesForLog($messages);
 
     // Route through the chat() wrapper so rate limits, guardrails, logging,
     // and exception normalization apply to vision calls like any other chat.

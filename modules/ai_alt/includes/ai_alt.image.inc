@@ -28,7 +28,7 @@ function _ai_alt_convert_svg_to_png($svg_uri) {
     return FALSE;
   }
 
-  $command = escapeshellcmd('convert ' . escapeshellarg($svg_real_path) . ' PNG32:' . escapeshellarg($output_uri));
+  $command = 'convert ' . escapeshellarg($svg_real_path) . ' PNG32:' . escapeshellarg($output_uri);
   watchdog('ai_alt', 'Running command: @command', ['@command' => $command]);
   shell_exec($command);
 
@@ -48,7 +48,7 @@ function _ai_alt_prepare_image_uri($file_uri, $apply_image_style = TRUE) {
   $extension = strtolower(pathinfo($file_uri, PATHINFO_EXTENSION));
 
   if ($extension === 'svg') {
-    $converted_uri = ai_alt_convert_svg_to_png($file_uri);
+    $converted_uri = _ai_alt_convert_svg_to_png($file_uri);
     if ($converted_uri) {
       $file_uri = $converted_uri;
     }

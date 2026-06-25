@@ -83,7 +83,7 @@ class AIDbLog {
 
     $existing_explanation = $this->hashSearch($hash);
     if ($existing_explanation) {
-      return $existing_explanation['explanation'];
+      return filter_xss($existing_explanation['explanation'], ['br', 'p', 'strong', 'em', 'code', 'pre', 'ul', 'ol', 'li']);
     }
 
     $explanation = $this->getAIExplanation($dblog);

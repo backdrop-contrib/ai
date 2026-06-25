@@ -258,7 +258,7 @@ function _ai_alt_file_form_ajax_callback($form, array &$form_state) {
   if ($fid) {
     $file = file_load($fid);
     if ($file) {
-      $alt_text = ai_alt_generate_from_file($file);
+      $alt_text = _ai_alt_generate_from_file($file, TRUE);
       if ($alt_text) {
         $form[$alt_field][$lang][0]['value']['#value'] = $alt_text;
       }

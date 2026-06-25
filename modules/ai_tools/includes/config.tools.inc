@@ -36,9 +36,10 @@ function ai_tools_config_definitions() {
           ],
         ],
       ],
-      'execute'  => 'ai_tools_execute_list_config_names',
-      'module'   => 'ai_tools',
-      'category' => 'config',
+      'execute'     => 'ai_tools_execute_list_config_names',
+      'module'      => 'ai_tools',
+      'category'    => 'config',
+      'permission'  => 'administer site configuration',
     ],
     'get_config' => [
       'definition' => [
@@ -62,9 +63,10 @@ function ai_tools_config_definitions() {
           ],
         ],
       ],
-      'execute'  => 'ai_tools_execute_get_config',
-      'module'   => 'ai_tools',
-      'category' => 'config',
+      'execute'     => 'ai_tools_execute_get_config',
+      'module'      => 'ai_tools',
+      'category'    => 'config',
+      'permission'  => 'administer site configuration',
     ],
   ];
 }
@@ -74,6 +76,10 @@ function ai_tools_config_definitions() {
 // -----------------------------------------------------------------------
 
 function ai_tools_execute_list_config_names(array $args) {
+  if (!user_access('administer site configuration')) {
+    return ['error' => 'Access denied: You do not have permission to administer site configuration.'];
+  }
+
   $limit  = min(max(1, (int) ($args['limit'] ?? 20)), 100);
   $prefix = preg_replace('/[^a-zA-Z0-9_\-.]/', '', trim($args['prefix'] ?? ''));
 
@@ -97,6 +103,10 @@ function ai_tools_execute_list_config_names(array $args) {
 }
 
 function ai_tools_execute_get_config(array $args) {
+  if (!user_access('administer site configuration')) {
+    return ['error' => 'Access denied: You do not have permission to administer site configuration.'];
+  }
+
   $config_name = trim($args['config_name'] ?? '');
   if ($config_name === '') {
     return ['error' => 'config_name is required.'];

@@ -98,6 +98,12 @@ function _ai_mcp_post_handler() {
   $original_user = $user;
   $execution_user = $account;
   if (!$execution_user) {
+    if ($uid !== NULL && $uid > 0) {
+      watchdog('ai_mcp', 'MCP server %server is configured to run as uid @uid, but that user could not be loaded. Falling back to anonymous — permission-gated tools will be unavailable.', [
+        '%server' => isset($server['id']) ? $server['id'] : '(unknown)',
+        '@uid'    => $uid,
+      ], WATCHDOG_WARNING);
+    }
     $execution_user = function_exists('backdrop_anonymous_user')
       ? backdrop_anonymous_user()
       : (object) ['uid' => 0, 'roles' => [], 'name' => ''];

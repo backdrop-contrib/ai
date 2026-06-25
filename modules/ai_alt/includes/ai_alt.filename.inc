@@ -47,7 +47,8 @@ function _ai_alt_generate_short_filename_for_file($file) {
     return FALSE;
   }
 
-  $image_url = ai_alt_get_file_image_url($file);
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.image');
+  $image_url = _ai_alt_get_file_image_url($file);
   $prompt = 'Write a short filename for this image. Return 3 to 6 lowercase words separated by hyphens. No extension. No quotes. No punctuation. Be descriptive but concise.';
   $messages = [
     [

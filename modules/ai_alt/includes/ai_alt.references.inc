@@ -18,7 +18,7 @@ function _ai_alt_rewrite_referenced_file_urls($file, $old_uri, $new_uri) {
     return 0;
   }
 
-  $refs = ai_alt_collect_file_usage_refs($file);
+  $refs = _ai_alt_collect_file_usage_refs($file);
   if (empty($refs)) {
     return 0;
   }
@@ -27,7 +27,7 @@ function _ai_alt_rewrite_referenced_file_urls($file, $old_uri, $new_uri) {
   $saved = 0;
 
   foreach ($refs as $ref) {
-    if (!ai_alt_can_load_entity_type($ref['type'])) {
+    if (!_ai_alt_can_load_entity_type($ref['type'])) {
       continue;
     }
 
@@ -37,8 +37,7 @@ function _ai_alt_rewrite_referenced_file_urls($file, $old_uri, $new_uri) {
     }
 
     $entity = $entities[$ref['id']];
-    if (ai_alt_rewrite_entity_file_urls($ref['type'], $entity, $old_url, $new_url, $visited)) {
-      entity_save($ref['type'], $entity);
+    if (_ai_alt_rewrite_entity_file_urls($ref['type'], $entity, $old_url, $new_url, $visited)) {
       $saved++;
     }
   }

@@ -11,7 +11,7 @@
  * @return int
  *   The number of entities saved.
  */
-function _ai_alt_rewrite_referenced_file_urls($file, $old_uri, $new_uri) {
+function ai_alt_rewrite_referenced_file_urls($file, $old_uri, $new_uri) {
   $old_url = file_create_url($old_uri);
   $new_url = file_create_url($new_uri);
   if ($old_url === $new_url) {
@@ -170,7 +170,7 @@ function _ai_alt_rewrite_entity_file_urls($entity_type, &$entity, $old_url, $new
 /**
  * Create a redirect from an old file URL to a new file URL.
  */
-function _ai_alt_create_file_redirect($old_uri, $new_uri) {
+function ai_alt_create_file_redirect($old_uri, $new_uri) {
   if (!module_exists('redirect')) {
     return FALSE;
   }

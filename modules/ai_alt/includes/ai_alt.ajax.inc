@@ -20,7 +20,8 @@ function _ai_alt_ajax_alert($message) {
 /**
  * AJAX callback to generate alt text in the CKEditor modal.
  */
-function _ai_alt_generate_alt_text_for_ckeditor($form, array &$form_state) {
+function ai_alt_generate_alt_text_for_ckeditor($form, array &$form_state) {
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.generate');
   $fid = $form['image']['fid']['#value']['fid'] ?? NULL;
 
   if (!$fid) {
@@ -63,7 +64,8 @@ function _ai_alt_generate_alt_text_for_ckeditor($form, array &$form_state) {
 /**
  * Generate alt text for CKEditor autogeneration requests.
  */
-function _ai_alt_generate_alt_text_for_ckeditor_autogenerate() {
+function ai_alt_generate_alt_text_for_ckeditor_autogenerate() {
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.generate');
   $fid = $_POST['fid'] ?? NULL;
   $src = $_POST['src'] ?? NULL;
 
@@ -121,7 +123,8 @@ function _ai_alt_generate_alt_text_for_ckeditor_autogenerate() {
 /**
  * AJAX callback for the manual Generate Alt Text button.
  */
-function _ai_alt_generate_alt_text_ajax($form, array &$form_state) {
+function ai_alt_generate_alt_text_ajax($form, array &$form_state) {
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.generate');
   $triggering_element = $form_state['triggering_element'];
 
   $fid = isset($triggering_element['#attributes']['data-file-id']) ? $triggering_element['#attributes']['data-file-id'] : NULL;
@@ -172,7 +175,8 @@ function _ai_alt_generate_alt_text_ajax($form, array &$form_state) {
 /**
  * Handle AJAX requests to generate alt text.
  */
-function _ai_alt_generate_alt_text_callback() {
+function ai_alt_generate_alt_text_callback() {
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.generate');
   $fid = $_POST['fid'] ?? NULL;
   $field_name = $_POST['field_name'] ?? NULL;
   $delta = $_POST['delta'] ?? NULL;

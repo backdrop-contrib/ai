@@ -38,6 +38,7 @@ function _ai_alt_image_field_process($element, array &$form_state, $form) {
   $autogenerate = config_get('ai_alt.settings', 'autogenerate');
 
   if (empty($hide_button) && !isset($element['ai_alt_text_generation'])) {
+    module_load_include('inc', 'ai_alt', 'includes/ai_alt.ajax');
     $element['ai_alt_text_generation'] = [
       '#type' => 'button',
       '#value' => t('Generate Alt Text'),
@@ -128,6 +129,7 @@ function _ai_alt_form_alter(array &$form, array &$form_state, $form_id) {
   $autogenerate = config_get('ai_alt.settings', 'autogenerate');
 
   if (empty($hide_button)) {
+    module_load_include('inc', 'ai_alt', 'includes/ai_alt.ajax');
     $form['generate_with_ai'] = [
       '#type' => 'button',
       '#value' => t('Generate Alt Text'),

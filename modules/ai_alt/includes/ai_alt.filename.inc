@@ -8,7 +8,7 @@
 /**
  * Normalize an AI response into a safe filename stem.
  */
-function _ai_alt_build_filename_from_label($label, $extension = '') {
+function ai_alt_build_filename_from_label($label, $extension = '') {
   $label = trim((string) $label);
   $label = system_transliterate_machine_name($label, [
     'replace' => '-',
@@ -80,7 +80,7 @@ function _ai_alt_generate_short_filename_for_file($file) {
   }
 
   $extension = pathinfo($file->filename, PATHINFO_EXTENSION);
-  return _ai_alt_build_filename_from_label($label, $extension);
+  return ai_alt_build_filename_from_label($label, $extension);
 }
 
 /**
@@ -104,8 +104,8 @@ function _ai_alt_move_file_to_filename($file, $new_filename) {
   }
 
   module_load_include('inc', 'ai_alt', 'includes/ai_alt.references');
-  _ai_alt_rewrite_referenced_file_urls($moved_file, $old_uri, $moved_file->uri);
-  _ai_alt_create_file_redirect($old_uri, $moved_file->uri);
+  ai_alt_rewrite_referenced_file_urls($moved_file, $old_uri, $moved_file->uri);
+  ai_alt_create_file_redirect($old_uri, $moved_file->uri);
 
   return $moved_file;
 }

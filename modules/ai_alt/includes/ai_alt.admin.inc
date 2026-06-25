@@ -11,7 +11,7 @@
  * @return array
  *   The configuration form.
  */
-function _ai_alt_settings_form(array $form, array &$form_state) {
+function ai_alt_settings_form(array $form, array &$form_state) {
   $config = config('ai_alt.settings');
 
   $form = [];
@@ -146,7 +146,7 @@ function _ai_alt_settings_form(array $form, array &$form_state) {
     ],
   ];
 
-  $form['#validate'][] = '_ai_alt_settings_form_validate';
+  $form['#validate'][] = 'ai_alt_settings_form_validate';
 
   return system_settings_form($form);
 }
@@ -154,7 +154,7 @@ function _ai_alt_settings_form(array $form, array &$form_state) {
 /**
  * Validate the AI Alt settings form.
  */
-function _ai_alt_settings_form_validate($form, array &$form_state) {
+function ai_alt_settings_form_validate($form, array &$form_state) {
   $autogenerate = $form_state['values']['autogenerate'] ?? FALSE;
   $hide_button = $form_state['values']['hide_button'] ?? FALSE;
 

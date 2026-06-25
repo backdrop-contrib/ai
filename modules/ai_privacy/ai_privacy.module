@@ -236,11 +236,9 @@ function ai_privacy_entity_allowed($entity_type, $bundle, $account = NULL) {
     if ($account && !empty($account->roles)) {
       // Backdrop stores roles as a plain array of role names; D7-style code
       // keyed them by rid. Accept both shapes so a denied role always blocks.
-      $role_map = user_roles(TRUE);
       $account_roles = array_merge(array_keys((array) $account->roles), array_values((array) $account->roles));
       foreach ($denied_roles as $denied_role) {
-        $normalized_denied_role = isset($role_map[$denied_role]) ? $role_map[$denied_role] : $denied_role;
-        if (in_array($normalized_denied_role, $account_roles, TRUE) || in_array($denied_role, $account_roles, TRUE)) {
+        if (in_array($denied_role, $account_roles, TRUE)) {
           return FALSE;
         }
       }

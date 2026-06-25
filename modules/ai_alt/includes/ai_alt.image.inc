@@ -34,9 +34,39 @@ function _ai_alt_convert_svg_to_png($svg_uri) {
     return FALSE;
   }
 
-  $command = 'convert ' . escapeshellarg($svg_real_path) . ' PNG32:' . escapeshellarg($output_real_path);
+  // Refuse conversion if ImageMagick's policy does not restrict SVG delegates,
+  // which could allow untrusted SVG content to fetch external resources or
+  // invoke dangerous delegates (e.g. Ghostscript, HTTPS, MVG).
+  $policy_output = shell_exec('convert -list policy 2>/dev/null');
+  $svg_blocked = $policy_output && (
+    strpos($policy_output, 'pattern: SVG') !== FALSE ||
+    strpos($policy_output, 'pattern: HTTPS') !== FALSE ||
+    strpos($policy_output, 'pattern: HTTP') !== FALSE
+  );
+  if (!$svg_blocked) {
+    watchdog('ai_alt', 'SVG conversion skipped: ImageMagick policy does not restrict external resource access. Configure a policy.xml to block HTTP/HTTPS/MVG delegates before enabling SVG conversion.');
+    return FALSE;
+  }
+
+  // Strip external href/xlink:href and script elements from the SVG before
+  // passing it to ImageMagick as a defence-in-depth measure.
+  $svg_content = file_get_contents($svg_real_path);
+  if ($svg_content === FALSE) {
+    watchdog('ai_alt', 'Could not read SVG file for sanitization: @path', ['@path' => $svg_real_path]);
+    return FALSE;
+  }
+  $svg_content = preg_replace('/<script\b[^>]*>.*?<\/script>/is', '', $svg_content);
+  $svg_content = preg_replace('/\b(xlink:href|href)\s*=\s*(["\'])https?:\/\/[^\2]*?\2/i', '', $svg_content);
+  $sanitized_path = $svg_real_path . '.sanitized.svg';
+  if (file_put_contents($sanitized_path, $svg_content) === FALSE) {
+    watchdog('ai_alt', 'Could not write sanitized SVG: @path', ['@path' => $sanitized_path]);
+    return FALSE;
+  }
+
+  $command = 'convert ' . escapeshellarg($sanitized_path) . ' PNG32:' . escapeshellarg($output_real_path);
   watchdog('ai_alt', 'Running command: @command', ['@command' => $command]);
   shell_exec($command);
+  @unlink($sanitized_path);
 
   if (!file_exists($output_real_path)) {
     watchdog('ai_alt', 'Failed to convert SVG to PNG: @uri', ['@uri' => $output_uri]);

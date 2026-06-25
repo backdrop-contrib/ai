@@ -174,8 +174,14 @@ function ai_mcp_server_form_validate(array $form, array &$form_state) {
     }
     else {
       $uid = (int) $uid_raw;
-      if ($uid > 0 && !user_load($uid)) {
-        form_set_error('uid', t('The selected user ID does not exist.'));
+      if ($uid > 0) {
+        $account = user_load($uid);
+        if (!$account) {
+          form_set_error('uid', t('The selected user ID does not exist.'));
+        }
+        elseif (empty($account->status)) {
+          form_set_error('uid', t('The selected user account is blocked and cannot be used as the execution user.'));
+        }
       }
       // Normalize so submit sees the cast value, not the raw string.
       $form_state['values']['uid'] = $uid;

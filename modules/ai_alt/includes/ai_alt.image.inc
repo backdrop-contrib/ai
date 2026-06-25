@@ -58,7 +58,13 @@ function _ai_alt_prepare_image_uri($file_uri, $apply_image_style = TRUE) {
     return $file_uri;
   }
 
-  $style_name = config_get('ai_alt.settings', 'image_style') ?: 'ai_image_alt_text';
+  $style_name = config_get('ai_alt.settings', 'image_style');
+  if ($style_name === NULL) {
+    $style_name = 'ai_image_alt_text';
+  }
+  if ($style_name === '') {
+    return $file_uri;
+  }
   $styled_uri = image_style_path($style_name, $file_uri);
   $style = image_style_load($style_name);
   if ($style && !file_exists($styled_uri)) {

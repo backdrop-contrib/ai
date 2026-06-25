@@ -115,6 +115,14 @@ function ai_mcp_server_form(array $form, array &$form_state, $server = NULL) {
     '#attributes'    => ['autocomplete' => 'off'],
   ];
 
+  $form['uid'] = [
+    '#type'          => 'number',
+    '#title'         => t('Run tool calls as user ID'),
+    '#default_value' => $is_new ? 1 : (isset($server['uid']) ? (int) $server['uid'] : 1),
+    '#min'           => 0,
+    '#description'   => t('Tool permission checks run as this user. Defaults to user 1. Setting 0 runs as anonymous, which hides every permission-gated tool.'),
+  ];
+
   // Build tool checkboxes from the registry.
   $all_tools  = ai_tools_get_tools();
   $tool_options = [];
@@ -175,6 +183,7 @@ function ai_mcp_server_form_submit(array $form, array &$form_state) {
     'id'           => $values['id'],
     'label'        => $values['label'],
     'auth_key'     => trim($values['auth_key']),
+    'uid'          => isset($values['uid']) ? (int) $values['uid'] : 1,
     'tools'        => $tools_clean,
     'oauth_enabled'=> FALSE,
   ];

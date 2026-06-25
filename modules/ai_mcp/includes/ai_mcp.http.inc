@@ -85,7 +85,32 @@ function _ai_mcp_post_handler() {
     exit;
   }
 
-  $result = ai_mcp_jsonrpc_dispatch($body, $server);
+  // Run the dispatch as the server's configured user. The Bearer token is
+  // the credential here — the request itself arrives as anonymous, and the
+  // ai_tools registry filters out every permission-gated tool for anonymous,
+  // which would make those tools silently unavailable over MCP.
+  $uid = isset($server['uid']) ? (int) $server['uid'] : 1;
+  $account = $uid ? user_load($uid) : FALSE;
+  global $user;
+  $original_user = $user;
+  $session_state = backdrop_save_session();
+  backdrop_save_session(FALSE);
+  if ($account) {
+    $user = $account;
+  }
+  try {
+    $result = ai_mcp_jsonrpc_dispatch($body, $server);
+  }
+  finally {
+    $user = $original_user;
+    backdrop_save_session($session_state);
+  }
+
+  // JSON-RPC notifications get an acknowledgement with no body.
+  if ($result === NULL) {
+    http_response_code(202);
+    exit;
+  }
 
   header('Content-Type: application/json');
   print json_encode($result);

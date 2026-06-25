@@ -100,7 +100,7 @@ function ai_alt_settings_form(array $form, array &$form_state) {
     '#type' => 'select',
     '#options' => $image_styles_options,
     '#default_value' => $config->get('image_style') ?? 'ai_image_alt_text',
-    '#empty_option' => t('Original (NOT RECOMMENDED]'),
+    '#empty_option' => t('Original (NOT RECOMMENDED)'),
     '#description' => t('Image style to use before sending the image to reduce resolution and reformat as PNG.'),
   ];
 
@@ -141,7 +141,7 @@ function ai_alt_settings_form(array $form, array &$form_state) {
       $providers_root = config_get('ai.settings', 'providers') ?: [];
       if (!empty($providers_root[$provider_id]['enabled'])) {
         $provider_label = ai_get_provider_label($provider_id);
-        $models[$provider_label][$current_model] = $current_model . ' ' . t('(currently selected]');
+        $models[$provider_label][$current_model] = $current_model . ' ' . t('(currently selected)');
         // Update flat models too for consistency.
         $flat_models[$current_model] = $current_model;
       }
@@ -434,7 +434,7 @@ function ai_alt_generate_alt_text_for_ckeditor($form, &$form_state) {
 
   if (!$fid) {
     // Log and notify if no file ID is found.
-    watchdog('ai_alt', 'No file ID (fid] found in the form.', [], WATCHDOG_WARNING);
+    watchdog('ai_alt', 'No file ID (fid) found in the form.', [], WATCHDOG_WARNING);
     return [
       '#type' => 'ajax',
       '#commands' => [
@@ -521,7 +521,7 @@ function ai_alt_generate_alt_text_for_ckeditor_autogenerate() {
   $src = $_POST['src'] ?? NULL;
 
   if (!$fid && !$src) {
-    watchdog('ai_alt', 'No file ID (fid] or source (src] provided.', [], WATCHDOG_WARNING);
+    watchdog('ai_alt', 'No file ID (fid) or source (src) provided.', [], WATCHDOG_WARNING);
     backdrop_json_output(['status' => 'error', 'message' => 'No image provided.']);
     return;
   }

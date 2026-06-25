@@ -26,10 +26,11 @@ function ai_tools_field_definitions() {
           ],
         ],
       ],
-      'execute'   => 'ai_tools_execute_get_entity_field_information',
-      'module'    => 'ai_tools',
-      'category'  => 'field',
-      'operation' => 'read',
+      'execute'    => 'ai_tools_execute_get_entity_field_information',
+      'module'     => 'ai_tools',
+      'category'   => 'field',
+      'operation'  => 'read',
+      'permission' => 'access content overview',
     ],
     'get_field_values_and_context' => [
       'definition' => [
@@ -54,10 +55,11 @@ function ai_tools_field_definitions() {
           ],
         ],
       ],
-      'execute'   => 'ai_tools_execute_get_field_values_and_context',
-      'module'    => 'ai_tools',
-      'category'  => 'field',
-      'operation' => 'read',
+      'execute'    => 'ai_tools_execute_get_field_values_and_context',
+      'module'     => 'ai_tools',
+      'category'   => 'field',
+      'operation'  => 'read',
+      'permission' => 'access content overview',
     ],
     'list_field_types' => [
       'definition' => [
@@ -314,6 +316,9 @@ function ai_tools_execute_get_field_values_and_context(array $args) {
   if (!$node) {
     return ['error' => "No node found with nid $nid."];
   }
+  if (!node_access('view', $node)) {
+    return ['error' => "Access denied for node $nid."];
+  }
   $filter_fields = !empty($args['fields']) ? array_flip($args['fields']) : NULL;
   $instances     = field_info_instances('node', $node->type);
   $result        = [
@@ -327,8 +332,11 @@ function ai_tools_execute_get_field_values_and_context(array $args) {
     if ($filter_fields !== NULL && !isset($filter_fields[$field_name])) {
       continue;
     }
+    $field_info = field_info_field($field_name);
+    if (!$field_info || !field_access('view', $field_info, 'node', $node)) {
+      continue;
+    }
     $items                          = field_get_items('node', $node, $field_name);
-    $field_info                     = field_info_field($field_name);
     $result['fields'][$field_name]  = [
       'label'  => $instance['label'],
       'type'   => $field_info['type'] ?? 'unknown',

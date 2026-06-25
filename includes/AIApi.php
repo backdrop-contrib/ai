@@ -55,8 +55,9 @@ class AIApi {
         if (in_array($step['function'], $skip_functions, TRUE)) {
           continue;
         }
-        if (preg_match('/^(ai_[a-z0-9_]+?)_/', $step['function'], $matches)) {
-          $module = $matches[1];
+        $candidate = function_exists('ai_caller_module_from_function') ? ai_caller_module_from_function($step['function']) : '';
+        if ($candidate !== '' && $candidate !== 'ai') {
+          $module = $candidate;
           break;
         }
       }
@@ -278,6 +279,8 @@ class AIApi {
     $context = $this->buildContext('chat', $model, $context_extra);
     $this->applyChatMessageAlter($messages, $context);
     if (!empty($context['guardrail_blocked'])) {
+      // Blocked requests are the ones an auditor most needs to see.
+      $this->log('chat', $model, $messages, (string) ($context['guardrail_message'] ?? ''), FALSE, microtime(TRUE) - $start_time, 'Blocked by guardrails before the provider call.');
       return (string) ($context['guardrail_message'] ?? '');
     }
 
@@ -293,6 +296,7 @@ class AIApi {
     if (!$stream_response) {
       $this->applyChatResponseAlter($response, $context);
       if (!empty($context['guardrail_blocked'])) {
+        $this->log('chat', $model, $messages, $response, FALSE, microtime(TRUE) - $start_time, 'Response blocked by guardrails.');
         return (string) ($context['guardrail_message'] ?? '');
       }
     }
@@ -359,6 +363,8 @@ class AIApi {
     $context['tool_count'] = count($tools);
     $this->applyChatMessageAlter($messages, $context);
     if (!empty($context['guardrail_blocked'])) {
+      // Blocked requests are the ones an auditor most needs to see.
+      $this->log('chat', $model, $messages, (string) ($context['guardrail_message'] ?? ''), FALSE, microtime(TRUE) - $start_time, 'Blocked by guardrails before the provider call.');
       return [
         'finish_reason' => 'guardrail_blocked',
         'content' => (string) ($context['guardrail_message'] ?? ''),
@@ -407,8 +413,6 @@ class AIApi {
   }
 
   public function describeImage(string $imageUrl, bool $sendImageData = TRUE): string {
-    $this->checkRateLimit('chat');
-
     $config = config('ai_alt.settings');
     $describePrompt = $config->get('prompt');
     $model = $config->get('model');
@@ -416,11 +420,6 @@ class AIApi {
     if (empty($describePrompt) || empty($model)) {
       watchdog('ai_alt', 'AI alt text prompt or model configuration missing.', [], WATCHDOG_ERROR);
       return '';
-    }
-
-    list($prefix, $bare) = ai_parse_model_id($model);
-    if (!empty($prefix) && $prefix === $this->provider) {
-      $model = $bare;
     }
 
     if ($sendImageData) {
@@ -443,7 +442,17 @@ class AIApi {
       ],
     ];
 
-    $result = $this->client->chat($model, $messages, 0.4, 300);
+    // Route through the chat() wrapper so rate limits, guardrails, logging,
+    // and exception normalization apply to vision calls like any other chat.
+    // A model configured for a different provider resolves through the
+    // global wrapper instead of sending a prefixed id to this client.
+    list($prefix, $bare) = ai_parse_model_id($model);
+    if (!empty($prefix) && $prefix !== $this->provider && function_exists('ai_chat')) {
+      $result = ai_chat($model, $messages, 0.4, 300, FALSE, ['operation' => 'describe_image']);
+    }
+    else {
+      $result = $this->chat($bare, $messages, 0.4, 300, FALSE, ['operation' => 'describe_image']);
+    }
     return trim((string) $result);
   }
 

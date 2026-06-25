@@ -20,6 +20,26 @@ abstract class AIAdapterBase implements AIProviderClient {
 
   abstract protected function getDefaultHeaders(): array;
 
+  /**
+   * Compact a provider error body for exception messages.
+   *
+   * Provider errors can be multi-kilobyte HTML pages; exception messages flow
+   * into watchdog and sometimes the UI, so strip markup and cap the length.
+   */
+  protected function formatErrorBody($response): string {
+    $body = isset($response->data) ? trim(strip_tags((string) $response->data)) : '';
+    if ($body === '') {
+      // Transport failures (timeout, DNS, TLS) come back as code -1 with an
+      // empty body; backdrop_http_request() puts the cURL/socket message in
+      // ->error. Surface it instead of collapsing to "Unknown error".
+      if (!empty($response->error)) {
+        return trim((string) $response->error);
+      }
+      return 'Unknown error';
+    }
+    return strlen($body) > 600 ? substr($body, 0, 600) . '…' : $body;
+  }
+
   public function getModelsByCapability($capability): array {
     $models = $this->getModels();
     backdrop_alter('ai_model_capabilities', $models, $capability, $this);
@@ -68,7 +88,7 @@ abstract class AIAdapterBase implements AIProviderClient {
 
     $response = backdrop_http_request($url, $options);
     if (!isset($response->code) || (int) $response->code < 200 || (int) $response->code >= 300) {
-      throw new \Exception('API error (' . ($response->code ?? 'unknown') . '): ' . ($response->data ?? 'Unknown error'));
+      throw new \Exception('API error (' . ($response->code ?? 'unknown') . '): ' . $this->formatErrorBody($response));
     }
 
     $data = json_decode((string) ($response->data ?? ''), TRUE);
@@ -92,7 +112,7 @@ abstract class AIAdapterBase implements AIProviderClient {
 
     $response = backdrop_http_request($url, $options);
     if (!isset($response->code) || (int) $response->code < 200 || (int) $response->code >= 300) {
-      throw new \Exception('API error (' . ($response->code ?? 'unknown') . '): ' . ($response->data ?? 'Unknown error'));
+      throw new \Exception('API error (' . ($response->code ?? 'unknown') . '): ' . $this->formatErrorBody($response));
     }
 
     return (string) ($response->data ?? '');
@@ -105,6 +125,8 @@ abstract class AIAdapterBase implements AIProviderClient {
     foreach ($fields as $name => $value) {
       if (is_array($value) && isset($value['path'])) {
         $filename = !empty($value['filename']) ? $value['filename'] : basename($value['path']);
+        // Quotes or CRLF in a filename would corrupt the multipart framing.
+        $filename = str_replace(['"', "\r", "\n"], '', $filename);
         $contents = file_get_contents($value['path']);
         if ($contents === FALSE) {
           throw new \Exception('Unable to read file: ' . $value['path']);
@@ -139,7 +161,7 @@ abstract class AIAdapterBase implements AIProviderClient {
     ]);
 
     if (!isset($response->code) || (int) $response->code < 200 || (int) $response->code >= 300) {
-      throw new \Exception('API error (' . ($response->code ?? 'unknown') . '): ' . ($response->data ?? 'Unknown error'));
+      throw new \Exception('API error (' . ($response->code ?? 'unknown') . '): ' . $this->formatErrorBody($response));
     }
 
     $data = json_decode((string) ($response->data ?? ''), TRUE);

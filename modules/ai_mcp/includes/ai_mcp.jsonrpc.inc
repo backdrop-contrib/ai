@@ -26,9 +26,23 @@ function ai_mcp_jsonrpc_dispatch(array $body, array $server) {
   $method = isset($body['method']) ? $body['method'] : '';
   $params = isset($body['params']) ? $body['params'] : [];
 
+  // JSON-RPC notifications expect no response at all. MCP clients send
+  // notifications/initialized right after the handshake — answering it with
+  // a Method-not-found error breaks strict clients.
+  if (strpos($method, 'notifications/') === 0) {
+    return NULL;
+  }
+
   switch ($method) {
     case 'initialize':
       return ai_mcp_method_initialize($id, $params, $server);
+
+    case 'ping':
+      return [
+        'jsonrpc' => '2.0',
+        'id'      => $id,
+        'result'  => new stdClass(),
+      ];
 
     case 'tools/list':
       return ai_mcp_method_tools_list($id, $params, $server);
@@ -188,7 +202,7 @@ function ai_mcp_method_tools_call($id, array $params, array $server) {
       ],
     ];
   }
-  catch (\Exception $e) {
+  catch (\Throwable $e) {
     return [
       'jsonrpc' => '2.0',
       'id'      => $id,

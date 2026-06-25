@@ -167,6 +167,8 @@ function ai_tools_views_definitions() {
       'module' => 'ai_tools',
       'category' => 'views',
       'operation' => 'write',
+      'destructive' => FALSE,
+      'permission' => 'administer views',
     ],
     'add_view_display' => [
       'definition' => [
@@ -207,6 +209,8 @@ function ai_tools_views_definitions() {
       'module' => 'ai_tools',
       'category' => 'views',
       'operation' => 'write',
+      'destructive' => FALSE,
+      'permission' => 'administer views',
     ],
     'get_views_result' => [
       'definition' => [
@@ -358,6 +362,9 @@ function ai_tools_execute_list_views_handlers(array $args) {
 }
 
 function ai_tools_execute_create_basic_view(array $args) {
+  if (!user_access('administer views')) {
+    return ['error' => 'Access denied: You do not have permission to administer views.'];
+  }
   $view_name = ai_tools_views_clean_machine_name($args['view_name'] ?? '');
   $label = trim($args['label'] ?? '');
   $description = trim($args['description'] ?? '');
@@ -429,6 +436,9 @@ function ai_tools_execute_create_basic_view(array $args) {
 }
 
 function ai_tools_execute_add_view_display(array $args) {
+  if (!user_access('administer views')) {
+    return ['error' => 'Access denied: You do not have permission to administer views.'];
+  }
   $view_name = trim($args['view_name'] ?? '');
   $display_type = trim($args['display_type'] ?? '');
   $title = trim($args['title'] ?? '');

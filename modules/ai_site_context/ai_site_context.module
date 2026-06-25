@@ -56,7 +56,7 @@ function ai_site_context_settings_form($form, &$form_state) {
   $form['prompts']['instructions'] = [
     '#type'          => 'textarea',
     '#title'         => t('System Instructions'),
-    '#description'   => t('Behavioral instructions injected as the system prompt for operations configured to use <em>full</em> mode. Define persona, tone, scope, and rules only — not factual site info. Every token here is sent with every qualifying AI call. Tokens such as [site:name] are supported. For active input/output blocking (injection detection, PII, jailbreaks], use the <em>AI Guardrails</em> module.'),
+    '#description'   => t('Behavioral instructions injected as the system prompt for operations configured to use <em>full</em> mode. Define persona, tone, scope, and rules only — not factual site info. Every token here is sent with every qualifying AI call. Tokens such as [site:name] are supported. For active input/output blocking (injection detection, PII, jailbreaks), use the <em>AI Guardrails</em> module.'),
     '#default_value' => $config->get('system') ?: '',
     '#rows'          => 6,
   ];
@@ -64,7 +64,7 @@ function ai_site_context_settings_form($form, &$form_state) {
   $form['prompts']['global_prompt'] = [
     '#type'          => 'textarea',
     '#title'         => t('Site Context'),
-    '#description'   => t('Describe the site\'s purpose, audience, editorial guidelines, and content conventions. This is injected for operations in <em>full</em> or <em>prompt only</em> mode, and is also returned on demand by the <code>get_site_context</code> tool (from <em>AI Tools</em>] when the model asks for it. Keep factual data like site name and URL out of here — those are already available via the <code>get_site_info</code> tool. Tokens such as [site:name], [site:url] are supported.'),
+    '#description'   => t('Describe the site\'s purpose, audience, editorial guidelines, and content conventions. This is injected for operations in <em>full</em> or <em>prompt only</em> mode, and is also returned on demand by the <code>get_site_context</code> tool (from <em>AI Tools</em>) when the model asks for it. Keep factual data like site name and URL out of here — those are already available via the <code>get_site_info</code> tool. Tokens such as [site:name], [site:url] are supported.'),
     '#default_value' => $config->get('global_prompt') ?: '',
     '#rows'          => 4,
   ];
@@ -101,7 +101,7 @@ function ai_site_context_settings_form($form, &$form_state) {
   $form['operation_modes'] = [
     '#type'        => 'fieldset',
     '#title'       => t('Injection mode per operation'),
-    '#description' => t('Controls how much context is injected for each type of AI call. <strong>Full</strong> injects system instructions + site context. <strong>Prompt only</strong> injects site context but skips system instructions (saves tokens for automated tasks]. <strong>None</strong> skips injection entirely. Operations not listed here use the default mode.'),
+    '#description' => t('Controls how much context is injected for each type of AI call. <strong>Full</strong> injects system instructions + site context. <strong>Prompt only</strong> injects site context but skips system instructions (saves tokens for automated tasks). <strong>None</strong> skips injection entirely. Operations not listed here use the default mode.'),
     '#collapsible' => TRUE,
     '#collapsed'   => FALSE,
     '#tree'        => TRUE,
@@ -134,8 +134,8 @@ function ai_site_context_settings_form($form, &$form_state) {
  */
 function _ai_site_context_operation_labels() {
   return [
-    'chat'             => t('Chat (general]'),
-    'chat_with_tools'  => t('Tool calls (raw]'),
+    'chat'             => t('Chat (general)'),
+    'chat_with_tools'  => t('Tool calls (raw)'),
     'agent_call'       => t('Agent calls'),
     'agent_explorer'   => t('Agent explorer'),
     'chat_explorer'    => t('Chat explorer'),
@@ -144,10 +144,10 @@ function _ai_site_context_operation_labels() {
     'dblog_analysis'   => t('Database log analysis'),
     'search_block'     => t('Search block conversation'),
     'search_progressive' => t('Progressive search indexing'),
-    'completion'       => t('Completions (legacy]'),
+    'completion'       => t('Completions (legacy)'),
     'chatbot'          => t('Chatbot conversation'),
     'field_generation' => t('Field automator / AI generation'),
-    'content_tools'    => t('Content tools (summarize, tone, etc.]'),
+    'content_tools'    => t('Content tools (summarize, tone, etc.)'),
     'image_generation' => t('Image generation'),
     'seo_analysis'     => t('SEO analysis'),
     'metatag'          => t('Metatag generation'),

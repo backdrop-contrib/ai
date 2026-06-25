@@ -214,7 +214,7 @@ function ai_devel_generate_content_form_submit($form, &$form_state) {
 
   // Handle content deletion if selected.
   if ($form_state['values']['kill_content']) {
-    $nids = db_query("SELECT nid FROM {node} WHERE type IN (:types]", [':types' => $options['node_types']])->fetchCol();
+    $nids = db_query("SELECT nid FROM {node} WHERE type IN (:types)", [':types' => $options['node_types']])->fetchCol();
     if ($nids) {
       node_delete_multiple($nids);
       backdrop_set_message(t('Deleted @count nodes.', ['@count' => count($nids)]));

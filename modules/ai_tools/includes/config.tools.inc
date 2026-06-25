@@ -118,6 +118,11 @@ function ai_tools_execute_get_config(array $args) {
       return ['error' => "Key '$specific_key' is redacted for security."];
     }
     $value = $config->get($specific_key);
+    // A non-sensitive key name can still return a subtree containing secrets
+    // (e.g. key "providers" → each provider's api_key). Redact recursively.
+    if (is_array($value)) {
+      $value = _ai_tools_redact_config($value);
+    }
     return ['config' => $config_name, 'key' => $specific_key, 'value' => $value];
   }
 

@@ -16,7 +16,7 @@
  *
  * Usage:
  * @code
- *   if (!ai_privacy_entity_allowed('node', 'article')] {
+ *   if (!ai_privacy_entity_allowed('node', 'article')) {
  *     return; // skip AI processing for this entity
  *   }
  * @endcode
@@ -82,7 +82,7 @@ function ai_privacy_settings_form($form, &$form_state) {
   $form['denied_roles'] = [
     '#type'          => 'checkboxes',
     '#title'         => t('Deny AI processing for content associated with these roles'),
-    '#description'   => t('When a user belonging to any of these roles triggers AI processing (e.g. saves a node or clicks "Generate with AI"], the request will be blocked. This does not affect automated background processing unless the triggering account is also in a denied role.'),
+    '#description'   => t('When a user belonging to any of these roles triggers AI processing (e.g. saves a node or clicks "Generate with AI"), the request will be blocked. This does not affect automated background processing unless the triggering account is also in a denied role.'),
     '#options'       => $roles,
     '#default_value' => $config->get('denied_roles') ?: [],
   ];
@@ -90,7 +90,7 @@ function ai_privacy_settings_form($form, &$form_state) {
   $form['log_redact_content'] = [
     '#type'          => 'checkbox',
     '#title'         => t('Redact prompt and response content from AI logs'),
-    '#description'   => t('When enabled, the <em>Request Data</em> and <em>Response Data</em> columns in the AI log will be replaced with <code>[redacted]</code>. Only metadata (module, operation, model, provider, duration, status] is stored. Enable this if storing full prompts in the database is a compliance concern.'),
+    '#description'   => t('When enabled, the <em>Request Data</em> and <em>Response Data</em> columns in the AI log will be replaced with <code>[redacted]</code>. Only metadata (module, operation, model, provider, duration, status) is stored. Enable this if storing full prompts in the database is a compliance concern.'),
     '#default_value' => $config->get('log_redact_content'),
   ];
 
@@ -234,8 +234,11 @@ function ai_privacy_entity_allowed($entity_type, $bundle, $account = NULL) {
       $account = $user;
     }
     if ($account && !empty($account->roles)) {
-      foreach ($denied_roles as $rid) {
-        if (array_key_exists($rid, $account->roles)) {
+      // Backdrop stores roles as a plain array of role names; D7-style code
+      // keyed them by rid. Accept both shapes so a denied role always blocks.
+      $account_roles = array_merge(array_keys((array) $account->roles), array_values((array) $account->roles));
+      foreach ($denied_roles as $role_name) {
+        if (in_array($role_name, $account_roles)) {
           return FALSE;
         }
       }

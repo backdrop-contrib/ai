@@ -104,8 +104,8 @@ function ai_guardrails_settings_form($form, &$form_state) {
   $saved = $config->get('guardrails') ?: [];
   $groups = _ai_guardrails_group_labels();
   $phase_options = [
-    'pre'  => t('Input only (pre-generate]'),
-    'post' => t('Output only (post-generate]'),
+    'pre'  => t('Input only (pre-generate)'),
+    'post' => t('Output only (post-generate)'),
     'both' => t('Both input and output'),
   ];
 
@@ -169,7 +169,9 @@ function ai_guardrails_settings_form($form, &$form_state) {
 function ai_guardrails_settings_form_submit($form, &$form_state) {
   $config = config('ai_guardrails.settings');
   $config->set('enabled', (bool) $form_state['values']['enabled']);
-  $config->set('blocked_message', check_plain($form_state['values']['blocked_message']));
+  // Store the raw text — the message is delivered in plain-text chat context,
+  // and pre-encoding it here would leak HTML entities to the user.
+  $config->set('blocked_message', $form_state['values']['blocked_message']);
 
   $all = ai_guardrails_get_all();
   $groups = array_keys(_ai_guardrails_group_labels());
@@ -272,7 +274,7 @@ function ai_guardrails_ai_guardrail_info() {
       'pattern'       => 'expression\s*\(',
       'flags'         => 'i',
       'enabled_default' => TRUE,
-      'description'   => t('Blocks CSS <code>expression(]</code> injection attempts.'),
+      'description'   => t('Blocks CSS <code>expression()</code> injection attempts.'),
     ],
 
     'dangerous_html' => [
@@ -280,7 +282,7 @@ function ai_guardrails_ai_guardrail_info() {
       'group'         => 'security',
       'type'          => 'regex',
       'phase'         => 'pre',
-      'pattern'       => '<\s*(iframe|object|embed|applet]\b',
+      'pattern'       => '<\s*(iframe|object|embed|applet)\b',
       'flags'         => 'i',
       'enabled_default' => TRUE,
       'description'   => t('Blocks inputs containing elements commonly used for injection: <code>iframe</code>, <code>object</code>, <code>embed</code>, <code>applet</code>.'),
@@ -296,7 +298,7 @@ function ai_guardrails_ai_guardrail_info() {
       'phase_configurable' => TRUE,
       'pattern'          => '[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}',
       'enabled_default'  => TRUE,
-      'description'      => t('Detects email addresses in user input (pre] and AI responses (post]. Prevents PII from being sent to third-party AI providers.'),
+      'description'      => t('Detects email addresses in user input (pre) and AI responses (post). Prevents PII from being sent to third-party AI providers.'),
     ],
 
     'pii_credit_card' => [
@@ -305,7 +307,7 @@ function ai_guardrails_ai_guardrail_info() {
       'type'             => 'regex',
       'phase'            => 'both',
       'phase_configurable' => TRUE,
-      'pattern'          => '\b(?:4[0-9]{12}(?:[0-9]{3}]?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2}][0-9]{12}]\b',
+      'pattern'          => '\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b',
       'enabled_default'  => TRUE,
       'description'      => t('Detects Visa, Mastercard, American Express, and Discover card numbers.'),
     ],
@@ -316,7 +318,7 @@ function ai_guardrails_ai_guardrail_info() {
       'type'             => 'regex',
       'phase'            => 'both',
       'phase_configurable' => TRUE,
-      'pattern'          => '\b[A-Z]{2}[0-9]{2}[A-Z0-9]{4}[0-9]{7}(?:[A-Z0-9]{0,16}]\b',
+      'pattern'          => '\b[A-Z]{2}[0-9]{2}[A-Z0-9]{4}[0-9]{7}(?:[A-Z0-9]{0,16})\b',
       'enabled_default'  => FALSE,
       'description'      => t('Detects IBAN-format bank account numbers. Disabled by default — enable for sites handling financial data.'),
     ],
@@ -329,7 +331,7 @@ function ai_guardrails_ai_guardrail_info() {
       'phase_configurable' => TRUE,
       'pattern'          => '\+[1-9][0-9]{7,14}\b',
       'enabled_default'  => FALSE,
-      'description'      => t('Detects E.164-format international phone numbers (e.g. +12025551234]. Disabled by default to avoid false positives.'),
+      'description'      => t('Detects E.164-format international phone numbers (e.g. +12025551234). Disabled by default to avoid false positives.'),
     ],
 
   ];
@@ -423,7 +425,17 @@ function ai_guardrails_run($text, $phase = 'pre', $operation = 'chat') {
       if (empty($pattern)) {
         continue;
       }
-      if (@preg_match('/' . $pattern . '/' . $flags, $text)) {
+      $matched = @preg_match('/' . $pattern . '/' . $flags, $text);
+      if ($matched === FALSE) {
+        // A guardrail whose pattern does not compile silently never blocks —
+        // that is a security hole, not a soft failure. Make it loud.
+        watchdog('ai_guardrails', 'Guardrail @id has an invalid regex pattern and is NOT protecting anything: @pattern', [
+          '@id' => $id,
+          '@pattern' => $pattern,
+        ], WATCHDOG_ERROR);
+        continue;
+      }
+      if ($matched) {
         $result['blocked']      = TRUE;
         $result['guardrail_id'] = $id;
         $result['message']      = !empty($guardrail['message']) ? $guardrail['message'] : $default_message;
@@ -433,7 +445,7 @@ function ai_guardrails_run($text, $phase = 'pre', $operation = 'chat') {
 
         // A hook implementation can set blocked = FALSE to override.
         if ($result['blocked']) {
-          watchdog('ai_guardrails', 'Guardrail @id blocked a @phase-generate request (operation: @op].', [
+          watchdog('ai_guardrails', 'Guardrail @id blocked a @phase-generate request (operation: @op).', [
             '@id'  => $id,
             '@phase' => $phase,
             '@op'  => $operation,

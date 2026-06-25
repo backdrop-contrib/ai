@@ -199,11 +199,11 @@ function ai_admin_overview() {
       continue;
     }
 
-    $title = !empty($link->title) ? t($link->title) : t(ucwords(str_replace('_', ' ', basename($path))));
+    $title = !empty($link->title) ? $link->title : ucwords(str_replace('_', ' ', basename($path)));
     if (in_array($title, ['Dashboard', 'Overview'], TRUE)) {
       continue;
     }
-    $description = !empty($link->description) ? t($link->description) : '';
+    $description = !empty($link->description) ? $link->description : '';
     $category = ai_admin_overview_category($path, $title);
     $sections[$category][] = [
       'title' => $title,
@@ -288,7 +288,7 @@ function ai_admin_overview_category($path, $title) {
 
   foreach (['dblog', 'devel', 'explorer', 'openrouter'] as $keyword) {
     if (strpos($path_lc, $keyword) !== FALSE || strpos($title_lc, $keyword) !== FALSE) {
-      return 'Developer and Diagnostics';
+      return 'Diagnostics';
     }
   }
 
@@ -326,9 +326,9 @@ function ai_admin_reports_overview() {
       continue;
     }
 
-    $title = !empty($link->title) ? t($link->title) : t(ucwords(str_replace('_', ' ', basename($path))));
-    $description = !empty($link->description) ? t($link->description) : '';
-    $items[$title] = '<dt>' . l($title, $path) . '</dt><dd>' . $description . '</dd>';
+    $title = !empty($link->title) ? $link->title : ucwords(str_replace('_', ' ', basename($path)));
+    $description = !empty($link->description) ? $link->description : '';
+    $items[$title] = '<dt>' . l($title, $path) . '</dt><dd>' . check_plain($description) . '</dd>';
   }
 
   ksort($items);
@@ -551,25 +551,29 @@ function ai_get_api_for_model($model_id, &$stripped_model_id = NULL) {
  */
 function ai_get_embedding_dimension($model_id, $provider_id = NULL) {
   $provider_id = $provider_id ?: ai_default_provider_id();
-  $dynamic_dimension = ai_detect_embedding_dimension($model_id, $provider_id);
-  if ($dynamic_dimension > 0) {
-    $dimension = $dynamic_dimension;
+
+  // Known models resolve from the table without a network round-trip; the
+  // live detection call below is billable and only worth it for models the
+  // table does not cover (e.g. arbitrary Ollama models).
+  $known_dimensions = [
+    'text-embedding-ada-002' => 1536,
+    'text-embedding-3-small' => 1536,
+    'text-embedding-3-large' => 3072,
+    'openai/text-embedding-3-large' => 3072,
+    'openai/text-embedding-3-small' => 1536,
+    'openai/text-embedding-ada-002' => 1536,
+    'voyage-ai/voyage-3' => 1024,
+    'voyage-ai/voyage-3-lite' => 512,
+    'cohere/embed-english-v3.0' => 1024,
+    'cohere/embed-multilingual-v3.0' => 1024,
+  ];
+
+  if (isset($known_dimensions[$model_id])) {
+    $dimension = $known_dimensions[$model_id];
   }
   else {
-    $known_dimensions = [
-      'text-embedding-ada-002' => 1536,
-      'text-embedding-3-small' => 1536,
-      'text-embedding-3-large' => 3072,
-      'openai/text-embedding-3-large' => 3072,
-      'openai/text-embedding-3-small' => 1536,
-      'openai/text-embedding-ada-002' => 1536,
-      'voyage-ai/voyage-3' => 1024,
-      'voyage-ai/voyage-3-lite' => 512,
-      'cohere/embed-english-v3.0' => 1024,
-      'cohere/embed-multilingual-v3.0' => 1024,
-    ];
-
-    $dimension = isset($known_dimensions[$model_id]) ? $known_dimensions[$model_id] : 1536;
+    $dynamic_dimension = ai_detect_embedding_dimension($model_id, $provider_id);
+    $dimension = $dynamic_dimension > 0 ? $dynamic_dimension : 1536;
   }
 
   backdrop_alter('ai_embedding_dimension', $dimension, $model_id, $provider_id);
@@ -618,7 +622,7 @@ function ai_get_all_embedding_models_with_dimensions() {
       }
     }
     catch (\Exception $e) {
-      watchdog('openai', 'Failed to fetch embedding models from @provider: @message', [
+      watchdog('ai', 'Failed to fetch embedding models from @provider: @message', [
         '@provider' => $provider_id,
         '@message' => $e->getMessage(),
       ], WATCHDOG_WARNING);
@@ -660,7 +664,9 @@ function ai_detect_embedding_dimension($model_id, $provider_id) {
 
     $dimension = count($test_embedding);
     if ($dimension > 0) {
-      cache_set($cache_key, $dimension, 'cache', time() + 86400);
+      // A model's dimension never changes; cache permanently so the billable
+      // detection call happens once per model, not once per day.
+      cache_set($cache_key, $dimension);
       return $dimension;
     }
   }
@@ -675,6 +681,24 @@ function ai_detect_embedding_dimension($model_id, $provider_id) {
 }
 
 /**
+ * Resolve the owning module from a hook-style function name.
+ *
+ * Function names embed the module as a prefix, but module names themselves
+ * contain underscores, so the longest prefix that is an enabled module wins
+ * (ai_content_audit_cron → ai_content_audit, not ai_content).
+ */
+function ai_caller_module_from_function($function) {
+  $parts = explode('_', (string) $function);
+  for ($i = count($parts) - 1; $i >= 1; $i--) {
+    $candidate = implode('_', array_slice($parts, 0, $i));
+    if (module_exists($candidate)) {
+      return $candidate;
+    }
+  }
+  return '';
+}
+
+/**
  * Apply caller context to adapters that support it.
  */
 function ai_assign_api_caller_module($api) {
@@ -683,8 +707,12 @@ function ai_assign_api_caller_module($api) {
   }
 
   foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 10) as $step) {
-    if (!empty($step['function']) && preg_match('/^(ai_[a-z0-9_]+?)_/', $step['function'], $matches)) {
-      $api->setCallerModule($matches[1]);
+    if (empty($step['function'])) {
+      continue;
+    }
+    $module = ai_caller_module_from_function($step['function']);
+    if ($module !== '' && $module !== 'ai') {
+      $api->setCallerModule($module);
       return;
     }
   }

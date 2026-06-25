@@ -27,6 +27,7 @@ function ai_tools_bee_definitions() {
       'execute' => 'ai_tools_execute_get_bee_commands',
       'module' => 'ai_tools',
       'category' => 'bee',
+      'permission' => 'administer site configuration',
       'requirements' => 'ai_tools_bee_requirements',
     ],
     'get_bee_command_help' => [
@@ -50,6 +51,7 @@ function ai_tools_bee_definitions() {
       'execute' => 'ai_tools_execute_get_bee_command_help',
       'module' => 'ai_tools',
       'category' => 'bee',
+      'permission' => 'administer site configuration',
       'requirements' => 'ai_tools_bee_requirements',
     ],
   ];

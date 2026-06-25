@@ -153,7 +153,7 @@ function ai_rate_limit_settings_form($form, &$form_state) {
 
     $form['providers'][$provider_id]['window'] = [
       '#type'          => 'number',
-      '#title'         => t('Window (seconds]'),
+      '#title'         => t('Window (seconds)'),
       '#min'           => 1,
       '#default_value' => isset($saved['window']) ? (int) $saved['window'] : $default_window,
       '#size'          => 6,
@@ -278,7 +278,7 @@ function ai_rate_limit_check($provider, $operation) {
     if ($global_limit > 0) {
       $since = REQUEST_TIME - $global_window;
       $count = db_query(
-        'SELECT COUNT(*] FROM {ai_rate_limit_events} WHERE timestamp > :since',
+        'SELECT COUNT(*) FROM {ai_rate_limit_events} WHERE timestamp > :since',
         [':since' => $since]
       )->fetchField();
 
@@ -302,7 +302,7 @@ function ai_rate_limit_check($provider, $operation) {
       $since  = REQUEST_TIME - $window;
 
       $count = db_query(
-        'SELECT COUNT(*] FROM {ai_rate_limit_events} WHERE provider = :provider AND timestamp > :since',
+        'SELECT COUNT(*) FROM {ai_rate_limit_events} WHERE provider = :provider AND timestamp > :since',
         [':provider' => $provider, ':since' => $since]
       )->fetchField();
 
@@ -357,7 +357,7 @@ function ai_rate_limit_status() {
     $window = (int) ($pl['window'] ?? 60);
     $since  = REQUEST_TIME - $window;
     $count  = db_query(
-      'SELECT COUNT(*] FROM {ai_rate_limit_events} WHERE provider = :provider AND timestamp > :since',
+      'SELECT COUNT(*) FROM {ai_rate_limit_events} WHERE provider = :provider AND timestamp > :since',
       [':provider' => $provider, ':since' => $since]
     )->fetchField();
 

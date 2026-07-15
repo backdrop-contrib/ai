@@ -41,6 +41,26 @@ function ai_moderation_user_can_bypass() {
 }
 
 /**
+ * Return the shared editorial severity score boundaries.
+ */
+function ai_moderation_level_thresholds() {
+  return ['clear' => 9, 'review' => 20, 'smoldering' => 70];
+}
+
+/**
+ * Return display ranges derived from the editorial severity boundaries.
+ */
+function ai_moderation_level_ranges() {
+  $thresholds = ai_moderation_level_thresholds();
+  return [
+    'clear' => '0–' . $thresholds['clear'],
+    'review' => ($thresholds['clear'] + 1) . '–' . $thresholds['review'],
+    'smoldering' => ($thresholds['review'] + 1) . '–' . $thresholds['smoldering'],
+    'dumpster_fire' => ($thresholds['smoldering'] + 1) . '–100',
+  ];
+}
+
+/**
  * Implements hook_menu().
  */
 function ai_moderation_menu() {
@@ -447,9 +467,6 @@ function _ai_moderation_validate_builtin_entity($entity_type, $bundle, $entity) 
  */
 function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $entity, $store = TRUE) {
   ai_moderation_load_include('evaluate');
-  if (!db_table_exists('ai_moderation_verdicts')) {
-    return;
-  }
   $config = config('ai_moderation.settings');
   $profile = $config->get('targets.' . $entity_type . '.' . $bundle);
   if (empty($profile)) {

@@ -73,8 +73,9 @@ function ai_moderation_queue_page($reported_only = FALSE) {
     ];
   }
   $build['filters'] = backdrop_get_form('ai_moderation_queue_filter_form');
+  $ranges = ai_moderation_level_ranges();
   $build['level_legend'] = [
-    '#markup' => '<div class="ai-moderation-level-legend"><strong>' . t('Level guide') . '</strong><span class="ai-moderation-level-legend__item">0–9: ' . t('Clear') . '</span><span class="ai-moderation-level-legend__item">10–20: ' . t('Needs review') . '</span><span class="ai-moderation-level-legend__item">21–70: ' . t('Smoldering') . '</span><span class="ai-moderation-level-legend__item">71–100: ' . t('Dumpster fire') . '</span><p>' . t('These are editorial severity labels. Profile allow/review thresholds separately control the moderation action.') . '</p></div>',
+    '#markup' => '<div class="ai-moderation-level-legend"><strong>' . t('Level guide') . '</strong><span class="ai-moderation-level-legend__item">' . $ranges['clear'] . ': ' . t('Clear') . '</span><span class="ai-moderation-level-legend__item">' . $ranges['review'] . ': ' . t('Needs review') . '</span><span class="ai-moderation-level-legend__item">' . $ranges['smoldering'] . ': ' . t('Smoldering') . '</span><span class="ai-moderation-level-legend__item">' . $ranges['dumpster_fire'] . ': ' . t('Dumpster fire') . '</span><p>' . t('These are editorial severity labels. Profile allow/review thresholds separately control the moderation action.') . '</p></div>',
     '#weight' => -5,
   ];
   $build['table'] = [
@@ -125,7 +126,10 @@ function ai_moderation_queue_filter_form_reset($form, &$form_state) {
 }
 
 /**
- * Show one moderation verdict without exposing submitted text.
+ * Show a verdict without retaining submitted text in the verdict record.
+ *
+ * Best-effort reconstruct content from the live or versioned entity for review,
+ * and identify current content that does not match the evaluated content.
  */
 function ai_moderation_queue_view_page($vid) {
   backdrop_add_css(backdrop_get_path('module', 'ai_moderation') . '/css/ai_moderation.queue.css');
@@ -216,17 +220,16 @@ function _ai_moderation_format_categories($categories) {
     return '';
   }
   $labels = [];
-  $is_list = array_keys($categories) === range(0, count($categories) - 1);
   foreach ($categories as $category => $value) {
-    if ($is_list) {
+    if (is_int($category)) {
       if (!is_string($value) || trim($value) === '') {
-        return '';
+        continue;
       }
       $labels[] = $value;
     }
     else {
       if (!is_string($category) || $category === '' || !is_bool($value)) {
-        return '';
+        continue;
       }
       if ($value) {
         $labels[] = $category;
@@ -243,6 +246,7 @@ function _ai_moderation_format_categories($categories) {
  * for enforcement, while the level borrows the internal Dumpster Fire tone.
  */
 function _ai_moderation_level_markup($record) {
+  $thresholds = ai_moderation_level_thresholds();
   $key = 'needs-review';
   $label = t('Needs review');
   $score = $record->score === NULL ? NULL : (int) $record->score;
@@ -250,15 +254,15 @@ function _ai_moderation_level_markup($record) {
     $key = 'error';
     $label = t('Error');
   }
-  elseif ($score > 70) {
+  elseif ($score > $thresholds['smoldering']) {
     $key = 'dumpster-fire';
     $label = t('Dumpster fire');
   }
-  elseif ($score !== NULL && $score <= 9) {
+  elseif ($score !== NULL && $score <= $thresholds['clear']) {
     $key = 'clear';
     $label = t('Clear');
   }
-  elseif ($score !== NULL && $score <= 20) {
+  elseif ($score !== NULL && $score <= $thresholds['review']) {
     $key = 'needs-review';
     $label = t('Needs review');
   }

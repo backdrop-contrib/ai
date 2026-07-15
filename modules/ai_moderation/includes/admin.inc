@@ -18,12 +18,13 @@ function ai_moderation_settings_form($form, &$form_state) {
   }
   $models = ai_get_all_chat_models();
   $model_options = ['' => t('- Use default chat model -')] + $models;
+  $level_ranges = ai_moderation_level_ranges();
 
   $form['profiles'] = [
     '#type' => 'fieldset',
     '#title' => t('Moderation profiles'),
     '#tree' => TRUE,
-    '#description' => t('Profiles describe the community policy, score bands, and enforcement behavior. New profiles are shadow-mode by default. Editorial levels are Clear (0–9), Needs review (10–20), Smoldering (21–70), and Dumpster fire (71–100). These labels are separate from the configurable allow/review/block action thresholds.'),
+    '#description' => t('Profiles describe the community policy, score bands, and enforcement behavior. New profiles are shadow-mode by default. Editorial levels are Clear (@clear), Needs review (@review), Smoldering (@smoldering), and Dumpster fire (@fire). These labels are separate from the configurable allow/review/block action thresholds.', ['@clear' => $level_ranges['clear'], '@review' => $level_ranges['review'], '@smoldering' => $level_ranges['smoldering'], '@fire' => $level_ranges['dumpster_fire']]),
   ];
   foreach ($profiles as $id => $profile) {
     $profiles[$id] = $profile = _ai_moderation_profile($id, $profile);

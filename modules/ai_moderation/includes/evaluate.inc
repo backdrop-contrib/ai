@@ -480,7 +480,8 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
     $verdict['reason'] = _ai_moderation_reason_code($verdict['reason'] ?? '');
     $verdict['categories'] = _ai_moderation_category_codes($verdict['categories'] ?? []);
   }
-  if (db_table_exists('ai_moderation_verdicts') && ($config->get('log_all') !== FALSE || $verdict['verdict'] !== 'allow')) {
+  $verdict['action'] = $verdict['action'] ?? ($verdict['verdict'] ?? 'review');
+  if (db_table_exists('ai_moderation_verdicts') && ($config->get('log_all') !== FALSE || $verdict['action'] !== 'allow')) {
     global $user;
     $now = REQUEST_TIME;
     $verdict['vid'] = db_insert('ai_moderation_verdicts')->fields([

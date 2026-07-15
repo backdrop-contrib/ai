@@ -2,279 +2,528 @@
 
 /**
  * @file
- * Permissions and menu items for the AI Moderation module.
+ * Entity moderation hooks and public API.
  */
 
+/**
+ * Implements hook_config_info().
+ */
+function ai_moderation_config_info() {
+  return [
+    'ai_moderation.settings' => [
+      'label' => t('AI Moderation settings'),
+      'group' => t('AI'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_permission().
+ */
 function ai_moderation_permission() {
   return [
     'access ai moderation' => [
-      'title' => t('Use AI Moderation'),
+      'title' => t('Administer AI Moderation'),
+      'description' => t('Configure moderation profiles and review moderation verdicts.'),
+    ],
+    'bypass ai moderation' => [
+      'title' => t('Bypass AI moderation enforcement'),
+      'description' => t('Submit or publish targeted content without automatic AI moderation enforcement.'),
     ],
   ];
+}
+
+/**
+ * Check whether the current account may bypass automatic enforcement.
+ */
+function ai_moderation_user_can_bypass() {
+  return user_access('bypass ai moderation');
 }
 
 /**
  * Implements hook_menu().
  */
 function ai_moderation_menu() {
-  $items = [];
-
   $items['admin/config/ai/ai-moderation'] = [
     'title' => 'AI Moderation',
-    'description' => 'Test AI content moderation with different models.',
+    'description' => 'Configure AI moderation profiles and content targets.',
     'page callback' => 'backdrop_get_form',
-    'page arguments' => ['ai_moderation_form'],
-    'access callback' => 'user_access',
+    'page arguments' => ['ai_moderation_settings_form'],
     'access arguments' => ['access ai moderation'],
+    'file' => 'includes/admin.inc',
+    'type' => MENU_NORMAL_ITEM,
     'weight' => -5,
+  ];
+  $items['admin/config/ai/ai-moderation/settings'] = [
+    'title' => 'Settings',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => -10,
+  ];
+  $items['admin/config/ai/ai-moderation/queue'] = [
+    'title' => 'Review queue',
+    'description' => 'Review AI moderation verdicts.',
+    'page callback' => 'ai_moderation_queue_page',
+    'access arguments' => ['access ai moderation'],
+    'file' => 'includes/pages.inc',
+    'type' => MENU_LOCAL_TASK,
+  ];
+  $items['admin/config/ai/ai-moderation/reported'] = [
+    'title' => 'Reported content',
+    'description' => 'Review content that AI moderation flagged or could not evaluate.',
+    'page callback' => 'ai_moderation_queue_page',
+    'page arguments' => [TRUE],
+    'access arguments' => ['access ai moderation'],
+    'file' => 'includes/pages.inc',
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 1,
+  ];
+  $items['admin/config/ai/ai-moderation/queue/%'] = [
+    'title' => 'Moderation verdict',
+    'page callback' => 'ai_moderation_queue_view_page',
+    'page arguments' => [5],
+    'access arguments' => ['access ai moderation'],
+    'file' => 'includes/pages.inc',
+    'type' => MENU_CALLBACK,
   ];
 
   return $items;
 }
 
 /**
- * Defines a form to test AI content moderation.
+ * Load one implementation include.
  */
-function ai_moderation_form($form, &$form_state) {
-  // Ensure parent module functions are available
-  if (!function_exists('ai_get_api')) {
-    backdrop_set_message(t('AI module functions are not available. Please ensure the AI module is enabled.'), 'error');
-    return $form;
-  }
-
-  $config = config('ai.settings');
-
-  // Get all enabled providers
-  $providers_root = $config->get('providers') ?: [];
-
-  // Check if any provider is enabled
-  $any_enabled = FALSE;
-  foreach ($providers_root as $p => $cfg) {
-    if (!empty($cfg['enabled'])) {
-      $any_enabled = TRUE;
-      break;
-    }
-  }
-
-  if (!$any_enabled) {
-    // Use l() to build the link and concatenate to avoid embedding HTML in t().
-    $link = l(t('configure a provider'), 'admin/config/ai/settings');
-    backdrop_set_message(t('No providers are enabled.') . ' ' . $link, 'warning');
-    return $form;
-  }
-
-  // Get moderation models from all enabled providers
-  $moderation_models = ai_get_all_moderation_models();
-
-  // If no moderation models are available, show a message
-  if (empty($moderation_models)) {
-    $link = l(t('enable and configure AI'), 'admin/config/ai/settings');
-    backdrop_set_message(t('No moderation models are available from your configured providers. Moderation is currently only supported by the AI provider.') . ' ' . $link, 'warning');
-    return $form;
-  }
-
-  $form['text'] = [
-    '#type' => 'textarea',
-    '#title' => t('Text to Moderate'),
-    '#description' => t('Enter the text you want to check for policy violations. AI will analyze this content against their usage policies.'),
-    '#required' => TRUE,
-    '#rows' => 5,
-  ];
-
-  $default_model = ai_default_model($moderation_models, 'ai/omni-moderation-latest');
-
-  $form['model'] = [
-    '#type' => 'select',
-    '#title' => t('Moderation Model'),
-    '#options' => $moderation_models,
-    '#default_value' => $default_model,
-    '#description' => t('Select which moderation model to use for analysis.'),
-  ];
-
-  $form['response'] = [
-    '#prefix' => '<div id="ai-moderation-response">',
-    '#suffix' => '</div>',
-  ];
-
-  $form['actions'] = ['#type' => 'actions'];
-  $form['actions']['submit'] = [
-    '#type' => 'submit',
-    '#value' => t('Check Content'),
-    '#ajax' => [
-      'callback' => 'ai_moderation_get_response',
-      'wrapper' => 'ai-moderation-response',
-      'progress' => [
-        'type' => 'throbber',
-      ],
-    ],
-  ];
-
-  return $form;
+function ai_moderation_load_include($name) {
+  module_load_include('inc', 'ai_moderation', 'includes/' . $name);
 }
 
 /**
- * AJAX callback for moderation form submission.
+ * Evaluate untrusted text with a moderation profile.
+ *
+ * @see ai_moderation.api.php
  */
-function ai_moderation_get_response($form, &$form_state) {
-  $errors = form_get_errors();
-
-  if (empty($errors)) {
-    // Check if we have results in storage
-    if (!empty($form_state['storage']['moderation_result'])) {
-      $result = $form_state['storage']['moderation_result'];
-
-      $form['response']['#markup'] = theme('ai_moderation_result', ['result' => $result]);
-    } else {
-      $form['response']['#markup'] = t('No moderation result available.');
-    }
-  } else {
-    // Display form errors
-    $error_messages = [];
-    foreach ($errors as $error) {
-      $error_messages[] = $error;
-    }
-    $form['response']['#markup'] = t('Error: @errors', ['@errors' => implode('; ', $error_messages)]);
-  }
-
-  return $form['response'];
+function ai_moderation_evaluate($text, array $options = []) {
+  ai_moderation_load_include('evaluate');
+  return _ai_moderation_evaluate($text, $options);
 }
 
 /**
- * Form submission handler for the moderation form.
+ * Evaluate and record a verdict for one entity.
+ *
+ * Returns NULL when the entity/bundle has no configured target.
  */
-function ai_moderation_form_submit($form, &$form_state) {
-  $text = $form_state['values']['text'];
-  $model = $form_state['values']['model'];
+function ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, array $options = []) {
+  ai_moderation_load_include('evaluate');
+  return _ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, $options);
+}
 
-  list($provider_id, $stripped_model) = ai_parse_model_id($model);
+/**
+ * Queue an entity re-scan without serializing submitted text into a job.
+ *
+ * Returns the async job ID, or FALSE when AI Async is not enabled.
+ */
+function ai_moderation_rescan_entity_async($entity_type, $entity_id) {
+  if (!module_exists('ai_async') || !function_exists('ai_async_submit')) {
+    return FALSE;
+  }
+  return ai_async_submit('ai_moderation_async_rescan_entity', [
+    'entity_type' => $entity_type,
+    'entity_id' => (int) $entity_id,
+  ]);
+}
 
-  // If provider wasn't extracted from the selected value, try to detect it.
-  if (empty($provider_id)) {
-    $config = config('ai.settings');
-    $provider_id = ai_default_provider_id();
-    $providers = $config->get('providers') ?: [];
-    foreach ($providers as $pid => $provider_settings) {
-      if (empty($provider_settings['enabled'])) {
-        continue;
-      }
-      $api_try = ai_get_api($pid);
-      if ($api_try) {
-        $models = $api_try->getModerationModels();
-        if (isset($models[$stripped_model])) {
-          $provider_id = $pid;
-          break;
+/**
+ * Implements hook_ai_async_callbacks().
+ */
+function ai_moderation_ai_async_callbacks() {
+  return [
+    'ai_moderation_async_rescan_entity' => t('Re-scan an entity with its configured AI moderation profile.'),
+  ];
+}
+
+/**
+ * Execute a queued entity re-scan.
+ */
+function ai_moderation_async_rescan_entity(array $data) {
+  $entity_type = !empty($data['entity_type']) ? $data['entity_type'] : '';
+  $entity_id = !empty($data['entity_id']) ? (int) $data['entity_id'] : 0;
+  $entity_info = $entity_type === '' ? NULL : entity_get_info($entity_type);
+  if (empty($entity_info) || empty($entity_id)) {
+    return ['status' => 'error', 'message' => 'Entity type or ID is invalid.'];
+  }
+  $entities = entity_load($entity_type, [$entity_id]);
+  if (empty($entities)) {
+    return ['status' => 'error', 'message' => 'Entity was not found.'];
+  }
+  $entity = reset($entities);
+  $ids = entity_extract_ids($entity_type, $entity);
+  $bundle = $ids[2] ?? '';
+  $definitions = ai_moderation_get_entity_info();
+  $extract = $definitions[$entity_type]['extract'] ?? '';
+  if (!is_callable($extract)) {
+    return ['status' => 'error', 'message' => 'No moderation extractor is registered.'];
+  }
+  $text = call_user_func($extract, $entity);
+  if ($text === '') {
+    return ['status' => 'error', 'message' => 'Entity has no moderatable text.'];
+  }
+  $verdict = ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text);
+  return $verdict ?: ['status' => 'skipped', 'message' => 'Entity bundle has no configured moderation target.'];
+}
+
+/**
+ * Implements the ai_moderation_entity_info hook for built-in entities.
+ */
+function ai_moderation_ai_moderation_entity_info() {
+  $info = [];
+  if (module_exists('node')) {
+    $bundles = [];
+    foreach (node_type_get_types() as $type => $node_type) {
+      $bundles[$type] = $node_type->name;
+    }
+    $info['node'] = [
+      'label' => t('Content'),
+      'bundles' => $bundles,
+      'extract' => 'ai_moderation_extract_node_text',
+    ];
+  }
+  if (module_exists('comment')) {
+    $bundles = [];
+    foreach (node_type_get_names() as $type => $label) {
+      $bundles['comment_node_' . $type] = t('@label comment', ['@label' => $label]);
+    }
+    $info['comment'] = [
+      'label' => t('Comments'),
+      'bundles' => $bundles,
+      'extract' => 'ai_moderation_extract_comment_text',
+    ];
+  }
+  return $info;
+}
+
+/**
+ * Return all entity types declared as moderatable.
+ */
+function ai_moderation_get_entity_info() {
+  $info = module_invoke_all('ai_moderation_entity_info');
+  foreach ($info as $entity_type => &$definition) {
+    $definition += ['label' => $entity_type, 'bundles' => [], 'extract' => ''];
+  }
+  return $info;
+}
+
+/**
+ * Extract title and text fields from a node without rendering HTML.
+ */
+function ai_moderation_extract_node_text($node) {
+  $parts = [];
+  if (!empty($node->title)) {
+    $parts[] = $node->title;
+  }
+  $instances = field_info_instances('node', $node->type);
+  foreach ($instances as $field_name => $instance) {
+    $items = field_get_items('node', $node, $field_name);
+    if (empty($items)) {
+      continue;
+    }
+    foreach ($items as $item) {
+      foreach (['value', 'summary'] as $property) {
+        if (!empty($item[$property]) && is_string($item[$property])) {
+          $parts[] = html_entity_decode(strip_tags($item[$property]), ENT_QUOTES, 'UTF-8');
         }
       }
     }
   }
+  return trim(implode("\n\n", array_unique($parts)));
+}
 
-  $api = ai_get_api($provider_id);
+/**
+ * Extract subject and body fields from a comment without rendering HTML.
+ */
+function ai_moderation_extract_comment_text($comment) {
+  $parts = [];
+  if (!empty($comment->subject)) {
+    $parts[] = $comment->subject;
+  }
+  $bundle = !empty($comment->node_type) ? $comment->node_type : '';
+  if ($bundle !== '' && strpos($bundle, 'comment_node_') !== 0) {
+    $bundle = 'comment_node_' . $bundle;
+  }
+  if ($bundle !== '') {
+    foreach (field_info_instances('comment', $bundle) as $field_name => $instance) {
+      $items = field_get_items('comment', $comment, $field_name);
+      if (empty($items)) {
+        continue;
+      }
+      foreach ($items as $item) {
+        foreach (['value', 'summary'] as $property) {
+          if (!empty($item[$property]) && is_string($item[$property])) {
+            $parts[] = html_entity_decode(strip_tags($item[$property]), ENT_QUOTES, 'UTF-8');
+          }
+        }
+      }
+    }
+  }
+  return trim(implode("\n\n", array_unique($parts)));
+}
 
-  if (!$api) {
-    form_set_error('', t('Could not initialize API for selected model.'));
+/**
+ * Run configured moderation for node saves.
+ */
+function ai_moderation_node_presave($node) {
+  if (ai_moderation_user_can_bypass()) {
     return;
   }
-
-  try {
-    // Pass the stripped model id (without provider prefix) to the adapter.
-    $result = $api->moderation($text, $stripped_model);
-
-    // Store the result for the AJAX callback
-    $form_state['storage']['moderation_result'] = $result;
-    $form_state['rebuild'] = TRUE;
-
-  }
-
-  catch (\Exception $e) {
-    form_set_error('', t('Error during moderation: @message', ['@message' => $e->getMessage()]));
+  $verdict = _ai_moderation_gate_builtin_entity('node', $node->type, !empty($node->nid) ? $node->nid : 0, $node, FALSE);
+  if (!empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block' && !empty($verdict['enforce'])) {
+    $node->status = NODE_NOT_PUBLISHED;
   }
 }
 
 /**
- * Implements hook_theme().
+ * Attach a verdict recorded during a new-node presave to its final ID.
  */
-function ai_moderation_theme() {
+function ai_moderation_node_insert($node) {
+  _ai_moderation_store_builtin_entity_verdict($node, 'node', !empty($node->nid) ? $node->nid : 0);
+}
+
+/**
+ * Store a node verdict after an update has succeeded.
+ */
+function ai_moderation_node_update($node) {
+  _ai_moderation_store_builtin_entity_verdict($node, 'node', !empty($node->nid) ? $node->nid : 0);
+}
+
+/**
+ * Run configured moderation for comment saves.
+ */
+function ai_moderation_comment_presave($comment) {
+  if (ai_moderation_user_can_bypass()) {
+    return;
+  }
+  $bundle = !empty($comment->node_type) ? $comment->node_type : '';
+  if ($bundle !== '' && strpos($bundle, 'comment_node_') !== 0) {
+    $bundle = 'comment_node_' . $bundle;
+  }
+  $verdict = _ai_moderation_gate_builtin_entity('comment', $bundle, !empty($comment->cid) ? $comment->cid : 0, $comment);
+  if (!empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block' && !empty($verdict['enforce'])) {
+    $comment->status = COMMENT_NOT_PUBLISHED;
+  }
+}
+
+/**
+ * Attach a verdict recorded during a new-comment presave to its final ID.
+ */
+function ai_moderation_comment_insert($comment) {
+  _ai_moderation_assign_new_entity_id($comment, 'comment', !empty($comment->cid) ? $comment->cid : 0);
+}
+
+/**
+ * Implements hook_form_alter().
+ *
+ * Enforcement must happen during validation. A presave hook runs after the
+ * form submit handler has started saving and cannot reliably stop that save.
+ */
+function ai_moderation_form_alter(&$form, &$form_state, $form_id) {
+  ai_moderation_load_include('evaluate');
+  if (!empty($form['#node']) && str_ends_with($form_id, '_node_form')) {
+    $form['#validate'][] = 'ai_moderation_node_form_validate';
+  }
+  elseif (!empty($form_state['comment']) && str_starts_with($form_id, 'comment_node_') && str_ends_with($form_id, '_form')) {
+    $form['#validate'][] = 'ai_moderation_comment_form_validate';
+  }
+}
+
+/**
+ * Evaluate an enabled node target before node_form_submit() saves it.
+ */
+function ai_moderation_node_form_validate($form, &$form_state) {
+  if (ai_moderation_user_can_bypass()) {
+    return;
+  }
+  $node = clone $form_state['node'];
+  foreach ($form_state['values'] as $key => $value) {
+    $node->{$key} = $value;
+  }
+  $verdict = _ai_moderation_validate_builtin_entity('node', $node->type, $node);
+  if (!empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block') {
+    $form_state['values']['status'] = NODE_NOT_PUBLISHED;
+    backdrop_set_message(t('Your submission was saved unpublished and sent to moderation review.'), 'warning');
+  }
+}
+
+/**
+ * Evaluate an enabled comment target before comment_form_submit() saves it.
+ */
+function ai_moderation_comment_form_validate($form, &$form_state) {
+  if (ai_moderation_user_can_bypass()) {
+    return;
+  }
+  $comment = clone $form_state['comment'];
+  foreach ($form_state['values'] as $key => $value) {
+    $comment->{$key} = $value;
+  }
+  // Match the entity shape used by comment_form_submit() and presave.
+  comment_submit($comment);
+  $bundle = !empty($comment->node_type) ? $comment->node_type : '';
+  if ($bundle !== '' && strpos($bundle, 'comment_node_') !== 0) {
+    $bundle = 'comment_node_' . $bundle;
+  }
+  $verdict = _ai_moderation_validate_builtin_entity('comment', $bundle, $comment);
+  if (!empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block') {
+    $form_state['values']['status'] = COMMENT_NOT_PUBLISHED;
+    backdrop_set_message(t('Your reply was saved unpublished and sent to moderation review.'), 'warning');
+  }
+}
+
+/**
+ * Return a verdict for form-time quarantine when an enforced target blocks.
+ */
+function _ai_moderation_validate_builtin_entity($entity_type, $bundle, $entity) {
+  ai_moderation_load_include('evaluate');
+  $config = config('ai_moderation.settings');
+  $profile_id = $config->get('targets.' . $entity_type . '.' . $bundle);
+  if (empty($profile_id)) {
+    return;
+  }
+  try {
+    $profile = _ai_moderation_profile($profile_id, []);
+  }
+  catch (\Throwable $e) {
+    return _ai_moderation_gate_builtin_entity($entity_type, $bundle, 0, $entity, FALSE);
+  }
+  $entity_id = 0;
+  if ($entity_type === 'node' && !empty($entity->nid)) {
+    $entity_id = (int) $entity->nid;
+  }
+  elseif ($entity_type === 'comment' && !empty($entity->cid)) {
+    $entity_id = (int) $entity->cid;
+  }
+  $verdict = _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $entity, $entity_type !== 'node');
+  if ($profile['enforce'] !== 'enforce') {
+    return NULL;
+  }
+  return $verdict;
+}
+
+/**
+ * Apply the configured built-in target, including optional enforcement.
+ */
+function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $entity, $store = TRUE) {
+  ai_moderation_load_include('evaluate');
+  if (!db_table_exists('ai_moderation_verdicts')) {
+    return;
+  }
+  $config = config('ai_moderation.settings');
+  $profile = $config->get('targets.' . $entity_type . '.' . $bundle);
+  if (empty($profile)) {
+    return;
+  }
+  $info = ai_moderation_get_entity_info();
+  $extract = !empty($info[$entity_type]['extract']) ? $info[$entity_type]['extract'] : '';
+  if (!is_callable($extract)) {
+    watchdog('ai_moderation', 'No text extractor is available for @type:@bundle.', ['@type' => $entity_type, '@bundle' => $bundle], WATCHDOG_ERROR);
+    return;
+  }
+  $text = call_user_func($extract, $entity);
+  if ($text === '') {
+    return NULL;
+  }
+  $cache = &backdrop_static('ai_moderation_builtin_verdicts', []);
+  $cache_key = $entity_type . ':' . $bundle . ':' . $entity_id . ':' . hash('sha256', $text);
+  if (isset($cache[$cache_key])) {
+    $verdict = $cache[$cache_key];
+  }
+  else {
+    $verdict = $store
+      ? ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, ['profile' => $profile])
+      : _ai_moderation_evaluate($text, ['profile' => $profile]);
+    $cache[$cache_key] = $verdict;
+  }
+  if (empty($verdict)) {
+    return NULL;
+  }
+  if (!$store) {
+    $entity->_ai_moderation_pending_verdict = $verdict;
+  }
+  return $verdict;
+}
+
+/**
+ * Store a cached node verdict only after its save has succeeded.
+ */
+function _ai_moderation_store_builtin_entity_verdict($entity, $entity_type, $entity_id) {
+  if (empty($entity->_ai_moderation_pending_verdict) || empty($entity_id) || !db_table_exists('ai_moderation_verdicts')) {
+    return;
+  }
+  $bundle = $entity_type === 'node' ? $entity->type : '';
+  $config = config('ai_moderation.settings');
+  $profile_id = $config->get('targets.' . $entity_type . '.' . $bundle);
+  if (empty($profile_id)) {
+    return;
+  }
+  $context = [
+    'entity_type' => $entity_type,
+    'entity_bundle' => $bundle,
+    'entity_id' => (int) $entity_id,
+    'text_length' => 0,
+    'profile' => $profile_id,
+  ];
+  $verdict = _ai_moderation_store_verdict($entity->_ai_moderation_pending_verdict, $context, $config);
+  unset($entity->_ai_moderation_pending_verdict);
+  return $verdict;
+}
+
+/**
+ * Replace the temporary zero ID stored during a new entity presave.
+ */
+function _ai_moderation_assign_new_entity_id($entity, $entity_type, $entity_id) {
+  if (empty($entity->_ai_moderation_verdict_vid) || empty($entity_id) || !db_table_exists('ai_moderation_verdicts')) {
+    return;
+  }
+  db_update('ai_moderation_verdicts')
+    ->fields(['entity_id' => (int) $entity_id, 'changed' => REQUEST_TIME])
+    ->condition('vid', (int) $entity->_ai_moderation_verdict_vid)
+    ->condition('entity_type', $entity_type)
+    ->condition('entity_id', 0)
+    ->execute();
+}
+
+/**
+ * Implements hook_ai_tools().
+ */
+function ai_moderation_ai_tools() {
   return [
-    'ai_moderation_result' => [
-      'variables' => ['result' => NULL],
-      'function' => 'theme_ai_moderation_result',
+    'moderate_text' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'moderate_text',
+          'description' => 'Evaluate text against a configured AI moderation profile.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'text' => ['type' => 'string', 'description' => 'Untrusted text to evaluate.'],
+              'profile' => ['type' => 'string', 'description' => 'Optional moderation profile ID.'],
+            ],
+            'required' => ['text'],
+          ],
+        ],
+      ],
+      'execute' => 'ai_moderation_tools_execute_moderate_text',
+      'module' => 'ai_moderation',
+      'category' => 'moderation',
+      'operation' => 'read',
+      'destructive' => FALSE,
+      'permission' => 'access ai moderation',
     ],
   ];
 }
 
 /**
- * Theme function for moderation results.
+ * Execute the public AI tool. This path never gates entity submission.
  */
-function theme_ai_moderation_result($variables) {
-  $result = $variables['result'];
-
-  if (empty($result) || !isset($result['results'])) {
-    return '<p>' . t('Invalid moderation result.') . '</p>';
-  }
-
-  $output = '<div class="ai-moderation-result">';
-  $output .= '<h3>' . t('Moderation Results') . '</h3>';
-
-  foreach ($result['results'] as $index => $moderation) {
-    $flagged = $moderation['flagged'] ?? FALSE;
-    $status_class = $flagged ? 'flagged' : 'safe';
-
-    $output .= '<div class="moderation-item ' . $status_class . '">';
-    $output .= '<h4>' . t('Overall Status: ') . '</h4>';
-    $output .= '<p class="status-' . $status_class . '">';
-    $output .= $flagged ?
-      '<strong style="color: red;">' . t('Content Flagged') . '</strong>' :
-      '<strong style="color: green;">' . t('Content Safe') . '</strong>';
-    $output .= '</p>';
-
-    if (isset($moderation['categories'])) {
-      $output .= '<h4>' . t('Category Analysis:') . '</h4>';
-      $output .= '<ul class="moderation-categories">';
-
-      foreach ($moderation['categories'] as $category => $violated) {
-        $category_display = ucwords(str_replace(['_', '-'], ' ', $category));
-        $status_text = $violated ? t('Violated') : t('Safe');
-
-        $output .= '<li>';
-        $output .= '<strong>' . $category_display . ':</strong> ';
-        $output .= $status_text;
-        $output .= '</li>';
-      }
-
-      $output .= '</ul>';
-    }
-
-    if (isset($moderation['category_scores'])) {
-      $output .= '<h4>' . t('Confidence Scores:') . '</h4>';
-      $output .= '<ul class="moderation-scores">';
-
-      foreach ($moderation['category_scores'] as $category => $score) {
-        $category_display = ucwords(str_replace(['_', '-'], ' ', $category));
-        $percentage = is_numeric($score) ? round(floatval($score) * 100, 2) : 0.0;
-
-        $output .= '<li>';
-        $output .= '<strong>' . $category_display . ':</strong> ';
-        $output .= $percentage . '%';
-        $output .= '</li>';
-      }
-
-      $output .= '</ul>';
-    }
-
-    $output .= '</div>';
-  }
-
-  $output .= '</div>';
-
-  // Add some basic CSS
-  $output .= '<style>
-    .ai-moderation-result { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
-    .moderation-item.flagged { border-left: 4px solid #d32f2f; background-color: #ffebee; }
-    .moderation-item.safe { border-left: 4px solid #388e3c; background-color: #e8f5e8; }
-    .moderation-categories li, .moderation-scores li { margin: 5px 0; }
-    .status-flagged { color: #d32f2f; }
-    .status-safe { color: #388e3c; }
-  </style>';
-
-  return $output;
+function ai_moderation_tools_execute_moderate_text(array $arguments) {
+  return ai_moderation_evaluate($arguments['text'] ?? '', [
+    'profile' => $arguments['profile'] ?? '',
+  ]);
 }

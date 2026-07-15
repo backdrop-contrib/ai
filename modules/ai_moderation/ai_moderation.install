@@ -1,0 +1,67 @@
+<?php
+
+/**
+ * @file
+ * Schema for AI Moderation verdict records.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function ai_moderation_schema() {
+  $schema['ai_moderation_verdicts'] = [
+    'description' => 'Stores AI moderation verdicts for content entities.',
+    'fields' => [
+      'vid' => ['type' => 'serial', 'unsigned' => TRUE, 'not null' => TRUE],
+      'entity_type' => ['type' => 'varchar', 'length' => 128, 'not null' => TRUE, 'default' => ''],
+      'entity_bundle' => ['type' => 'varchar', 'length' => 128, 'not null' => TRUE, 'default' => ''],
+      'entity_id' => ['type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE, 'default' => 0],
+      'profile' => ['type' => 'varchar', 'length' => 128, 'not null' => TRUE, 'default' => ''],
+      'score' => ['type' => 'int', 'not null' => FALSE],
+      'verdict' => ['type' => 'varchar', 'length' => 32, 'not null' => TRUE, 'default' => 'error'],
+      'action' => ['type' => 'varchar', 'length' => 32, 'not null' => TRUE, 'default' => 'review'],
+      'categories' => ['type' => 'text', 'size' => 'big', 'not null' => FALSE],
+      'reason' => ['type' => 'text', 'size' => 'big', 'not null' => FALSE],
+      'model' => ['type' => 'varchar', 'length' => 255, 'not null' => TRUE, 'default' => ''],
+      'prefilter_flagged' => ['type' => 'int', 'size' => 'tiny', 'not null' => FALSE],
+      'source' => ['type' => 'varchar', 'length' => 32, 'not null' => TRUE, 'default' => 'tool'],
+      'uid' => ['type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE, 'default' => 0],
+      'created' => ['type' => 'int', 'not null' => TRUE, 'default' => 0],
+      'changed' => ['type' => 'int', 'not null' => TRUE, 'default' => 0],
+    ],
+    'primary key' => ['vid'],
+    'indexes' => [
+      'entity_reference' => ['entity_type', 'entity_bundle', 'entity_id'],
+      'verdict' => ['verdict'],
+      'score' => ['score'],
+      'created' => ['created'],
+    ],
+  ];
+  return $schema;
+}
+
+/**
+ * Create verdict storage for sites where the old explorer module was enabled.
+ */
+function ai_moderation_update_1000() {
+  if (!db_table_exists('ai_moderation_verdicts')) {
+    $schema = ai_moderation_schema();
+    db_create_table('ai_moderation_verdicts', $schema['ai_moderation_verdicts']);
+  }
+  return t('Created AI Moderation verdict storage.');
+}
+
+/**
+ * Store the policy action selected for error verdicts.
+ */
+function ai_moderation_update_1001() {
+  if (!db_field_exists('ai_moderation_verdicts', 'action')) {
+    db_add_field('ai_moderation_verdicts', 'action', [
+      'type' => 'varchar',
+      'length' => 32,
+      'not null' => TRUE,
+      'default' => 'review',
+    ]);
+  }
+  return t('Added the AI Moderation verdict action field.');
+}

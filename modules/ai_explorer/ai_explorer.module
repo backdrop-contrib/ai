@@ -71,6 +71,16 @@ function ai_explorer_menu() {
     'weight' => -2,
   ];
 
+  $items['admin/config/ai/ai-explorer/moderation'] = [
+    'title' => 'Moderation',
+    'description' => 'Test provider moderation endpoints.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_explorer_moderation_form'],
+    'access arguments' => ['access ai explorer'],
+    'type' => MENU_NORMAL_ITEM,
+    'weight' => -1,
+  ];
+
   return $items;
 }
 
@@ -110,6 +120,11 @@ function ai_explorer_overview_page() {
       'title' => t('Text to Speech'),
       'path' => 'admin/config/ai/ai-explorer/tts',
       'description' => t('Test AI text-to-speech endpoints.'),
+    ],
+    [
+      'title' => t('Moderation'),
+      'path' => 'admin/config/ai/ai-explorer/moderation',
+      'description' => t('Test provider moderation endpoints.'),
     ],
   ];
 
@@ -1051,4 +1066,121 @@ function ai_explorer_tts_form_submit($form, &$form_state) {
   }
 
   $form_state['rebuild'] = TRUE;
+}
+
+/**
+ * Form constructor for provider moderation endpoint testing.
+ */
+function ai_explorer_moderation_form($form, &$form_state) {
+  backdrop_add_css(backdrop_get_path('module', 'ai_explorer') . '/css/ai_explorer.moderation.css');
+  $models = ai_get_all_moderation_models();
+  if (empty($models)) {
+    $link = l(t('enable and configure AI'), 'admin/config/ai/settings');
+    $form['notice'] = [
+      '#markup' => '<p>' . t('No moderation models are available from configured providers. Moderation is currently only supported by the AI provider.') . ' ' . $link . '</p>',
+    ];
+    return $form;
+  }
+  $form['text'] = [
+    '#type' => 'textarea',
+    '#title' => t('Text to moderate'),
+    '#description' => t('This sends text directly to the selected provider moderation endpoint.'),
+    '#required' => TRUE,
+    '#rows' => 5,
+  ];
+  $form['model'] = [
+    '#type' => 'select',
+    '#title' => t('Moderation model'),
+    '#options' => $models,
+    '#default_value' => ai_default_model($models, config_get('ai.settings', 'default_moderation_model'), ['omni-moderation-latest']),
+  ];
+  $form['response'] = [
+    '#prefix' => '<div id="ai-explorer-moderation-response">',
+    '#suffix' => '</div>',
+  ];
+  $form['actions'] = ['#type' => 'actions'];
+  $form['actions']['submit'] = [
+    '#type' => 'submit',
+    '#value' => t('Check content'),
+    '#ajax' => [
+      'callback' => 'ai_explorer_moderation_get_response',
+      'wrapper' => 'ai-explorer-moderation-response',
+      'progress' => ['type' => 'throbber'],
+    ],
+  ];
+  return $form;
+}
+
+/**
+ * Submit a provider moderation request.
+ */
+function ai_explorer_moderation_form_submit($form, &$form_state) {
+  try {
+    $form_state['storage']['moderation_result'] = ai_moderation($form_state['values']['text'], $form_state['values']['model']);
+  }
+  catch (\Throwable $e) {
+    watchdog('ai_explorer', 'Moderation explorer request failed: @message', ['@message' => $e->getMessage()], WATCHDOG_ERROR);
+    $message = function_exists('ai_exception_user_message') ? ai_exception_user_message($e, $e->getMessage()) : $e->getMessage();
+    form_set_error('', t('Moderation request failed: @message', ['@message' => $message]));
+  }
+  $form_state['rebuild'] = TRUE;
+}
+
+/**
+ * Return moderation result markup for AJAX refresh.
+ */
+function ai_explorer_moderation_get_response($form, &$form_state) {
+  if (!empty(form_get_errors())) {
+    $form['response']['#markup'] = '<p class="messages error">' . t('The moderation request could not be completed.') . '</p>';
+  }
+  elseif (!empty($form_state['storage']['moderation_result'])) {
+    $form['response']['#markup'] = theme('ai_explorer_moderation_result', ['result' => $form_state['storage']['moderation_result']]);
+  }
+  else {
+    $form['response']['#markup'] = '<p>' . t('No moderation result available.') . '</p>';
+  }
+  return $form['response'];
+}
+
+/**
+ * Implements hook_theme().
+ */
+function ai_explorer_theme() {
+  return [
+    'ai_explorer_moderation_result' => [
+      'variables' => ['result' => NULL],
+      'function' => 'theme_ai_explorer_moderation_result',
+    ],
+  ];
+}
+
+/**
+ * Theme provider moderation results without inline styles or raw output.
+ */
+function theme_ai_explorer_moderation_result($variables) {
+  $result = $variables['result'];
+  $item = $result['results'][0] ?? NULL;
+  if (!is_array($item)) {
+    return '<p>' . t('Invalid moderation result.') . '</p>';
+  }
+  $flagged = !empty($item['flagged']);
+  $class = $flagged ? 'is-flagged' : 'is-safe';
+  $output = '<section class="ai-explorer-moderation-result ' . $class . '">';
+  $output .= '<h2>' . ($flagged ? t('Content flagged') : t('Content safe')) . '</h2>';
+  if (!empty($item['categories'])) {
+    $rows = [];
+    foreach ($item['categories'] as $category => $violated) {
+      $rows[] = [check_plain(ucwords(str_replace(['_', '-'], ' ', $category))), $violated ? t('Flagged') : t('Clear')];
+    }
+    $output .= theme('table', ['header' => [t('Category'), t('Status')], 'rows' => $rows]);
+  }
+  if (!empty($item['category_scores'])) {
+    $rows = [];
+    foreach ($item['category_scores'] as $category => $score) {
+      $rows[] = [check_plain(ucwords(str_replace(['_', '-'], ' ', $category))), is_numeric($score) ? round($score * 100, 2) . '%' : t('Unknown')];
+    }
+    $output .= '<h3>' . t('Confidence scores') . '</h3>';
+    $output .= theme('table', ['header' => [t('Category'), t('Score')], 'rows' => $rows]);
+  }
+  return $output . '</section>';
 }

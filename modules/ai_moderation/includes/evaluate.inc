@@ -389,10 +389,13 @@ function _ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, ar
   $context = [
     'entity_type' => $entity_type,
     'entity_bundle' => $bundle,
-    'entity_id' => (int) $entity_id,
+    'entity_id' => (string) $entity_id,
+    'entity_revision' => !empty($options['entity_revision']) ? (string) $options['entity_revision'] : NULL,
+    'content_hash' => hash('sha256', (string) $text),
     'text_length' => strlen($text),
     'profile' => $profile_id,
   ];
+  backdrop_alter('ai_moderation_verdict', $verdict, $context);
   return _ai_moderation_store_verdict($verdict, $context, $config);
 }
 
@@ -403,14 +406,15 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
   if ($config === NULL) {
     $config = config('ai_moderation.settings');
   }
-  backdrop_alter('ai_moderation_verdict', $verdict, $context);
   if (db_table_exists('ai_moderation_verdicts') && ($config->get('log_all') !== FALSE || $verdict['verdict'] !== 'allow')) {
     global $user;
     $now = REQUEST_TIME;
     $verdict['vid'] = db_insert('ai_moderation_verdicts')->fields([
       'entity_type' => $context['entity_type'],
       'entity_bundle' => $context['entity_bundle'],
-      'entity_id' => (int) $context['entity_id'],
+      'entity_id' => (string) $context['entity_id'],
+      'entity_revision' => $context['entity_revision'] ?? NULL,
+      'content_hash' => $context['content_hash'] ?? NULL,
       'profile' => $context['profile'],
       'score' => $verdict['score'],
       'verdict' => $verdict['verdict'],
@@ -424,7 +428,7 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
       'created' => $now,
       'changed' => $now,
     ])->execute();
+    module_invoke_all('ai_moderation_verdict', $verdict, $context);
   }
-  module_invoke_all('ai_moderation_verdict', $verdict, $context);
   return $verdict;
 }

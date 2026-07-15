@@ -15,7 +15,9 @@ function ai_moderation_schema() {
       'vid' => ['type' => 'serial', 'unsigned' => TRUE, 'not null' => TRUE],
       'entity_type' => ['type' => 'varchar', 'length' => 128, 'not null' => TRUE, 'default' => ''],
       'entity_bundle' => ['type' => 'varchar', 'length' => 128, 'not null' => TRUE, 'default' => ''],
-      'entity_id' => ['type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE, 'default' => 0],
+      'entity_id' => ['type' => 'varchar', 'length' => 255, 'not null' => TRUE, 'default' => ''],
+      'entity_revision' => ['type' => 'varchar', 'length' => 128, 'not null' => FALSE],
+      'content_hash' => ['type' => 'varchar', 'length' => 64, 'not null' => FALSE],
       'profile' => ['type' => 'varchar', 'length' => 128, 'not null' => TRUE, 'default' => ''],
       'score' => ['type' => 'int', 'not null' => FALSE],
       'verdict' => ['type' => 'varchar', 'length' => 32, 'not null' => TRUE, 'default' => 'error'],
@@ -64,4 +66,25 @@ function ai_moderation_update_1001() {
     ]);
   }
   return t('Added the AI Moderation verdict action field.');
+}
+
+/**
+ * Preserve non-integer entity IDs and evaluated content metadata.
+ */
+function ai_moderation_update_1002() {
+  if (db_table_exists('ai_moderation_verdicts')) {
+    db_change_field('ai_moderation_verdicts', 'entity_id', 'entity_id', [
+      'type' => 'varchar',
+      'length' => 255,
+      'not null' => TRUE,
+      'default' => '',
+    ]);
+    if (!db_field_exists('ai_moderation_verdicts', 'entity_revision')) {
+      db_add_field('ai_moderation_verdicts', 'entity_revision', ['type' => 'varchar', 'length' => 128, 'not null' => FALSE]);
+    }
+    if (!db_field_exists('ai_moderation_verdicts', 'content_hash')) {
+      db_add_field('ai_moderation_verdicts', 'content_hash', ['type' => 'varchar', 'length' => 64, 'not null' => FALSE]);
+    }
+  }
+  return t('Preserved entity identifiers and evaluated content metadata.');
 }

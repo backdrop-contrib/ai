@@ -135,7 +135,8 @@ for standard entities.
 
 Other extension points:
 
-- `hook_ai_moderation_verdict()` can observe or adjust a verdict.
+- `hook_ai_moderation_verdict()` observes stored verdicts and cannot modify them.
+- `hook_ai_moderation_verdict_alter()` can override verdicts before enforcement or storage.
 - `ai_moderation_rescan_entity_async()` queues a re-scan using only an entity
   type and ID; submitted text is not serialized into the job.
 - `moderate_text` is available through the AI tools registry for intentional

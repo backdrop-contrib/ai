@@ -187,6 +187,7 @@ function ai_moderation_settings_form($form, &$form_state) {
       '#type' => 'submit',
       '#value' => t('Save profile'),
       '#submit' => ['ai_moderation_settings_form_save_profile_submit'],
+      '#validate' => ['ai_moderation_settings_form_save_profile_validate'],
       '#limit_validation_errors' => [['new_profile']],
     ];
     $form['new_profile']['actions']['cancel'] = [
@@ -396,19 +397,10 @@ function ai_moderation_settings_form_show_profile_submit($form, &$form_state) {
 function ai_moderation_settings_form_save_profile_submit($form, &$form_state) {
   $values = $form_state['values']['new_profile'];
   $new = trim($values['machine_name'] ?? '');
-  if ($new === '' || in_array($new, ['add_profile', 'new_profile_id'], TRUE) || !preg_match('/^[a-z][a-z0-9_]*$/', $new)) {
-    form_set_error('new_profile][machine_name', t('Profile machine name must start with a letter and contain only lowercase letters, numbers, and underscores.'));
-    return;
-  }
   $config = config('ai_moderation.settings');
   $profiles = $config->get('profiles') ?: [];
-  if (isset($profiles[$new])) {
-    form_set_error('new_profile][machine_name', t('That profile already exists.'));
-    return;
-  }
-  if ((int) $values['band_allow_max'] > (int) $values['band_review_max']) {
-    form_set_error('new_profile][band_review_max', t('Review score must be greater than or equal to allow score.'));
-    return;
+  if (empty($profiles)) {
+    $profiles = ['default' => _ai_moderation_default_profile()];
   }
   $profiles[$new] = [
     'label' => trim($values['label']),
@@ -424,6 +416,24 @@ function ai_moderation_settings_form_save_profile_submit($form, &$form_state) {
   backdrop_set_message(t('Profile @profile was saved.', ['@profile' => $new]));
   $form_state['storage']['adding_profile'] = FALSE;
   $form_state['rebuild'] = TRUE;
+}
+
+/**
+ * Validate the dedicated new-profile form before its submit handler runs.
+ */
+function ai_moderation_settings_form_save_profile_validate($form, &$form_state) {
+  $values = $form_state['values']['new_profile'] ?? [];
+  $new = trim($values['machine_name'] ?? '');
+  if ($new === '' || in_array($new, ['add_profile', 'new_profile_id'], TRUE) || !preg_match('/^[a-z][a-z0-9_]*$/', $new)) {
+    form_set_error('new_profile][machine_name', t('Profile machine name must start with a letter and contain only lowercase letters, numbers, and underscores.'));
+  }
+  $profiles = config('ai_moderation.settings')->get('profiles') ?: [];
+  if (isset($profiles[$new])) {
+    form_set_error('new_profile][machine_name', t('That profile already exists.'));
+  }
+  if ((int) ($values['band_allow_max'] ?? 0) > (int) ($values['band_review_max'] ?? 0)) {
+    form_set_error('new_profile][band_review_max', t('Review score must be greater than or equal to allow score.'));
+  }
 }
 
 /**

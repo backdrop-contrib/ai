@@ -127,7 +127,7 @@ function ai_moderation_rescan_entity_async($entity_type, $entity_id) {
   }
   return ai_async_submit('ai_moderation_async_rescan_entity', [
     'entity_type' => $entity_type,
-    'entity_id' => (int) $entity_id,
+    'entity_id' => (string) $entity_id,
   ]);
 }
 
@@ -145,9 +145,9 @@ function ai_moderation_ai_async_callbacks() {
  */
 function ai_moderation_async_rescan_entity(array $data) {
   $entity_type = !empty($data['entity_type']) ? $data['entity_type'] : '';
-  $entity_id = !empty($data['entity_id']) ? (int) $data['entity_id'] : 0;
+  $entity_id = !empty($data['entity_id']) ? (string) $data['entity_id'] : '';
   $entity_info = $entity_type === '' ? NULL : entity_get_info($entity_type);
-  if (empty($entity_info) || empty($entity_id)) {
+  if (empty($entity_info) || $entity_id === '') {
     return ['status' => 'error', 'message' => 'Entity type or ID is invalid.'];
   }
   $entities = entity_load($entity_type, [$entity_id]);
@@ -221,6 +221,9 @@ function ai_moderation_extract_node_text($node) {
   }
   $instances = field_info_instances('node', $node->type);
   foreach ($instances as $field_name => $instance) {
+    if (!ai_moderation_is_text_field('node', $field_name, $instance)) {
+      continue;
+    }
     $items = field_get_items('node', $node, $field_name);
     if (empty($items)) {
       continue;
@@ -250,6 +253,9 @@ function ai_moderation_extract_comment_text($comment) {
   }
   if ($bundle !== '') {
     foreach (field_info_instances('comment', $bundle) as $field_name => $instance) {
+      if (!ai_moderation_is_text_field('comment', $field_name, $instance)) {
+        continue;
+      }
       $items = field_get_items('comment', $comment, $field_name);
       if (empty($items)) {
         continue;
@@ -264,6 +270,18 @@ function ai_moderation_extract_comment_text($comment) {
     }
   }
   return trim(implode("\n\n", array_unique($parts)));
+}
+
+/**
+ * Allow only editorial text fields into moderation extraction.
+ */
+function ai_moderation_is_text_field($entity_type, $field_name, array $instance) {
+  $field = field_info_field($field_name);
+  $allowed_types = ['text', 'text_long', 'text_with_summary', 'string', 'string_long'];
+  if (empty($field) || empty($field['type']) || !in_array($field['type'], $allowed_types, TRUE)) {
+    return FALSE;
+  }
+  return !preg_match('/(^|_)(private|contact|admin|administrative|hidden|password|token|status)(_|$)/i', $field_name);
 }
 
 /**
@@ -304,7 +322,7 @@ function ai_moderation_comment_presave($comment) {
   if ($bundle !== '' && strpos($bundle, 'comment_node_') !== 0) {
     $bundle = 'comment_node_' . $bundle;
   }
-  $verdict = _ai_moderation_gate_builtin_entity('comment', $bundle, !empty($comment->cid) ? $comment->cid : 0, $comment);
+  $verdict = _ai_moderation_gate_builtin_entity('comment', $bundle, !empty($comment->cid) ? $comment->cid : 0, $comment, FALSE);
   if (!empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block' && !empty($verdict['enforce'])) {
     $comment->status = COMMENT_NOT_PUBLISHED;
   }
@@ -314,7 +332,14 @@ function ai_moderation_comment_presave($comment) {
  * Attach a verdict recorded during a new-comment presave to its final ID.
  */
 function ai_moderation_comment_insert($comment) {
-  _ai_moderation_assign_new_entity_id($comment, 'comment', !empty($comment->cid) ? $comment->cid : 0);
+  _ai_moderation_store_builtin_entity_verdict($comment, 'comment', !empty($comment->cid) ? $comment->cid : 0);
+}
+
+/**
+ * Store a comment verdict after an update has succeeded.
+ */
+function ai_moderation_comment_update($comment) {
+  _ai_moderation_store_builtin_entity_verdict($comment, 'comment', !empty($comment->cid) ? $comment->cid : 0);
 }
 
 /**
@@ -398,7 +423,7 @@ function _ai_moderation_validate_builtin_entity($entity_type, $bundle, $entity) 
   elseif ($entity_type === 'comment' && !empty($entity->cid)) {
     $entity_id = (int) $entity->cid;
   }
-  $verdict = _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $entity, $entity_type !== 'node');
+  $verdict = _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $entity, FALSE);
   if ($profile['enforce'] !== 'enforce') {
     return NULL;
   }
@@ -430,6 +455,15 @@ function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $
   }
   $cache = &backdrop_static('ai_moderation_builtin_verdicts', []);
   $cache_key = $entity_type . ':' . $bundle . ':' . $entity_id . ':' . hash('sha256', $text);
+  $context = [
+    'entity_type' => $entity_type,
+    'entity_bundle' => $bundle,
+    'entity_id' => (string) $entity_id,
+    'entity_revision' => NULL,
+    'content_hash' => hash('sha256', (string) $text),
+    'text_length' => strlen($text),
+    'profile' => $profile,
+  ];
   if (isset($cache[$cache_key])) {
     $verdict = $cache[$cache_key];
   }
@@ -437,6 +471,9 @@ function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $
     $verdict = $store
       ? ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, ['profile' => $profile])
       : _ai_moderation_evaluate($text, ['profile' => $profile]);
+    if (!$store) {
+      backdrop_alter('ai_moderation_verdict', $verdict, $context);
+    }
     $cache[$cache_key] = $verdict;
   }
   if (empty($verdict)) {
@@ -444,6 +481,7 @@ function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $
   }
   if (!$store) {
     $entity->_ai_moderation_pending_verdict = $verdict;
+    $entity->_ai_moderation_pending_context = $context;
   }
   return $verdict;
 }
@@ -455,37 +493,32 @@ function _ai_moderation_store_builtin_entity_verdict($entity, $entity_type, $ent
   if (empty($entity->_ai_moderation_pending_verdict) || empty($entity_id) || !db_table_exists('ai_moderation_verdicts')) {
     return;
   }
-  $bundle = $entity_type === 'node' ? $entity->type : '';
+  $bundle = $entity_type === 'node' ? $entity->type : $entity->node_type;
+  if ($entity_type === 'comment' && strpos($bundle, 'comment_node_') !== 0) {
+    $bundle = 'comment_node_' . $bundle;
+  }
   $config = config('ai_moderation.settings');
   $profile_id = $config->get('targets.' . $entity_type . '.' . $bundle);
   if (empty($profile_id)) {
     return;
   }
-  $context = [
+  $context = $entity->_ai_moderation_pending_context ?? [
     'entity_type' => $entity_type,
     'entity_bundle' => $bundle,
-    'entity_id' => (int) $entity_id,
+    'entity_id' => (string) $entity_id,
+    'entity_revision' => !empty($entity->vid) ? (string) $entity->vid : NULL,
+    'content_hash' => NULL,
     'text_length' => 0,
     'profile' => $profile_id,
   ];
+  $context['entity_id'] = (string) $entity_id;
+  if ($entity_type === 'node' && !empty($entity->vid)) {
+    $context['entity_revision'] = (string) $entity->vid;
+  }
   $verdict = _ai_moderation_store_verdict($entity->_ai_moderation_pending_verdict, $context, $config);
   unset($entity->_ai_moderation_pending_verdict);
+  unset($entity->_ai_moderation_pending_context);
   return $verdict;
-}
-
-/**
- * Replace the temporary zero ID stored during a new entity presave.
- */
-function _ai_moderation_assign_new_entity_id($entity, $entity_type, $entity_id) {
-  if (empty($entity->_ai_moderation_verdict_vid) || empty($entity_id) || !db_table_exists('ai_moderation_verdicts')) {
-    return;
-  }
-  db_update('ai_moderation_verdicts')
-    ->fields(['entity_id' => (int) $entity_id, 'changed' => REQUEST_TIME])
-    ->condition('vid', (int) $entity->_ai_moderation_verdict_vid)
-    ->condition('entity_type', $entity_type)
-    ->condition('entity_id', 0)
-    ->execute();
 }
 
 /**

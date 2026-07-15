@@ -27,7 +27,7 @@ function ai_moderation_queue_page($reported_only = FALSE) {
   $query = db_select('ai_moderation_verdicts', 'am')->extend('PagerDefault')->extend('TableSort');
   $query->fields('am')->limit(50)->orderByHeader($header);
   if ($reported_only) {
-    $query->condition('verdict', ['allow'], '<>');
+    $query->condition('verdict', 'allow', '<>');
   }
   if (!empty($_GET['verdict'])) {
     $query->condition('verdict', $_GET['verdict']);
@@ -43,7 +43,7 @@ function ai_moderation_queue_page($reported_only = FALSE) {
     $label = check_plain($record->entity_type . ':' . $record->entity_bundle . '/' . $record->entity_id);
     $entity_info = entity_get_info($record->entity_type);
     if (!empty($entity_info)) {
-      $entity = entity_load($record->entity_type, [$record->entity_id]);
+    $entity = entity_load($record->entity_type, [$record->entity_id]);
       if (!empty($entity)) {
         $entity = reset($entity);
         $uri = entity_uri($record->entity_type, $entity);
@@ -127,10 +127,17 @@ function ai_moderation_queue_view_page($vid) {
   backdrop_set_title(t('Moderation verdict @id', ['@id' => $record->vid]));
   $categories = json_decode($record->categories, TRUE);
   $entity_text = '';
+  $entity_text_label = '';
   $entity_title = '';
   $entity_info = entity_get_info($record->entity_type);
   if (!empty($entity_info)) {
-    $entities = entity_load($record->entity_type, [$record->entity_id]);
+    if (!empty($record->entity_revision) && $record->entity_type === 'node') {
+      $revision = node_load($record->entity_id, $record->entity_revision);
+      $entities = $revision ? [$record->entity_revision => $revision] : [];
+    }
+    else {
+      $entities = entity_load($record->entity_type, [$record->entity_id]);
+    }
     if (!empty($entities)) {
       $entity = reset($entities);
       $entity_title = !empty($entity->title) ? $entity->title : (!empty($entity->subject) ? $entity->subject : '');
@@ -138,6 +145,12 @@ function ai_moderation_queue_view_page($vid) {
       $extract = $definitions[$record->entity_type]['extract'] ?? '';
       if (is_callable($extract)) {
         $entity_text = call_user_func($extract, $entity);
+        if (!empty($record->content_hash) && hash('sha256', $entity_text) !== $record->content_hash) {
+          $entity_text_label = t('Current content (does not match evaluated content)');
+        }
+        else {
+          $entity_text_label = !empty($record->entity_revision) ? t('Evaluated content') : t('Current content');
+        }
       }
     }
   }
@@ -171,7 +184,7 @@ function ai_moderation_queue_view_page($vid) {
       ];
     }
     $build['content']['text'] = [
-      '#markup' => '<div class="ai-moderation-reported-content__text"><pre>' . check_plain($entity_text) . '</pre></div>',
+      '#markup' => '<h3>' . check_plain($entity_text_label) . '</h3><div class="ai-moderation-reported-content__text"><pre>' . check_plain($entity_text) . '</pre></div>',
     ];
   }
   return $build;
@@ -187,7 +200,11 @@ function _ai_moderation_level_markup($record) {
   $key = 'needs-review';
   $label = t('Needs review');
   $score = $record->score === NULL ? NULL : (int) $record->score;
-  if ($score !== NULL && $score > 70) {
+  if ($score === NULL) {
+    $key = 'error';
+    $label = t('Error');
+  }
+  elseif ($score > 70) {
     $key = 'dumpster-fire';
     $label = t('Dumpster fire');
   }

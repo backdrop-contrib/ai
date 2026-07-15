@@ -1077,7 +1077,7 @@ function ai_explorer_moderation_form($form, &$form_state) {
   if (empty($models)) {
     $link = l(t('enable and configure AI'), 'admin/config/ai/settings');
     $form['notice'] = [
-      '#markup' => '<p>' . t('No moderation models are available from configured providers. Moderation is currently only supported by the AI provider.') . ' ' . $link . '</p>',
+      '#markup' => '<p>' . t('No moderation models are available from configured providers.') . ' ' . $link . '</p>',
     ];
     return $form;
   }
@@ -1163,7 +1163,10 @@ function theme_ai_explorer_moderation_result($variables) {
   if (!is_array($item)) {
     return '<p>' . t('Invalid moderation result.') . '</p>';
   }
-  $flagged = !empty($item['flagged']);
+  if (!array_key_exists('flagged', $item) || !is_bool($item['flagged'])) {
+    return '<p>' . t('Invalid moderation result.') . '</p>';
+  }
+  $flagged = $item['flagged'];
   $class = $flagged ? 'is-flagged' : 'is-safe';
   $output = '<section class="ai-explorer-moderation-result ' . $class . '">';
   $output .= '<h2>' . ($flagged ? t('Content flagged') : t('Content safe')) . '</h2>';

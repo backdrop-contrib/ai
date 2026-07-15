@@ -5,17 +5,24 @@
  * Provider-neutral AI moderation evaluation and verdict storage.
  */
 
+// Reject larger inputs before prefiltering or provider calls. The byte limit is
+// deterministic and does not require the optional mbstring extension.
+const AI_MODERATION_MAX_TEXT_BYTES = 100000;
+
 /**
  * Evaluate text with a forced structured-output tool call.
  */
 function _ai_moderation_evaluate($text, array $options = []) {
-  $text = trim((string) $text);
   $profile_id = !empty($options['profile']) ? $options['profile'] : 'default';
   try {
     $profile = _ai_moderation_profile($profile_id, $options);
   }
   catch (\Throwable $e) {
     return _ai_moderation_failure(_ai_moderation_default_profile(), t('Moderation profile @profile is not configured.', ['@profile' => $profile_id]), [], $profile_id);
+  }
+  $text = trim((string) $text);
+  if (strlen($text) > AI_MODERATION_MAX_TEXT_BYTES) {
+    return _ai_moderation_failure($profile, t('Text exceeds the maximum moderation length of @limit bytes.', ['@limit' => AI_MODERATION_MAX_TEXT_BYTES]), [], $profile_id);
   }
   if ($text === '') {
     return _ai_moderation_failure($profile, t('No text was provided for moderation.'));
@@ -77,7 +84,7 @@ function _ai_moderation_evaluate($text, array $options = []) {
   }
   catch (\Throwable $e) {
     $fallback_allowed = $e instanceof AIUnsupportedCapabilityException;
-    watchdog('ai_moderation', 'Structured moderation request failed: @message', ['@message' => $e->getMessage()], WATCHDOG_WARNING);
+    watchdog('ai_moderation', 'Structured moderation request failed [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $model), WATCHDOG_WARNING);
   }
 
   // Some providers/models ignore required tool choice. Fall back to a plain
@@ -92,11 +99,42 @@ function _ai_moderation_evaluate($text, array $options = []) {
       }
     }
     catch (\Throwable $e) {
-      watchdog('ai_moderation', 'Fallback moderation request failed: @message', ['@message' => $e->getMessage()], WATCHDOG_WARNING);
+      watchdog('ai_moderation', 'Fallback moderation request failed [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $model), WATCHDOG_WARNING);
     }
   }
 
   return _ai_moderation_failure($profile, t('The model did not return a valid moderation verdict.'), $prefilter, $profile_id, $model);
+}
+
+/**
+ * Return non-sensitive provider exception metadata for warning logs.
+ */
+function _ai_moderation_exception_log_context(\Throwable $exception, $model) {
+  $code = 'unexpected_error';
+  $identifier_type = 'provider';
+  $identifier = '';
+  if ($exception instanceof AIException) {
+    $code = $exception->getCategory();
+    $context = $exception->getContext();
+    if (!empty($context['request_id'])) {
+      $identifier_type = 'request';
+      $identifier = $context['request_id'];
+    }
+    elseif ($exception->getProvider() !== NULL) {
+      $identifier = $exception->getProvider();
+    }
+  }
+  if ($identifier === '') {
+    list($provider) = ai_parse_model_id((string) $model);
+    $identifier = $provider ?: ai_default_provider_id();
+  }
+  $identifier = preg_replace('/[^a-zA-Z0-9_.:-]/', '_', (string) $identifier);
+  $identifier = substr($identifier, 0, 80);
+  return [
+    '@code' => $code,
+    '@type' => get_class($exception),
+    '@identifier' => $identifier_type . ':' . ($identifier !== '' ? $identifier : 'unknown'),
+  ];
 }
 
 /**

@@ -4,6 +4,4 @@ package = AI
 type = module
 backdrop = 1.x
 dependencies[] = ai
-dependencies[] = ai_async
-dependencies[] = ai_tools
 configure = admin/config/ai/ai-moderation

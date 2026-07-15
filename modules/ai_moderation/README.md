@@ -1,7 +1,7 @@
 # AI Moderation
 
 AI Moderation automatically evaluates configured content targets with a
-provider-neutral chat model. It stores a score, verdict, categories, reason,
+provider-neutral chat model. It stores a score, verdict, categories, reason code,
 model, and entity reference for moderator review.
 
 It is an enforcement and review layer, not a replacement for Forum,
@@ -104,6 +104,11 @@ Forum module:
 - Topics: `node.forum`
 - Replies: `comment.comment_node_forum`
 
+Only explicitly allowed public editorial fields are extracted. Built-in nodes
+allow `body`, and comments allow `comment_body`. Entity integrations may
+declare a `fields` allowlist in `hook_ai_moderation_entity_info()`; deployments
+may override a bundle through `target_fields.<entity_type>.<bundle>` config.
+
 Forum itself supplies topics, comments, permissions, and publication state. AI
 Moderation supplies the automatic evaluation, quarantine behavior, levels, and
 review UI. No Forum-specific adapter is required.
@@ -112,8 +117,8 @@ review UI. No Forum-specific adapter is required.
 
 - **Review queue**: all stored verdicts, including allow results.
 - **Reported content**: review, block, and error results only.
-- Verdict detail pages show the entity's current or reloaded title/text, score, editorial
-  level, categories, reason, model, prefilter result, and source.
+- Verdict detail pages show the entity's current or reloaded title/text, score,
+  editorial level, categories, reason code, model, prefilter result, and source.
 
 The report pages are administrative. Public users do not see internal levels,
 categories, or model reasoning.
@@ -156,7 +161,8 @@ configured content targets.
 
 ## Privacy and storage
 
-Verdict records retain scores, categories, reasons, model/provider, source, and
+Verdict records retain scores, categories, structured reason codes,
+model/provider, source, and
 entity references. The verdict table does not retain submitted text; the
 administrator detail page reloads the referenced entity for examination.
 

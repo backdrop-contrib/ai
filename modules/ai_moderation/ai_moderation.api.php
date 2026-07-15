@@ -9,8 +9,9 @@
  * Declare entity types and bundles that administrators may target.
  *
  * Return an array keyed by entity type. Each value contains a label, a bundles
- * array keyed by bundle machine name, and an extract callback receiving the
- * entity object and returning plain text.
+ * array keyed by bundle machine name, an extract callback receiving the
+ * entity object and returning plain text, and an optional public editorial
+ * field allowlist. The fields value may be a shared list or keyed by bundle.
  */
 function hook_ai_moderation_entity_info() {
   return [
@@ -18,6 +19,7 @@ function hook_ai_moderation_entity_info() {
       'label' => t('Forum posts'),
       'bundles' => ['discussion' => t('Discussion')],
       'extract' => 'mymodule_extract_forum_post_text',
+      'fields' => ['field_public_body'],
     ],
   ];
 }

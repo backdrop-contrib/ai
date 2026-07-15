@@ -33,7 +33,7 @@ function ai_moderation_schema() {
     ],
     'primary key' => ['vid'],
     'indexes' => [
-      'entity_reference' => ['entity_type', 'entity_bundle', 'entity_id'],
+      'entity_reference' => [['entity_type', 32], ['entity_bundle', 32], ['entity_id', 64]],
       'verdict' => ['verdict'],
       'score' => ['score'],
       'created' => ['created'],
@@ -73,11 +73,18 @@ function ai_moderation_update_1001() {
  */
 function ai_moderation_update_1002() {
   if (db_table_exists('ai_moderation_verdicts')) {
+    if (db_index_exists('ai_moderation_verdicts', 'entity_reference')) {
+      db_drop_index('ai_moderation_verdicts', 'entity_reference');
+    }
     db_change_field('ai_moderation_verdicts', 'entity_id', 'entity_id', [
       'type' => 'varchar',
       'length' => 255,
       'not null' => TRUE,
       'default' => '',
+    ], [
+      'indexes' => [
+        'entity_reference' => [['entity_type', 32], ['entity_bundle', 32], ['entity_id', 64]],
+      ],
     ]);
     if (!db_field_exists('ai_moderation_verdicts', 'entity_revision')) {
       db_add_field('ai_moderation_verdicts', 'entity_revision', ['type' => 'varchar', 'length' => 128, 'not null' => FALSE]);
@@ -87,4 +94,21 @@ function ai_moderation_update_1002() {
     }
   }
   return t('Preserved entity identifiers and evaluated content metadata.');
+}
+
+/**
+ * Ensure upgraded sites use the portable entity-reference index.
+ */
+function ai_moderation_update_1003() {
+  if (db_table_exists('ai_moderation_verdicts')) {
+    if (db_index_exists('ai_moderation_verdicts', 'entity_reference')) {
+      db_drop_index('ai_moderation_verdicts', 'entity_reference');
+    }
+    db_add_index('ai_moderation_verdicts', 'entity_reference', [
+      ['entity_type', 32],
+      ['entity_bundle', 32],
+      ['entity_id', 64],
+    ]);
+  }
+  return t('Updated the AI Moderation entity-reference index.');
 }

@@ -38,18 +38,26 @@ function ai_moderation_queue_page($reported_only = FALSE) {
   if (isset($_GET['score_max']) && $_GET['score_max'] !== '') {
     $query->condition('score', (int) $_GET['score_max'], '<=');
   }
-  $rows = [];
+  $records = [];
+  $entity_ids = [];
   foreach ($query->execute() as $record) {
+    $records[] = $record;
+    $entity_ids[$record->entity_type][(string) $record->entity_id] = $record->entity_id;
+  }
+  $loaded_entities = [];
+  foreach ($entity_ids as $entity_type => $ids) {
+    if (!empty(entity_get_info($entity_type))) {
+      $loaded_entities[$entity_type] = entity_load($entity_type, array_values($ids));
+    }
+  }
+  $rows = [];
+  foreach ($records as $record) {
     $label = check_plain($record->entity_type . ':' . $record->entity_bundle . '/' . $record->entity_id);
-    $entity_info = entity_get_info($record->entity_type);
-    if (!empty($entity_info)) {
-    $entity = entity_load($record->entity_type, [$record->entity_id]);
-      if (!empty($entity)) {
-        $entity = reset($entity);
-        $uri = entity_uri($record->entity_type, $entity);
-        if (!empty($uri['path'])) {
-          $label = l($label, $uri['path']);
-        }
+    $entity = $loaded_entities[$record->entity_type][$record->entity_id] ?? NULL;
+    if (!empty($entity)) {
+      $uri = entity_uri($record->entity_type, $entity);
+      if (!empty($uri['path'])) {
+        $label = l($label, $uri['path']);
       }
     }
     $rows[] = [
@@ -83,6 +91,7 @@ function ai_moderation_queue_page($reported_only = FALSE) {
  * Filter form for the review queue.
  */
 function ai_moderation_queue_filter_form($form, &$form_state) {
+  $form['#queue_path'] = current_path();
   $form['filters'] = ['#type' => 'fieldset', '#title' => t('Filter'), '#tree' => TRUE, '#collapsible' => TRUE, '#collapsed' => empty($_GET)];
   $form['filters']['verdict'] = [
     '#type' => 'select',
@@ -105,14 +114,14 @@ function ai_moderation_queue_filter_form_submit($form, &$form_state) {
   $query = array_filter($form_state['values']['filters'], function ($value) {
     return $value !== '' && !is_array($value);
   });
-  $form_state['redirect'] = ['admin/config/ai/ai-moderation/queue', ['query' => $query]];
+  $form_state['redirect'] = [$form['#queue_path'], ['query' => $query]];
 }
 
 /**
  * Reset queue filters.
  */
 function ai_moderation_queue_filter_form_reset($form, &$form_state) {
-  $form_state['redirect'] = 'admin/config/ai/ai-moderation/queue';
+  $form_state['redirect'] = $form['#queue_path'];
 }
 
 /**
@@ -120,6 +129,9 @@ function ai_moderation_queue_filter_form_reset($form, &$form_state) {
  */
 function ai_moderation_queue_view_page($vid) {
   backdrop_add_css(backdrop_get_path('module', 'ai_moderation') . '/css/ai_moderation.queue.css');
+  if (!db_table_exists('ai_moderation_verdicts')) {
+    return ['#markup' => '<p>' . t('Moderation verdict storage is not installed yet. Run database updates.') . '</p>'];
+  }
   $record = db_select('ai_moderation_verdicts', 'am')->fields('am')->condition('vid', (int) $vid)->execute()->fetchObject();
   if (!$record) {
     return backdrop_not_found();
@@ -131,11 +143,17 @@ function ai_moderation_queue_view_page($vid) {
   $entity_title = '';
   $entity_info = entity_get_info($record->entity_type);
   if (!empty($entity_info)) {
-    if (!empty($record->entity_revision) && $record->entity_type === 'node') {
-      $revision = node_load($record->entity_id, $record->entity_revision);
-      $entities = $revision ? [$record->entity_revision => $revision] : [];
+    $loaded_revision = FALSE;
+    $revision_key = $entity_info['entity keys']['revision'] ?? '';
+    $attempted_revision = !empty($record->entity_revision) && $revision_key !== '';
+    if ($attempted_revision) {
+      $entities = entity_load($record->entity_type, [$record->entity_id], [$revision_key => $record->entity_revision]);
+      $loaded_revision = !empty($entities);
     }
     else {
+      $entities = entity_load($record->entity_type, [$record->entity_id]);
+    }
+    if ($attempted_revision && empty($entities)) {
       $entities = entity_load($record->entity_type, [$record->entity_id]);
     }
     if (!empty($entities)) {
@@ -149,7 +167,7 @@ function ai_moderation_queue_view_page($vid) {
           $entity_text_label = t('Current content (does not match evaluated content)');
         }
         else {
-          $entity_text_label = !empty($record->entity_revision) ? t('Evaluated content') : t('Current content');
+          $entity_text_label = $loaded_revision ? t('Evaluated content') : t('Current content');
         }
       }
     }

@@ -184,6 +184,7 @@ function ai_moderation_ai_moderation_entity_info() {
       'label' => t('Content'),
       'bundles' => $bundles,
       'extract' => 'ai_moderation_extract_node_text',
+      'fields' => ['body'],
     ];
   }
   if (module_exists('comment')) {
@@ -195,6 +196,7 @@ function ai_moderation_ai_moderation_entity_info() {
       'label' => t('Comments'),
       'bundles' => $bundles,
       'extract' => 'ai_moderation_extract_comment_text',
+      'fields' => ['comment_body'],
     ];
   }
   return $info;
@@ -206,7 +208,7 @@ function ai_moderation_ai_moderation_entity_info() {
 function ai_moderation_get_entity_info() {
   $info = module_invoke_all('ai_moderation_entity_info');
   foreach ($info as $entity_type => &$definition) {
-    $definition += ['label' => $entity_type, 'bundles' => [], 'extract' => ''];
+    $definition += ['label' => $entity_type, 'bundles' => [], 'extract' => '', 'fields' => []];
   }
   return $info;
 }
@@ -220,8 +222,8 @@ function ai_moderation_extract_node_text($node) {
     $parts[] = $node->title;
   }
   $instances = field_info_instances('node', $node->type);
-  foreach ($instances as $field_name => $instance) {
-    if (!ai_moderation_is_text_field('node', $field_name, $instance)) {
+  foreach (array_keys($instances) as $field_name) {
+    if (!ai_moderation_is_text_field('node', $node->type, $field_name)) {
       continue;
     }
     $items = field_get_items('node', $node, $field_name);
@@ -252,8 +254,8 @@ function ai_moderation_extract_comment_text($comment) {
     $bundle = 'comment_node_' . $bundle;
   }
   if ($bundle !== '') {
-    foreach (field_info_instances('comment', $bundle) as $field_name => $instance) {
-      if (!ai_moderation_is_text_field('comment', $field_name, $instance)) {
+    foreach (array_keys(field_info_instances('comment', $bundle)) as $field_name) {
+      if (!ai_moderation_is_text_field('comment', $bundle, $field_name)) {
         continue;
       }
       $items = field_get_items('comment', $comment, $field_name);
@@ -273,15 +275,31 @@ function ai_moderation_extract_comment_text($comment) {
 }
 
 /**
- * Allow only editorial text fields into moderation extraction.
+ * Return the explicit public editorial field allowlist for a target.
  */
-function ai_moderation_is_text_field($entity_type, $field_name, array $instance) {
-  $field = field_info_field($field_name);
-  $allowed_types = ['text', 'text_long', 'text_with_summary', 'string', 'string_long'];
-  if (empty($field) || empty($field['type']) || !in_array($field['type'], $allowed_types, TRUE)) {
+function ai_moderation_allowed_fields($entity_type, $bundle) {
+  $configured = config_get('ai_moderation.settings', 'target_fields.' . $entity_type . '.' . $bundle);
+  if (is_array($configured)) {
+    return array_values(array_unique(array_filter(array_map('strval', $configured))));
+  }
+  $definitions = ai_moderation_get_entity_info();
+  $fields = $definitions[$entity_type]['fields'] ?? [];
+  if (isset($fields[$bundle]) && is_array($fields[$bundle])) {
+    $fields = $fields[$bundle];
+  }
+  return is_array($fields) ? array_values(array_unique(array_filter(array_map('strval', $fields)))) : [];
+}
+
+/**
+ * Allow only explicitly approved editorial text fields into extraction.
+ */
+function ai_moderation_is_text_field($entity_type, $bundle, $field_name) {
+  if (!in_array($field_name, ai_moderation_allowed_fields($entity_type, $bundle), TRUE)) {
     return FALSE;
   }
-  return !preg_match('/(^|_)(private|contact|admin|administrative|hidden|password|token|status)(_|$)/i', $field_name);
+  $field = field_info_field($field_name);
+  $allowed_types = ['text', 'text_long', 'text_with_summary', 'string', 'string_long'];
+  return !empty($field['type']) && in_array($field['type'], $allowed_types, TRUE);
 }
 
 /**
@@ -350,10 +368,10 @@ function ai_moderation_comment_update($comment) {
  */
 function ai_moderation_form_alter(&$form, &$form_state, $form_id) {
   ai_moderation_load_include('evaluate');
-  if (!empty($form['#node']) && str_ends_with($form_id, '_node_form')) {
+  if (!empty($form['#node']) && substr($form_id, -10) === '_node_form') {
     $form['#validate'][] = 'ai_moderation_node_form_validate';
   }
-  elseif (!empty($form_state['comment']) && str_starts_with($form_id, 'comment_node_') && str_ends_with($form_id, '_form')) {
+  elseif (!empty($form_state['comment']) && strpos($form_id, 'comment_node_') === 0 && substr($form_id, -5) === '_form') {
     $form['#validate'][] = 'ai_moderation_comment_form_validate';
   }
 }
@@ -410,12 +428,6 @@ function _ai_moderation_validate_builtin_entity($entity_type, $bundle, $entity) 
   if (empty($profile_id)) {
     return;
   }
-  try {
-    $profile = _ai_moderation_profile($profile_id, []);
-  }
-  catch (\Throwable $e) {
-    return _ai_moderation_gate_builtin_entity($entity_type, $bundle, 0, $entity, FALSE);
-  }
   $entity_id = 0;
   if ($entity_type === 'node' && !empty($entity->nid)) {
     $entity_id = (int) $entity->nid;
@@ -424,7 +436,7 @@ function _ai_moderation_validate_builtin_entity($entity_type, $bundle, $entity) 
     $entity_id = (int) $entity->cid;
   }
   $verdict = _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $entity, FALSE);
-  if ($profile['enforce'] !== 'enforce') {
+  if (empty($verdict['enforce'])) {
     return NULL;
   }
   return $verdict;
@@ -454,7 +466,7 @@ function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $
     return NULL;
   }
   $cache = &backdrop_static('ai_moderation_builtin_verdicts', []);
-  $cache_key = $entity_type . ':' . $bundle . ':' . $entity_id . ':' . hash('sha256', $text);
+  $cache_key = $entity_type . ':' . $bundle . ':' . $entity_id . ':' . $profile . ':' . hash('sha256', $text);
   $context = [
     'entity_type' => $entity_type,
     'entity_bundle' => $bundle,

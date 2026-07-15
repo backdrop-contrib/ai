@@ -16,6 +16,7 @@
     }
   },
   "targets": {},
+  "target_fields": {},
   "prefilter": {
     "enabled": false,
     "model": "",

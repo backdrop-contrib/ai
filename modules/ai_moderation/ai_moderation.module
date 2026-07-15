@@ -306,11 +306,9 @@ function ai_moderation_is_text_field($entity_type, $bundle, $field_name) {
  * Run configured moderation for node saves.
  */
 function ai_moderation_node_presave($node) {
-  if (ai_moderation_user_can_bypass()) {
-    return;
-  }
+  $bypass = ai_moderation_user_can_bypass();
   $verdict = _ai_moderation_gate_builtin_entity('node', $node->type, !empty($node->nid) ? $node->nid : 0, $node, FALSE);
-  if (!empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block' && !empty($verdict['enforce'])) {
+  if (!$bypass && !empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block' && !empty($verdict['enforce'])) {
     $node->status = NODE_NOT_PUBLISHED;
   }
 }
@@ -333,15 +331,13 @@ function ai_moderation_node_update($node) {
  * Run configured moderation for comment saves.
  */
 function ai_moderation_comment_presave($comment) {
-  if (ai_moderation_user_can_bypass()) {
-    return;
-  }
+  $bypass = ai_moderation_user_can_bypass();
   $bundle = !empty($comment->node_type) ? $comment->node_type : '';
   if ($bundle !== '' && strpos($bundle, 'comment_node_') !== 0) {
     $bundle = 'comment_node_' . $bundle;
   }
   $verdict = _ai_moderation_gate_builtin_entity('comment', $bundle, !empty($comment->cid) ? $comment->cid : 0, $comment, FALSE);
-  if (!empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block' && !empty($verdict['enforce'])) {
+  if (!$bypass && !empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block' && !empty($verdict['enforce'])) {
     $comment->status = COMMENT_NOT_PUBLISHED;
   }
 }
@@ -398,6 +394,10 @@ function ai_moderation_node_form_validate($form, &$form_state) {
  * Evaluate an enabled comment target before comment_form_submit() saves it.
  */
 function ai_moderation_comment_form_validate($form, &$form_state) {
+  $submit_handlers = (array) ($form_state['triggering_element']['#submit'] ?? []);
+  if (in_array('comment_form_build_preview', $submit_handlers, TRUE)) {
+    return;
+  }
   if (ai_moderation_user_can_bypass()) {
     return;
   }

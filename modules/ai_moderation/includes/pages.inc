@@ -137,7 +137,7 @@ function ai_moderation_queue_view_page($vid) {
     return backdrop_not_found();
   }
   backdrop_set_title(t('Moderation verdict @id', ['@id' => $record->vid]));
-  $categories = json_decode($record->categories, TRUE);
+  $categories = _ai_moderation_format_categories(json_decode($record->categories, TRUE));
   $entity_text = '';
   $entity_text_label = '';
   $entity_title = '';
@@ -179,7 +179,7 @@ function ai_moderation_queue_view_page($vid) {
     [t('Level'), _ai_moderation_level_markup($record)],
     [t('Verdict'), check_plain($record->verdict)],
     [t('Action'), check_plain($record->action)],
-    [t('Categories'), check_plain(implode(', ', is_array($categories) ? $categories : []))],
+    [t('Categories'), check_plain($categories)],
     [t('Reason'), nl2br(check_plain($record->reason))],
     [t('Model'), check_plain($record->model)],
     [t('Prefilter'), $record->prefilter_flagged === NULL ? t('Not run') : ($record->prefilter_flagged ? t('Flagged') : t('Clear'))],
@@ -206,6 +206,34 @@ function ai_moderation_queue_view_page($vid) {
     ];
   }
   return $build;
+}
+
+/**
+ * Format stored category lists and provider category maps for display.
+ */
+function _ai_moderation_format_categories($categories) {
+  if (!is_array($categories) || empty($categories)) {
+    return '';
+  }
+  $labels = [];
+  $is_list = array_keys($categories) === range(0, count($categories) - 1);
+  foreach ($categories as $category => $value) {
+    if ($is_list) {
+      if (!is_string($value) || trim($value) === '') {
+        return '';
+      }
+      $labels[] = $value;
+    }
+    else {
+      if (!is_string($category) || $category === '' || !is_bool($value)) {
+        return '';
+      }
+      if ($value) {
+        $labels[] = $category;
+      }
+    }
+  }
+  return implode(', ', $labels);
 }
 
 /**

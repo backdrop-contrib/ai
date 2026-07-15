@@ -26,7 +26,7 @@ function ai_moderation_settings_form($form, &$form_state) {
     '#description' => t('Profiles describe the community policy, score bands, and enforcement behavior. New profiles are shadow-mode by default. Editorial levels are Clear (0–9), Needs review (10–20), Smoldering (21–70), and Dumpster fire (71–100). These labels are separate from the configurable allow/review/block action thresholds.'),
   ];
   foreach ($profiles as $id => $profile) {
-    $profile = _ai_moderation_profile($id, $profile);
+    $profiles[$id] = $profile = _ai_moderation_profile($id, $profile);
     $form['profiles'][$id] = [
       '#type' => 'fieldset',
       '#title' => check_plain($profile['label']) . ' (' . check_plain($id) . ')',

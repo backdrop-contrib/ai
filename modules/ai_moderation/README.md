@@ -164,9 +164,9 @@ configured content targets.
 ## Privacy and storage
 
 Verdict records retain scores, categories, structured reason codes,
-model/provider, source, and
-entity references. The verdict table does not retain submitted text; the
-administrator detail page reloads the referenced entity for examination.
+model/provider, source, entity references, and the submitting user's UID (0
+for anonymous submissions). The verdict table does not retain submitted text;
+the administrator detail page reloads the referenced entity for examination.
 
 AI request logging is controlled by the base AI module and its privacy
 settings. Never commit provider keys or other secrets.

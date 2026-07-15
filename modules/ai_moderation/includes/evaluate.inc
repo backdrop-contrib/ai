@@ -439,7 +439,7 @@ function _ai_moderation_prefilter($text, array $profile, array $options) {
     $result['escalated'] = !empty($item['flagged']) && $max >= $threshold;
   }
   catch (\Throwable $e) {
-    watchdog('ai_moderation', 'Moderation prefilter failed; continuing with provider-neutral evaluation: @message', ['@message' => $e->getMessage()], WATCHDOG_WARNING);
+    watchdog('ai_moderation', 'Moderation prefilter failed; continuing with provider-neutral evaluation [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $model), WATCHDOG_WARNING);
   }
   return $result;
 }

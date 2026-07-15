@@ -26,17 +26,18 @@ function ai_moderation_queue_page($reported_only = FALSE) {
   ];
   $query = db_select('ai_moderation_verdicts', 'am')->extend('PagerDefault')->extend('TableSort');
   $query->fields('am')->limit(50)->orderByHeader($header);
+  $filters = _ai_moderation_normalize_queue_filters($_GET);
   if ($reported_only) {
     $query->condition('verdict', 'allow', '<>');
   }
-  if (!empty($_GET['verdict'])) {
-    $query->condition('verdict', $_GET['verdict']);
+  if ($filters['verdict'] !== '') {
+    $query->condition('verdict', $filters['verdict']);
   }
-  if (isset($_GET['score_min']) && $_GET['score_min'] !== '') {
-    $query->condition('score', (int) $_GET['score_min'], '>=');
+  if ($filters['score_min'] !== '') {
+    $query->condition('score', $filters['score_min'], '>=');
   }
-  if (isset($_GET['score_max']) && $_GET['score_max'] !== '') {
-    $query->condition('score', (int) $_GET['score_max'], '<=');
+  if ($filters['score_max'] !== '') {
+    $query->condition('score', $filters['score_max'], '<=');
   }
   $records = [];
   $entity_ids = [];
@@ -92,16 +93,18 @@ function ai_moderation_queue_page($reported_only = FALSE) {
  * Filter form for the review queue.
  */
 function ai_moderation_queue_filter_form($form, &$form_state) {
+  $filters = _ai_moderation_normalize_queue_filters($_GET);
+  $has_filters = $filters['verdict'] !== '' || $filters['score_min'] !== '' || $filters['score_max'] !== '';
   $form['#queue_path'] = current_path();
-  $form['filters'] = ['#type' => 'fieldset', '#title' => t('Filter'), '#tree' => TRUE, '#collapsible' => TRUE, '#collapsed' => empty($_GET)];
+  $form['filters'] = ['#type' => 'fieldset', '#title' => t('Filter'), '#tree' => TRUE, '#collapsible' => TRUE, '#collapsed' => !$has_filters];
   $form['filters']['verdict'] = [
     '#type' => 'select',
     '#title' => t('Verdict'),
     '#options' => ['' => t('- All -'), 'allow' => t('Allow'), 'review' => t('Review'), 'block' => t('Block'), 'error' => t('Error')],
-    '#default_value' => $_GET['verdict'] ?? '',
+    '#default_value' => $filters['verdict'],
   ];
-  $form['filters']['score_min'] = ['#type' => 'number', '#title' => t('Minimum score'), '#min' => 0, '#max' => 100, '#default_value' => $_GET['score_min'] ?? ''];
-  $form['filters']['score_max'] = ['#type' => 'number', '#title' => t('Maximum score'), '#min' => 0, '#max' => 100, '#default_value' => $_GET['score_max'] ?? ''];
+  $form['filters']['score_min'] = ['#type' => 'number', '#title' => t('Minimum score'), '#min' => 0, '#max' => 100, '#default_value' => $filters['score_min']];
+  $form['filters']['score_max'] = ['#type' => 'number', '#title' => t('Maximum score'), '#min' => 0, '#max' => 100, '#default_value' => $filters['score_max']];
   $form['filters']['actions'] = ['#type' => 'actions'];
   $form['filters']['actions']['submit'] = ['#type' => 'submit', '#value' => t('Filter')];
   $form['filters']['actions']['reset'] = ['#type' => 'submit', '#value' => t('Reset'), '#submit' => ['ai_moderation_queue_filter_form_reset'], '#limit_validation_errors' => []];
@@ -112,10 +115,31 @@ function ai_moderation_queue_filter_form($form, &$form_state) {
  * Submit queue filters as query parameters.
  */
 function ai_moderation_queue_filter_form_submit($form, &$form_state) {
-  $query = array_filter($form_state['values']['filters'], function ($value) {
-    return $value !== '' && !is_array($value);
+  $values = (array) ($form_state['values']['filters'] ?? []);
+  $query = array_filter(_ai_moderation_normalize_queue_filters($values), function ($value) {
+    return $value !== '';
   });
   $form_state['redirect'] = [$form['#queue_path'], ['query' => $query]];
+}
+
+/**
+ * Normalize supported queue filters from request or form input.
+ */
+function _ai_moderation_normalize_queue_filters(array $input) {
+  $filters = ['verdict' => '', 'score_min' => '', 'score_max' => ''];
+  if (isset($input['verdict']) && is_string($input['verdict']) && in_array($input['verdict'], ['allow', 'review', 'block', 'error'], TRUE)) {
+    $filters['verdict'] = $input['verdict'];
+  }
+  foreach (['score_min', 'score_max'] as $key) {
+    $value = $input[$key] ?? '';
+    if (is_int($value) && $value >= 0 && $value <= 100) {
+      $filters[$key] = $value;
+    }
+    elseif (is_string($value) && preg_match('/^(?:0|[1-9][0-9]?|100)$/D', $value)) {
+      $filters[$key] = (int) $value;
+    }
+  }
+  return $filters;
 }
 
 /**

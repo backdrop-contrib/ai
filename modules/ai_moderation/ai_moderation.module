@@ -25,10 +25,12 @@ function ai_moderation_permission() {
     'access ai moderation' => [
       'title' => t('Administer AI Moderation'),
       'description' => t('Configure moderation profiles and review moderation verdicts.'),
+      'restrict access' => TRUE,
     ],
     'bypass ai moderation' => [
       'title' => t('Bypass AI moderation enforcement'),
       'description' => t('Submit or publish targeted content without automatic AI moderation enforcement.'),
+      'restrict access' => TRUE,
     ],
   ];
 }
@@ -224,13 +226,65 @@ function ai_moderation_ai_moderation_entity_info() {
 
 /**
  * Return all entity types declared as moderatable.
+ *
+ * Earlier implementations win label, bundle-label, and extractor conflicts;
+ * field allowlists are combined.
  */
 function ai_moderation_get_entity_info() {
-  $info = module_invoke_all('ai_moderation_entity_info');
-  foreach ($info as $entity_type => &$definition) {
-    $definition += ['label' => $entity_type, 'bundles' => [], 'extract' => '', 'fields' => []];
+  $info = [];
+  foreach ((array) module_implements('ai_moderation_entity_info') as $module) {
+    $module_info = module_invoke($module, 'ai_moderation_entity_info');
+    if (!is_array($module_info)) {
+      continue;
+    }
+    foreach ($module_info as $entity_type => $definition) {
+      if (!is_string($entity_type) || !is_array($definition)) {
+        continue;
+      }
+      if (!isset($info[$entity_type])) {
+        $info[$entity_type] = ['label' => $entity_type, 'bundles' => [], 'extract' => '', 'fields' => []];
+      }
+      if ($info[$entity_type]['label'] === $entity_type && !empty($definition['label']) && is_string($definition['label'])) {
+        $info[$entity_type]['label'] = $definition['label'];
+      }
+      if (!empty($definition['bundles']) && is_array($definition['bundles'])) {
+        foreach ($definition['bundles'] as $bundle => $label) {
+          if (is_string($bundle) && is_string($label) && !isset($info[$entity_type]['bundles'][$bundle])) {
+            $info[$entity_type]['bundles'][$bundle] = $label;
+          }
+        }
+      }
+      if (!empty($definition['fields']) && is_array($definition['fields'])) {
+        $info[$entity_type]['fields'] = _ai_moderation_merge_entity_fields($info[$entity_type]['fields'], $definition['fields']);
+      }
+      if ($info[$entity_type]['extract'] === '' && !empty($definition['extract']) && is_string($definition['extract']) && is_callable($definition['extract'])) {
+        $info[$entity_type]['extract'] = $definition['extract'];
+      }
+    }
   }
   return $info;
+}
+
+/**
+ * Merge shared and per-bundle editorial field allowlists.
+ */
+function _ai_moderation_merge_entity_fields(array $existing, array $incoming) {
+  foreach ($incoming as $bundle => $fields) {
+    if (is_int($bundle)) {
+      if (is_string($fields) && $fields !== '' && !in_array($fields, $existing, TRUE)) {
+        $existing[] = $fields;
+      }
+    }
+    elseif (is_string($bundle) && is_array($fields)) {
+      $existing[$bundle] = isset($existing[$bundle]) && is_array($existing[$bundle]) ? $existing[$bundle] : [];
+      foreach ($fields as $field_name) {
+        if (is_string($field_name) && $field_name !== '' && !in_array($field_name, $existing[$bundle], TRUE)) {
+          $existing[$bundle][] = $field_name;
+        }
+      }
+    }
+  }
+  return $existing;
 }
 
 /**
@@ -304,10 +358,18 @@ function ai_moderation_allowed_fields($entity_type, $bundle) {
   }
   $definitions = ai_moderation_get_entity_info();
   $fields = $definitions[$entity_type]['fields'] ?? [];
-  if (isset($fields[$bundle]) && is_array($fields[$bundle])) {
-    $fields = $fields[$bundle];
+  $shared_fields = [];
+  $bundle_fields = [];
+  foreach ($fields as $field_bundle => $field_names) {
+    if (is_int($field_bundle) && is_string($field_names) && $field_names !== '') {
+      $shared_fields[] = $field_names;
+    }
+    elseif ($field_bundle === $bundle && is_array($field_names)) {
+      $bundle_fields = array_merge($bundle_fields, $field_names);
+    }
   }
-  return is_array($fields) ? array_values(array_unique(array_filter(array_map('strval', $fields)))) : [];
+  $allowed = array_merge($shared_fields, $bundle_fields);
+  return array_values(array_unique(array_filter($allowed, 'is_string')));
 }
 
 /**
@@ -396,6 +458,10 @@ function ai_moderation_form_alter(&$form, &$form_state, $form_id) {
  * Evaluate an enabled node target before node_form_submit() saves it.
  */
 function ai_moderation_node_form_validate($form, &$form_state) {
+  $submit_handlers = (array) ($form_state['triggering_element']['#submit'] ?? []);
+  if (in_array('node_form_preview', $submit_handlers, TRUE)) {
+    return;
+  }
   if (ai_moderation_user_can_bypass()) {
     return;
   }

@@ -56,6 +56,16 @@
   box-shadow: 0 -.25rem 0 -.08rem #ff6f00, 0 -.42rem 0 -.16rem #ffc107;
 }
 
+.ai-moderation-level--error {
+  background: #f3e5f5;
+  color: #6a1b9a;
+}
+
+.ai-moderation-level--error .ai-moderation-level__icon {
+  background: #8e24aa;
+  box-shadow: 0 0 0 .12rem #ce93d8;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ai-moderation-level__icon {
     box-shadow: none;

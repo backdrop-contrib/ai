@@ -21,8 +21,9 @@ save.
   classifier instead of being blocked before evaluation.
 - Site context is disabled by default because conversational site instructions
   can cause a classifier to refuse instead of classify.
-- Submissions larger than 100,000 bytes are rejected through the configured
-  provider-failure policy before prefiltering or any provider request.
+- Submissions larger than 100,000 bytes produce a provider-failure verdict
+  before prefiltering or any provider request. They may still be allowed when
+  the configured `on_failure` policy is **Allow**.
 - Verdicts are stored in `ai_moderation_verdicts`.
 
 When enforcement is **Log only**, content saves normally and the verdict is

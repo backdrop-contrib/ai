@@ -177,8 +177,8 @@ settings. Never commit provider keys or other secrets.
 Useful checks from the Backdrop root:
 
 ```bash
-php -l modules/contrib/ai/modules/ai_moderation/ai_moderation.module
-php -l modules/contrib/ai/modules/ai_moderation/includes/evaluate.inc
+php -l modules/ai_moderation/ai_moderation.module
+php -l modules/ai_moderation/includes/evaluate.inc
 ddev bee updb -y
 ddev bee cc all
 ```

@@ -273,43 +273,15 @@ function _ai_moderation_parse_tool_response(array $response) {
 }
 
 /**
- * Extract first balanced JSON object from plain model output.
+ * Parse a complete plain-model response containing exactly one JSON object.
  */
 function _ai_moderation_parse_json_response($content) {
-  $start = strpos($content, '{');
-  if ($start === FALSE) {
+  $content = trim((string) $content);
+  if ($content === '' || $content[0] !== '{' || substr($content, -1) !== '}') {
     return NULL;
   }
-  $depth = 0;
-  $quoted = FALSE;
-  $escaped = FALSE;
-  $length = strlen($content);
-  for ($i = $start; $i < $length; $i++) {
-    $character = $content[$i];
-    if ($quoted) {
-      if ($escaped) {
-        $escaped = FALSE;
-      }
-      elseif ($character === '\\') {
-        $escaped = TRUE;
-      }
-      elseif ($character === '"') {
-        $quoted = FALSE;
-      }
-      continue;
-    }
-    if ($character === '"') {
-      $quoted = TRUE;
-    }
-    elseif ($character === '{') {
-      $depth++;
-    }
-    elseif ($character === '}' && --$depth === 0) {
-      $parsed = json_decode(substr($content, $start, $i - $start + 1), TRUE);
-      return is_array($parsed) ? $parsed : NULL;
-    }
-  }
-  return NULL;
+  $parsed = json_decode($content, TRUE);
+  return json_last_error() === JSON_ERROR_NONE && is_array($parsed) ? $parsed : NULL;
 }
 
 /**
@@ -481,7 +453,12 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
     $verdict['categories'] = _ai_moderation_category_codes($verdict['categories'] ?? []);
   }
   $verdict['action'] = $verdict['action'] ?? ($verdict['verdict'] ?? 'review');
-  if (db_table_exists('ai_moderation_verdicts') && ($config->get('log_all') !== FALSE || $verdict['action'] !== 'allow')) {
+  $should_store = $config->get('log_all') !== FALSE || $verdict['action'] !== 'allow';
+  if ($should_store) {
+    if (!db_table_exists('ai_moderation_verdicts')) {
+      watchdog('ai_moderation', 'Cannot store moderation verdict because verdict storage is unavailable.', [], WATCHDOG_ERROR);
+      throw new RuntimeException('AI moderation verdict storage is unavailable.');
+    }
     global $user;
     $now = REQUEST_TIME;
     try {
@@ -508,6 +485,7 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
     }
     catch (\Throwable $e) {
       watchdog('ai_moderation', 'Failed to store moderation verdict [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $verdict['model'] ?? ''), WATCHDOG_ERROR);
+      throw $e;
     }
   }
   return $verdict;

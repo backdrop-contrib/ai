@@ -201,7 +201,7 @@ function ai_moderation_queue_view_page($vid) {
       if (is_callable($extract)) {
         $entity_text = call_user_func($extract, $entity);
         if (!empty($record->content_hash) && hash('sha256', $entity_text) !== $record->content_hash) {
-          $entity_text_label = t('Current content (does not match evaluated content)');
+          $entity_text_label = $loaded_revision ? t('Evaluated revision (does not match evaluated content)') : t('Current content (does not match evaluated content)');
         }
         else {
           $entity_text_label = $loaded_revision ? t('Evaluated content') : t('Current content');

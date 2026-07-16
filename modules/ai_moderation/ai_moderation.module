@@ -299,6 +299,27 @@ function _ai_moderation_comment_bundle($bundle) {
 }
 
 /**
+ * Check whether verdicts can be durably stored for enforcement.
+ */
+function _ai_moderation_verdict_storage_available() {
+  return db_table_exists('ai_moderation_verdicts');
+}
+
+/**
+ * Ensure an enforced block can be recorded before quarantining content.
+ */
+function _ai_moderation_enforcement_ready($verdict) {
+  if (!is_array($verdict) || ($verdict['action'] ?? $verdict['verdict'] ?? '') !== 'block' || empty($verdict['enforce'])) {
+    return FALSE;
+  }
+  if (!_ai_moderation_verdict_storage_available()) {
+    watchdog('ai_moderation', 'Cannot quarantine content because verdict storage is unavailable.', [], WATCHDOG_ERROR);
+    throw new RuntimeException('AI moderation verdict storage is unavailable.');
+  }
+  return TRUE;
+}
+
+/**
  * Extract title and text fields from a node without rendering HTML.
  */
 function ai_moderation_extract_node_text($node) {
@@ -398,7 +419,7 @@ function ai_moderation_is_text_field($entity_type, $bundle, $field_name) {
 function ai_moderation_node_presave($node) {
   $bypass = ai_moderation_user_can_bypass();
   $verdict = _ai_moderation_gate_builtin_entity('node', $node->type, !empty($node->nid) ? $node->nid : 0, $node, FALSE);
-  if (!$bypass && !empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block' && !empty($verdict['enforce'])) {
+  if (!$bypass && _ai_moderation_enforcement_ready($verdict)) {
     $node->status = NODE_NOT_PUBLISHED;
   }
 }
@@ -424,7 +445,7 @@ function ai_moderation_comment_presave($comment) {
   $bypass = ai_moderation_user_can_bypass();
   $bundle = _ai_moderation_comment_bundle(!empty($comment->node_type) ? $comment->node_type : '');
   $verdict = _ai_moderation_gate_builtin_entity('comment', $bundle, !empty($comment->cid) ? $comment->cid : 0, $comment, FALSE);
-  if (!$bypass && !empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block' && !empty($verdict['enforce'])) {
+  if (!$bypass && _ai_moderation_enforcement_ready($verdict)) {
     $comment->status = COMMENT_NOT_PUBLISHED;
   }
 }
@@ -475,7 +496,7 @@ function ai_moderation_node_form_validate($form, &$form_state) {
     $node->{$key} = $value;
   }
   $verdict = _ai_moderation_validate_builtin_entity('node', $node->type, $node);
-  if (!empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block') {
+  if (_ai_moderation_enforcement_ready($verdict)) {
     $form_state['values']['status'] = NODE_NOT_PUBLISHED;
     backdrop_set_message(t('Your submission was saved unpublished and sent to moderation review.'), 'warning');
   }
@@ -500,7 +521,7 @@ function ai_moderation_comment_form_validate($form, &$form_state) {
   comment_submit($comment);
   $bundle = _ai_moderation_comment_bundle(!empty($comment->node_type) ? $comment->node_type : '');
   $verdict = _ai_moderation_validate_builtin_entity('comment', $bundle, $comment);
-  if (!empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block') {
+  if (_ai_moderation_enforcement_ready($verdict)) {
     $form_state['values']['status'] = COMMENT_NOT_PUBLISHED;
     backdrop_set_message(t('Your reply was saved unpublished and sent to moderation review.'), 'warning');
   }
@@ -587,8 +608,11 @@ function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $
  * Store a cached node verdict only after its save has succeeded.
  */
 function _ai_moderation_store_builtin_entity_verdict($entity, $entity_type, $entity_id) {
-  if (empty($entity->_ai_moderation_pending_verdict) || empty($entity_id) || !db_table_exists('ai_moderation_verdicts')) {
+  if (empty($entity->_ai_moderation_pending_verdict)) {
     return;
+  }
+  if (empty($entity_id)) {
+    throw new RuntimeException('AI moderation verdict cannot be stored without a final entity ID.');
   }
   $bundle = $entity_type === 'node' ? $entity->type : _ai_moderation_comment_bundle($entity->node_type);
   $config = config('ai_moderation.settings');

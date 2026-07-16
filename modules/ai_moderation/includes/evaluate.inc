@@ -527,9 +527,17 @@ function _ai_moderation_process_verdict_outbox() {
   }
   // Reclaim events left in "processing" by a request that never finished.
   db_update('ai_moderation_verdict_events')
+    ->fields(['status' => 'failed', 'changed' => REQUEST_TIME])
+    ->condition('status', 'processing')
+    ->condition('changed', REQUEST_TIME - AI_MODERATION_OUTBOX_LEASE_SECONDS, '<')
+    ->condition('attempts', AI_MODERATION_OUTBOX_MAX_ATTEMPTS, '>=')
+    ->execute();
+
+  db_update('ai_moderation_verdict_events')
     ->fields(['status' => 'pending', 'changed' => REQUEST_TIME])
     ->condition('status', 'processing')
     ->condition('changed', REQUEST_TIME - AI_MODERATION_OUTBOX_LEASE_SECONDS, '<')
+    ->condition('attempts', AI_MODERATION_OUTBOX_MAX_ATTEMPTS, '<')
     ->execute();
   $events = db_select('ai_moderation_verdict_events', 'ame')
     ->fields('ame')
@@ -538,8 +546,13 @@ function _ai_moderation_process_verdict_outbox() {
     ->range(0, 50)
     ->execute();
   foreach ($events as $event) {
+    $attempts = ((int) $event->attempts) + 1;
     $claimed = db_update('ai_moderation_verdict_events')
-      ->fields(['status' => 'processing', 'changed' => REQUEST_TIME])
+      ->fields([
+        'status' => 'processing',
+        'attempts' => $attempts,
+        'changed' => REQUEST_TIME,
+      ])
       ->condition('eid', (int) $event->eid)
       ->condition('status', 'pending')
       ->execute();

@@ -8,7 +8,7 @@
       "label": "Default moderation profile",
       "prompt": "This is a community forum. Flag spam, scams, harassment, threats, explicit material, or content that is unsuitable for the community.",
       "model": "",
-      "band_allow_max": 30,
+      "band_allow_max": 20,
       "band_review_max": 70,
       "on_failure": "review",
       "enforce": "log_only",

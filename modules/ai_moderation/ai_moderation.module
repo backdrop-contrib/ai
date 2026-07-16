@@ -310,7 +310,8 @@ function _ai_moderation_comment_bundle($bundle) {
  * Check whether verdicts can be durably stored for enforcement.
  */
 function _ai_moderation_verdict_storage_available() {
-  return db_table_exists('ai_moderation_verdicts');
+  return db_table_exists('ai_moderation_verdicts')
+    && db_table_exists('ai_moderation_verdict_events');
 }
 
 /**

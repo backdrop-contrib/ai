@@ -193,6 +193,14 @@ function ai_moderation_async_rescan_entity(array $data) {
 }
 
 /**
+ * Process verdict observer notifications after their originating save commits.
+ */
+function ai_moderation_cron() {
+  ai_moderation_load_include('evaluate');
+  _ai_moderation_process_verdict_outbox();
+}
+
+/**
  * Implements the ai_moderation_entity_info hook for built-in entities.
  */
 function ai_moderation_ai_moderation_entity_info() {
@@ -491,6 +499,9 @@ function ai_moderation_node_form_validate($form, &$form_state) {
   if (ai_moderation_user_can_bypass()) {
     return;
   }
+  if (form_get_errors()) {
+    return;
+  }
   $node = clone $form_state['node'];
   foreach ($form_state['values'] as $key => $value) {
     $node->{$key} = $value;
@@ -511,6 +522,9 @@ function ai_moderation_comment_form_validate($form, &$form_state) {
     return;
   }
   if (ai_moderation_user_can_bypass()) {
+    return;
+  }
+  if (form_get_errors()) {
     return;
   }
   $comment = clone $form_state['comment'];

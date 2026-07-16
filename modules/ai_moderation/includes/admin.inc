@@ -429,6 +429,9 @@ function ai_moderation_settings_form_save_profile_validate($form, &$form_state) 
     form_set_error('new_profile][machine_name', t('Profile machine name must start with a letter and contain only lowercase letters, numbers, and underscores.'));
   }
   $profiles = config('ai_moderation.settings')->get('profiles') ?: [];
+  if (empty($profiles)) {
+    $profiles = ['default' => _ai_moderation_default_profile()];
+  }
   if (isset($profiles[$new])) {
     form_set_error('new_profile][machine_name', t('That profile already exists.'));
   }

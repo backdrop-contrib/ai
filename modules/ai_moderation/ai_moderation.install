@@ -39,6 +39,23 @@ function ai_moderation_schema() {
       'created' => ['created'],
     ],
   ];
+  $schema['ai_moderation_verdict_events'] = [
+    'description' => 'Queues observer notifications for stored moderation verdicts.',
+    'fields' => [
+      'eid' => ['type' => 'serial', 'unsigned' => TRUE, 'not null' => TRUE],
+      'vid' => ['type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE, 'default' => 0],
+      'payload' => ['type' => 'text', 'size' => 'big', 'not null' => TRUE],
+      'status' => ['type' => 'varchar', 'length' => 16, 'not null' => TRUE, 'default' => 'pending'],
+      'attempts' => ['type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE, 'default' => 0],
+      'created' => ['type' => 'int', 'not null' => TRUE, 'default' => 0],
+      'changed' => ['type' => 'int', 'not null' => TRUE, 'default' => 0],
+    ],
+    'primary key' => ['eid'],
+    'indexes' => [
+      'status' => ['status'],
+      'verdict' => ['vid'],
+    ],
+  ];
   return $schema;
 }
 
@@ -111,4 +128,15 @@ function ai_moderation_update_1003() {
     ]);
   }
   return t('Updated the AI Moderation entity-reference index.');
+}
+
+/**
+ * Add the durable verdict observer outbox.
+ */
+function ai_moderation_update_1004() {
+  if (!db_table_exists('ai_moderation_verdict_events')) {
+    $schema = ai_moderation_schema();
+    db_create_table('ai_moderation_verdict_events', $schema['ai_moderation_verdict_events']);
+  }
+  return t('Added the AI Moderation verdict observer outbox.');
 }

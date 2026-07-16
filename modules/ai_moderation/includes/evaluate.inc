@@ -442,7 +442,7 @@ function _ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, ar
 }
 
 /**
- * Apply verdict alters, persist a verdict, and invoke the verdict hook.
+ * Apply verdict alters and persist a verdict plus its observer outbox event.
  */
 function _ai_moderation_store_verdict(array $verdict, array $context, $config = NULL) {
   if ($config === NULL) {
@@ -481,12 +481,79 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
         'created' => $now,
         'changed' => $now,
       ])->execute();
-      module_invoke_all('ai_moderation_verdict', $verdict, $context);
     }
     catch (\Throwable $e) {
       watchdog('ai_moderation', 'Failed to store moderation verdict [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $verdict['model'] ?? ''), WATCHDOG_ERROR);
       throw $e;
     }
+    try {
+      $payload = json_encode(['verdict' => $verdict, 'context' => $context]);
+      if ($payload === FALSE) {
+        throw new RuntimeException('AI moderation verdict observer payload could not be encoded.');
+      }
+      db_insert('ai_moderation_verdict_events')->fields([
+        'vid' => $verdict['vid'],
+        'payload' => $payload,
+        'status' => 'pending',
+        'attempts' => 0,
+        'created' => $now,
+        'changed' => $now,
+      ])->execute();
+    }
+    catch (\Throwable $e) {
+      watchdog('ai_moderation', 'Failed to queue moderation verdict observer event [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $verdict['model'] ?? ''), WATCHDOG_ERROR);
+      throw $e;
+    }
   }
   return $verdict;
+}
+
+/**
+ * Deliver persisted verdict observer events outside entity save transactions.
+ */
+function _ai_moderation_process_verdict_outbox() {
+  if (!db_table_exists('ai_moderation_verdict_events')) {
+    return;
+  }
+  $events = db_select('ai_moderation_verdict_events', 'ame')
+    ->fields('ame')
+    ->condition('status', 'pending')
+    ->orderBy('eid', 'ASC')
+    ->range(0, 50)
+    ->execute();
+  foreach ($events as $event) {
+    $claimed = db_update('ai_moderation_verdict_events')
+      ->fields(['status' => 'processing', 'changed' => REQUEST_TIME])
+      ->condition('eid', (int) $event->eid)
+      ->condition('status', 'pending')
+      ->execute();
+    if (!$claimed) {
+      continue;
+    }
+    $payload = json_decode($event->payload, TRUE);
+    if (!is_array($payload) || !isset($payload['verdict'], $payload['context']) || !is_array($payload['verdict']) || !is_array($payload['context'])) {
+      watchdog('ai_moderation', 'Discarded malformed moderation verdict observer event @id.', ['@id' => (int) $event->eid], WATCHDOG_ERROR);
+      db_update('ai_moderation_verdict_events')->fields(['status' => 'failed', 'changed' => REQUEST_TIME])->condition('eid', (int) $event->eid)->execute();
+      continue;
+    }
+    try {
+      module_invoke_all('ai_moderation_verdict', $payload['verdict'], $payload['context']);
+    }
+    catch (\Throwable $e) {
+      watchdog('ai_moderation', 'Moderation verdict observer failed; event will be retried [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);
+      try {
+        db_update('ai_moderation_verdict_events')->fields(['status' => 'pending', 'attempts' => ((int) $event->attempts) + 1, 'changed' => REQUEST_TIME])->condition('eid', (int) $event->eid)->execute();
+      }
+      catch (\Throwable $storage_exception) {
+        watchdog('ai_moderation', 'Failed to update moderation verdict observer outbox [@code] (@type; @identifier).', _ai_moderation_exception_log_context($storage_exception, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);
+      }
+      continue;
+    }
+    try {
+      db_update('ai_moderation_verdict_events')->fields(['status' => 'delivered', 'changed' => REQUEST_TIME])->condition('eid', (int) $event->eid)->execute();
+    }
+    catch (\Throwable $e) {
+      watchdog('ai_moderation', 'Failed to update moderation verdict observer outbox [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);
+    }
+  }
 }

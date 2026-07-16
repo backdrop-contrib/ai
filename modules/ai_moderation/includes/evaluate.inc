@@ -9,6 +9,13 @@
 // deterministic and does not require the optional mbstring extension.
 const AI_MODERATION_MAX_TEXT_BYTES = 100000;
 
+// Reclaim outbox events stuck in "processing" (e.g. a crashed request) after
+// this many seconds so they are retried instead of stalling forever.
+const AI_MODERATION_OUTBOX_LEASE_SECONDS = 300;
+
+// Stop retrying an outbox event after this many delivery attempts.
+const AI_MODERATION_OUTBOX_MAX_ATTEMPTS = 10;
+
 /**
  * Evaluate text with a forced structured-output tool call.
  */
@@ -461,6 +468,7 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
     }
     global $user;
     $now = REQUEST_TIME;
+    $transaction = db_transaction();
     try {
       $verdict['vid'] = db_insert('ai_moderation_verdicts')->fields([
         'entity_type' => $context['entity_type'],
@@ -483,6 +491,7 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
       ])->execute();
     }
     catch (\Throwable $e) {
+      $transaction->rollback();
       watchdog('ai_moderation', 'Failed to store moderation verdict [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $verdict['model'] ?? ''), WATCHDOG_ERROR);
       throw $e;
     }
@@ -501,6 +510,7 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
       ])->execute();
     }
     catch (\Throwable $e) {
+      $transaction->rollback();
       watchdog('ai_moderation', 'Failed to queue moderation verdict observer event [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $verdict['model'] ?? ''), WATCHDOG_ERROR);
       throw $e;
     }
@@ -515,6 +525,12 @@ function _ai_moderation_process_verdict_outbox() {
   if (!db_table_exists('ai_moderation_verdict_events')) {
     return;
   }
+  // Reclaim events left in "processing" by a request that never finished.
+  db_update('ai_moderation_verdict_events')
+    ->fields(['status' => 'pending', 'changed' => REQUEST_TIME])
+    ->condition('status', 'processing')
+    ->condition('changed', REQUEST_TIME - AI_MODERATION_OUTBOX_LEASE_SECONDS, '<')
+    ->execute();
   $events = db_select('ai_moderation_verdict_events', 'ame')
     ->fields('ame')
     ->condition('status', 'pending')
@@ -540,9 +556,11 @@ function _ai_moderation_process_verdict_outbox() {
       module_invoke_all('ai_moderation_verdict', $payload['verdict'], $payload['context']);
     }
     catch (\Throwable $e) {
-      watchdog('ai_moderation', 'Moderation verdict observer failed; event will be retried [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);
+      $attempts = ((int) $event->attempts) + 1;
+      $exhausted = $attempts >= AI_MODERATION_OUTBOX_MAX_ATTEMPTS;
+      watchdog('ai_moderation', $exhausted ? 'Moderation verdict observer failed; retries exhausted [@code] (@type; @identifier).' : 'Moderation verdict observer failed; event will be retried [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);
       try {
-        db_update('ai_moderation_verdict_events')->fields(['status' => 'pending', 'attempts' => ((int) $event->attempts) + 1, 'changed' => REQUEST_TIME])->condition('eid', (int) $event->eid)->execute();
+        db_update('ai_moderation_verdict_events')->fields(['status' => $exhausted ? 'failed' : 'pending', 'attempts' => $attempts, 'changed' => REQUEST_TIME])->condition('eid', (int) $event->eid)->execute();
       }
       catch (\Throwable $storage_exception) {
         watchdog('ai_moderation', 'Failed to update moderation verdict observer outbox [@code] (@type; @identifier).', _ai_moderation_exception_log_context($storage_exception, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);
@@ -550,10 +568,10 @@ function _ai_moderation_process_verdict_outbox() {
       continue;
     }
     try {
-      db_update('ai_moderation_verdict_events')->fields(['status' => 'delivered', 'changed' => REQUEST_TIME])->condition('eid', (int) $event->eid)->execute();
+      db_delete('ai_moderation_verdict_events')->condition('eid', (int) $event->eid)->execute();
     }
     catch (\Throwable $e) {
-      watchdog('ai_moderation', 'Failed to update moderation verdict observer outbox [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);
+      watchdog('ai_moderation', 'Failed to remove delivered moderation verdict observer event [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);
     }
   }
 }

@@ -6,6 +6,18 @@
  */
 
 /**
+ * Merge configured model values missing from discovered options as unavailable.
+ */
+function _ai_moderation_augment_model_options(array $options, array $configured_values) {
+  foreach ($configured_values as $value) {
+    if (!empty($value) && !isset($options[$value])) {
+      $options[$value] = t('@model (unavailable)', ['@model' => $value]);
+    }
+  }
+  return $options;
+}
+
+/**
  * Settings form for moderation profiles, targets, and prefilter settings.
  */
 function ai_moderation_settings_form($form, &$form_state) {
@@ -17,7 +29,16 @@ function ai_moderation_settings_form($form, &$form_state) {
     $profiles = ['default' => _ai_moderation_profile('default', [])];
   }
   $models = ai_get_all_chat_models();
-  $model_options = ['' => t('- Use default chat model -')] + $models;
+  $configured_chat_models = [];
+  foreach ($profiles as $profile) {
+    if (is_array($profile) && !empty($profile['model'])) {
+      $configured_chat_models[] = $profile['model'];
+    }
+  }
+  if (!empty($config->get('default_model'))) {
+    $configured_chat_models[] = $config->get('default_model');
+  }
+  $model_options = _ai_moderation_augment_model_options(['' => t('- Use default chat model -')] + $models, $configured_chat_models);
   $level_ranges = ai_moderation_level_ranges();
 
   $form['profiles'] = [
@@ -240,6 +261,7 @@ function ai_moderation_settings_form($form, &$form_state) {
   ];
   $prefilter = $config->get('prefilter') ?: [];
   $moderation_models = ai_get_all_moderation_models();
+  $prefilter_model_options = _ai_moderation_augment_model_options(['' => t('- Automatic -')] + $moderation_models, [$prefilter['model'] ?? '']);
   $form['prefilter']['enabled'] = [
     '#type' => 'checkbox',
     '#title' => t('Enable prefilter'),
@@ -250,7 +272,7 @@ function ai_moderation_settings_form($form, &$form_state) {
   $form['prefilter']['model'] = [
     '#type' => 'select',
     '#title' => t('Moderation model'),
-    '#options' => ['' => t('- Automatic -')] + $moderation_models,
+    '#options' => $prefilter_model_options,
     '#default_value' => $prefilter['model'] ?? '',
     '#disabled' => empty($moderation_models),
   ];

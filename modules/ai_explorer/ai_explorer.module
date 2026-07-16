@@ -1097,6 +1097,7 @@ function ai_explorer_moderation_form($form, &$form_state) {
   $form['response'] = [
     '#prefix' => '<div id="ai-explorer-moderation-response">',
     '#suffix' => '</div>',
+    '#markup' => _ai_explorer_moderation_response_markup($form_state),
   ];
   $form['actions'] = ['#type' => 'actions'];
   $form['actions']['submit'] = [
@@ -1130,16 +1131,23 @@ function ai_explorer_moderation_form_submit($form, &$form_state) {
  * Return moderation result markup for AJAX refresh.
  */
 function ai_explorer_moderation_get_response($form, &$form_state) {
+  $form['response']['#markup'] = _ai_explorer_moderation_response_markup($form_state);
+  return $form['response'];
+}
+
+/**
+ * Build moderation response markup shared by initial render and AJAX.
+ */
+function _ai_explorer_moderation_response_markup(array &$form_state) {
   if (!empty(form_get_errors())) {
-    $form['response']['#markup'] = '<p class="messages error">' . t('The moderation request could not be completed.') . '</p>';
+    return '<p class="messages error">' . t('The moderation request could not be completed.') . '</p>';
   }
   elseif (!empty($form_state['storage']['moderation_result'])) {
-    $form['response']['#markup'] = theme('ai_explorer_moderation_result', ['result' => $form_state['storage']['moderation_result']]);
+    return theme('ai_explorer_moderation_result', ['result' => $form_state['storage']['moderation_result']]);
   }
   else {
-    $form['response']['#markup'] = '<p>' . t('No moderation result available.') . '</p>';
+    return '<p>' . t('No moderation result available.') . '</p>';
   }
-  return $form['response'];
 }
 
 /**

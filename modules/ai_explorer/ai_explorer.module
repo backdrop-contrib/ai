@@ -1191,14 +1191,14 @@ function theme_ai_explorer_moderation_result($variables) {
   if (!empty($categories)) {
     $rows = [];
     foreach ($categories as $category => $violated) {
-      $rows[] = [check_plain(ucwords(str_replace(['_', '-'], ' ', $category))), $violated ? t('Flagged') : t('Clear')];
+      $rows[] = [check_plain(ucwords(str_replace(['_', '-', '/'], ' ', $category))), $violated ? t('Flagged') : t('Clear')];
     }
     $output .= theme('table', ['header' => [t('Category'), t('Status')], 'rows' => $rows]);
   }
   if (!empty($category_scores)) {
     $rows = [];
     foreach ($category_scores as $category => $score) {
-      $rows[] = [check_plain(ucwords(str_replace(['_', '-'], ' ', $category))), is_numeric($score) ? round($score * 100, 2) . '%' : t('Unknown')];
+      $rows[] = [check_plain(ucwords(str_replace(['_', '-', '/'], ' ', $category))), is_numeric($score) ? round($score * 100, 2) . '%' : t('Unknown')];
     }
     $output .= '<h3>' . t('Confidence scores') . '</h3>';
     $output .= theme('table', ['header' => [t('Category'), t('Score')], 'rows' => $rows]);

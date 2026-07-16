@@ -26,7 +26,7 @@ function ai_moderation_queue_page($reported_only = FALSE) {
   ];
   $query = db_select('ai_moderation_verdicts', 'am')->extend('PagerDefault')->extend('TableSort');
   $query->fields('am')->limit(50)->orderByHeader($header);
-  $filters = _ai_moderation_normalize_queue_filters($_GET);
+  $filters = _ai_moderation_normalize_queue_filters($_GET, $reported_only);
   if ($reported_only) {
     $query->condition('verdict', 'allow', '<>');
   }
@@ -73,7 +73,7 @@ function ai_moderation_queue_page($reported_only = FALSE) {
       l(t('View'), 'admin/config/ai/ai-moderation/queue/' . $record->vid),
     ];
   }
-  $build['filters'] = backdrop_get_form('ai_moderation_queue_filter_form');
+  $build['filters'] = backdrop_get_form('ai_moderation_queue_filter_form', $reported_only);
   $ranges = ai_moderation_level_ranges();
   $build['level_legend'] = [
     '#markup' => '<div class="ai-moderation-level-legend"><strong>' . t('Level guide') . '</strong><span class="ai-moderation-level-legend__item">' . $ranges['clear'] . ': ' . t('Clear') . '</span><span class="ai-moderation-level-legend__item">' . $ranges['review'] . ': ' . t('Needs review') . '</span><span class="ai-moderation-level-legend__item">' . $ranges['smoldering'] . ': ' . t('Smoldering') . '</span><span class="ai-moderation-level-legend__item">' . $ranges['dumpster_fire'] . ': ' . t('Dumpster fire') . '</span><p>' . t('These are editorial severity labels. Profile allow/review thresholds separately control the moderation action.') . '</p></div>',
@@ -92,15 +92,20 @@ function ai_moderation_queue_page($reported_only = FALSE) {
 /**
  * Filter form for the review queue.
  */
-function ai_moderation_queue_filter_form($form, &$form_state) {
-  $filters = _ai_moderation_normalize_queue_filters($_GET);
+function ai_moderation_queue_filter_form($form, &$form_state, $reported_only = FALSE) {
+  $filters = _ai_moderation_normalize_queue_filters($_GET, $reported_only);
   $has_filters = $filters['verdict'] !== '' || $filters['score_min'] !== '' || $filters['score_max'] !== '';
   $form['#queue_path'] = current_path();
+  $form['#reported_only'] = $reported_only;
   $form['filters'] = ['#type' => 'fieldset', '#title' => t('Filter'), '#tree' => TRUE, '#collapsible' => TRUE, '#collapsed' => !$has_filters];
+  $verdict_options = ['' => t('- All -'), 'allow' => t('Allow'), 'review' => t('Review'), 'block' => t('Block'), 'error' => t('Error')];
+  if ($reported_only) {
+    unset($verdict_options['allow']);
+  }
   $form['filters']['verdict'] = [
     '#type' => 'select',
     '#title' => t('Verdict'),
-    '#options' => ['' => t('- All -'), 'allow' => t('Allow'), 'review' => t('Review'), 'block' => t('Block'), 'error' => t('Error')],
+    '#options' => $verdict_options,
     '#default_value' => $filters['verdict'],
   ];
   $form['filters']['score_min'] = ['#type' => 'number', '#title' => t('Minimum score'), '#min' => 0, '#max' => 100, '#default_value' => $filters['score_min']];
@@ -116,7 +121,7 @@ function ai_moderation_queue_filter_form($form, &$form_state) {
  */
 function ai_moderation_queue_filter_form_submit($form, &$form_state) {
   $values = (array) ($form_state['values']['filters'] ?? []);
-  $query = array_filter(_ai_moderation_normalize_queue_filters($values), function ($value) {
+  $query = array_filter(_ai_moderation_normalize_queue_filters($values, !empty($form['#reported_only'])), function ($value) {
     return $value !== '';
   });
   $form_state['redirect'] = [$form['#queue_path'], ['query' => $query]];
@@ -125,9 +130,13 @@ function ai_moderation_queue_filter_form_submit($form, &$form_state) {
 /**
  * Normalize supported queue filters from request or form input.
  */
-function _ai_moderation_normalize_queue_filters(array $input) {
+function _ai_moderation_normalize_queue_filters(array $input, $reported_only = FALSE) {
   $filters = ['verdict' => '', 'score_min' => '', 'score_max' => ''];
-  if (isset($input['verdict']) && is_string($input['verdict']) && in_array($input['verdict'], ['allow', 'review', 'block', 'error'], TRUE)) {
+  $allowed_verdicts = ['review', 'block', 'error'];
+  if (!$reported_only) {
+    $allowed_verdicts[] = 'allow';
+  }
+  if (isset($input['verdict']) && is_string($input['verdict']) && in_array($input['verdict'], $allowed_verdicts, TRUE)) {
     $filters['verdict'] = $input['verdict'];
   }
   foreach (['score_min', 'score_max'] as $key) {

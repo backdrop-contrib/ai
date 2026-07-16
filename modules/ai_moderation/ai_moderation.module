@@ -288,6 +288,17 @@ function _ai_moderation_merge_entity_fields(array $existing, array $incoming) {
 }
 
 /**
+ * Normalize a comment bundle to the entity-info naming convention.
+ */
+function _ai_moderation_comment_bundle($bundle) {
+  $bundle = (string) $bundle;
+  if ($bundle !== '' && strpos($bundle, 'comment_node_') !== 0) {
+    $bundle = 'comment_node_' . $bundle;
+  }
+  return $bundle;
+}
+
+/**
  * Extract title and text fields from a node without rendering HTML.
  */
 function ai_moderation_extract_node_text($node) {
@@ -323,10 +334,7 @@ function ai_moderation_extract_comment_text($comment) {
   if (!empty($comment->subject)) {
     $parts[] = $comment->subject;
   }
-  $bundle = !empty($comment->node_type) ? $comment->node_type : '';
-  if ($bundle !== '' && strpos($bundle, 'comment_node_') !== 0) {
-    $bundle = 'comment_node_' . $bundle;
-  }
+  $bundle = _ai_moderation_comment_bundle(!empty($comment->node_type) ? $comment->node_type : '');
   if ($bundle !== '') {
     foreach (array_keys(field_info_instances('comment', $bundle)) as $field_name) {
       if (!ai_moderation_is_text_field('comment', $bundle, $field_name)) {
@@ -414,10 +422,7 @@ function ai_moderation_node_update($node) {
  */
 function ai_moderation_comment_presave($comment) {
   $bypass = ai_moderation_user_can_bypass();
-  $bundle = !empty($comment->node_type) ? $comment->node_type : '';
-  if ($bundle !== '' && strpos($bundle, 'comment_node_') !== 0) {
-    $bundle = 'comment_node_' . $bundle;
-  }
+  $bundle = _ai_moderation_comment_bundle(!empty($comment->node_type) ? $comment->node_type : '');
   $verdict = _ai_moderation_gate_builtin_entity('comment', $bundle, !empty($comment->cid) ? $comment->cid : 0, $comment, FALSE);
   if (!$bypass && !empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block' && !empty($verdict['enforce'])) {
     $comment->status = COMMENT_NOT_PUBLISHED;
@@ -493,10 +498,7 @@ function ai_moderation_comment_form_validate($form, &$form_state) {
   }
   // Match the entity shape used by comment_form_submit() and presave.
   comment_submit($comment);
-  $bundle = !empty($comment->node_type) ? $comment->node_type : '';
-  if ($bundle !== '' && strpos($bundle, 'comment_node_') !== 0) {
-    $bundle = 'comment_node_' . $bundle;
-  }
+  $bundle = _ai_moderation_comment_bundle(!empty($comment->node_type) ? $comment->node_type : '');
   $verdict = _ai_moderation_validate_builtin_entity('comment', $bundle, $comment);
   if (!empty($verdict) && ($verdict['action'] ?? $verdict['verdict']) === 'block') {
     $form_state['values']['status'] = COMMENT_NOT_PUBLISHED;
@@ -588,10 +590,7 @@ function _ai_moderation_store_builtin_entity_verdict($entity, $entity_type, $ent
   if (empty($entity->_ai_moderation_pending_verdict) || empty($entity_id) || !db_table_exists('ai_moderation_verdicts')) {
     return;
   }
-  $bundle = $entity_type === 'node' ? $entity->type : $entity->node_type;
-  if ($entity_type === 'comment' && strpos($bundle, 'comment_node_') !== 0) {
-    $bundle = 'comment_node_' . $bundle;
-  }
+  $bundle = $entity_type === 'node' ? $entity->type : _ai_moderation_comment_bundle($entity->node_type);
   $config = config('ai_moderation.settings');
   $profile_id = $config->get('targets.' . $entity_type . '.' . $bundle);
   if (empty($profile_id)) {

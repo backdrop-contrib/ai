@@ -25,7 +25,7 @@ function _ai_moderation_evaluate($text, array $options = []) {
     return _ai_moderation_failure($profile, t('Text exceeds the maximum moderation length of @limit bytes.', ['@limit' => AI_MODERATION_MAX_TEXT_BYTES]), [], $profile_id);
   }
   if ($text === '') {
-    return _ai_moderation_failure($profile, t('No text was provided for moderation.'));
+    return _ai_moderation_failure($profile, t('No text was provided for moderation.'), [], $profile_id);
   }
 
   $prefilter = _ai_moderation_prefilter($text, $profile, $options);
@@ -34,8 +34,8 @@ function _ai_moderation_evaluate($text, array $options = []) {
       'score' => $prefilter['score'],
       'verdict' => 'block',
       'action' => 'block',
-      'categories' => $prefilter['categories'],
-      'reason' => t('The provider moderation prefilter escalated this submission.'),
+      'categories' => _ai_moderation_category_codes($prefilter['categories'] ?? []),
+      'reason' => _ai_moderation_reason_code('unsafe_content'),
       'model' => $prefilter['model'],
       'source' => 'prefilter',
       'prefilter_flagged' => 1,
@@ -434,7 +434,7 @@ function _ai_moderation_prefilter($text, array $profile, array $options) {
       $max = max($max, $percent);
     }
     $result['score'] = $max;
-    $result['categories'] = $categories;
+    $result['categories'] = _ai_moderation_category_codes($categories);
     $threshold = max(0, min(100, (int) ($settings['escalate_score'] ?? 95)));
     $result['escalated'] = !empty($item['flagged']) && $max >= $threshold;
   }
@@ -476,7 +476,7 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
   if ($config === NULL) {
     $config = config('ai_moderation.settings');
   }
-  if (in_array($verdict['source'] ?? '', ['tool', 'json'], TRUE)) {
+  if (in_array($verdict['source'] ?? '', ['tool', 'json', 'prefilter'], TRUE)) {
     $verdict['reason'] = _ai_moderation_reason_code($verdict['reason'] ?? '');
     $verdict['categories'] = _ai_moderation_category_codes($verdict['categories'] ?? []);
   }
@@ -484,26 +484,31 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
   if (db_table_exists('ai_moderation_verdicts') && ($config->get('log_all') !== FALSE || $verdict['action'] !== 'allow')) {
     global $user;
     $now = REQUEST_TIME;
-    $verdict['vid'] = db_insert('ai_moderation_verdicts')->fields([
-      'entity_type' => $context['entity_type'],
-      'entity_bundle' => $context['entity_bundle'],
-      'entity_id' => (string) $context['entity_id'],
-      'entity_revision' => $context['entity_revision'] ?? NULL,
-      'content_hash' => $context['content_hash'] ?? NULL,
-      'profile' => $context['profile'],
-      'score' => $verdict['score'],
-      'verdict' => $verdict['verdict'],
-      'action' => $verdict['action'],
-      'categories' => json_encode($verdict['categories']),
-      'reason' => $verdict['reason'],
-      'model' => $verdict['model'],
-      'prefilter_flagged' => $verdict['prefilter_flagged'],
-      'source' => $verdict['source'],
-      'uid' => !empty($user->uid) ? $user->uid : 0,
-      'created' => $now,
-      'changed' => $now,
-    ])->execute();
-    module_invoke_all('ai_moderation_verdict', $verdict, $context);
+    try {
+      $verdict['vid'] = db_insert('ai_moderation_verdicts')->fields([
+        'entity_type' => $context['entity_type'],
+        'entity_bundle' => $context['entity_bundle'],
+        'entity_id' => (string) $context['entity_id'],
+        'entity_revision' => $context['entity_revision'] ?? NULL,
+        'content_hash' => $context['content_hash'] ?? NULL,
+        'profile' => $context['profile'],
+        'score' => $verdict['score'],
+        'verdict' => $verdict['verdict'],
+        'action' => $verdict['action'],
+        'categories' => json_encode($verdict['categories']),
+        'reason' => $verdict['reason'],
+        'model' => $verdict['model'],
+        'prefilter_flagged' => $verdict['prefilter_flagged'],
+        'source' => $verdict['source'],
+        'uid' => !empty($user->uid) ? $user->uid : 0,
+        'created' => $now,
+        'changed' => $now,
+      ])->execute();
+      module_invoke_all('ai_moderation_verdict', $verdict, $context);
+    }
+    catch (\Throwable $e) {
+      watchdog('ai_moderation', 'Failed to store moderation verdict [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $verdict['model'] ?? ''), WATCHDOG_ERROR);
+    }
   }
   return $verdict;
 }

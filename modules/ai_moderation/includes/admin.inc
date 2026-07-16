@@ -452,6 +452,7 @@ function ai_moderation_settings_form_test_submit($form, &$form_state) {
   $text = trim($form_state['values']['preview']['text'] ?? '');
   if ($text === '') {
     form_set_error('preview][text', t('Enter sample text to test this profile.'));
+    $form_state['rebuild'] = TRUE;
     return;
   }
   $form_state['storage']['preview_result'] = ai_moderation_evaluate($text, [

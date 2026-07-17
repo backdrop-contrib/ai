@@ -30,9 +30,11 @@ function hook_ai_moderation_entity_info() {
  * Use hook_ai_moderation_verdict_alter() to override the verdict before it is
  * stored. This hook receives the stored verdict and context for side effects.
  *
- * Delivery is at-least-once: if this hook throws, the event is retried, so
+ * Delivery is at-least-once and tracked independently per implementing
+ * module: if this hook throws, only this module's delivery is retried, so
  * side effects performed before the exception may execute again on a later
- * attempt. Implementations must deduplicate repeated processing using
+ * attempt. A persistently failing implementation does not block delivery to
+ * other modules. Implementations must deduplicate repeated processing using
  * $verdict['vid'].
  */
 function hook_ai_moderation_verdict(array $verdict, array $context) {

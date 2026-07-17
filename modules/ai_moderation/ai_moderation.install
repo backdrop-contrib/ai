@@ -47,6 +47,7 @@ function ai_moderation_schema() {
       'payload' => ['type' => 'text', 'size' => 'big', 'not null' => TRUE],
       'status' => ['type' => 'varchar', 'length' => 16, 'not null' => TRUE, 'default' => 'pending'],
       'attempts' => ['type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE, 'default' => 0],
+      'delivered' => ['type' => 'text', 'not null' => FALSE],
       'created' => ['type' => 'int', 'not null' => TRUE, 'default' => 0],
       'changed' => ['type' => 'int', 'not null' => TRUE, 'default' => 0],
     ],
@@ -139,4 +140,14 @@ function ai_moderation_update_1004() {
     db_create_table('ai_moderation_verdict_events', $schema['ai_moderation_verdict_events']);
   }
   return t('Added the AI Moderation verdict observer outbox.');
+}
+
+/**
+ * Track per-observer delivery so one failing observer cannot block others.
+ */
+function ai_moderation_update_1005() {
+  if (db_table_exists('ai_moderation_verdict_events') && !db_field_exists('ai_moderation_verdict_events', 'delivered')) {
+    db_add_field('ai_moderation_verdict_events', 'delivered', ['type' => 'text', 'not null' => FALSE]);
+  }
+  return t('Added per-observer delivery tracking to the AI Moderation verdict outbox.');
 }

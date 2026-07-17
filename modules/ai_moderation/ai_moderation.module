@@ -427,12 +427,18 @@ function ai_moderation_is_text_field($entity_type, $bundle, $field_name) {
 }
 
 /**
- * Run configured moderation for node saves.
+ * Apply enforcement for node saves using a verdict evaluated before save().
+ *
+ * Evaluation must happen before node_save() opens its persistence flow (see
+ * ai_moderation_node_form_validate()). Presave never performs its own
+ * provider evaluation; a save with no pending verdict is handled by
+ * _ai_moderation_store_builtin_entity_verdict() after the save completes.
  */
 function ai_moderation_node_presave($node) {
-  $bypass = ai_moderation_user_can_bypass();
-  $verdict = _ai_moderation_gate_builtin_entity('node', $node->type, !empty($node->nid) ? $node->nid : 0, $node, FALSE);
-  if (!$bypass && _ai_moderation_enforcement_ready($verdict)) {
+  if (empty($node->_ai_moderation_pending_verdict)) {
+    return;
+  }
+  if (!ai_moderation_user_can_bypass() && _ai_moderation_enforcement_ready($node->_ai_moderation_pending_verdict)) {
     $node->status = NODE_NOT_PUBLISHED;
   }
 }
@@ -452,13 +458,18 @@ function ai_moderation_node_update($node) {
 }
 
 /**
- * Run configured moderation for comment saves.
+ * Apply enforcement for comment saves using a verdict evaluated before save().
+ *
+ * Evaluation must happen before comment_save() opens its persistence flow
+ * (see ai_moderation_comment_form_validate()). Presave never performs its
+ * own provider evaluation; a save with no pending verdict is handled by
+ * _ai_moderation_store_builtin_entity_verdict() after the save completes.
  */
 function ai_moderation_comment_presave($comment) {
-  $bypass = ai_moderation_user_can_bypass();
-  $bundle = _ai_moderation_comment_bundle(!empty($comment->node_type) ? $comment->node_type : '');
-  $verdict = _ai_moderation_gate_builtin_entity('comment', $bundle, !empty($comment->cid) ? $comment->cid : 0, $comment, FALSE);
-  if (!$bypass && _ai_moderation_enforcement_ready($verdict)) {
+  if (empty($comment->_ai_moderation_pending_verdict)) {
+    return;
+  }
+  if (!ai_moderation_user_can_bypass() && _ai_moderation_enforcement_ready($comment->_ai_moderation_pending_verdict)) {
     $comment->status = COMMENT_NOT_PUBLISHED;
   }
 }
@@ -516,6 +527,10 @@ function ai_moderation_node_form_validate($form, &$form_state) {
   $node = clone $form_state['node'];
   entity_form_submit_build_entity('node', $node, $form, $form_state);
   $verdict = _ai_moderation_validate_builtin_entity('node', $node->type, $node);
+  if (!empty($node->_ai_moderation_pending_verdict)) {
+    $form_state['node']->_ai_moderation_pending_verdict = $node->_ai_moderation_pending_verdict;
+    $form_state['node']->_ai_moderation_pending_context = $node->_ai_moderation_pending_context;
+  }
   if (_ai_moderation_enforcement_ready($verdict)) {
     $form_state['values']['status'] = NODE_NOT_PUBLISHED;
     backdrop_set_message(t('Your submission was saved unpublished and sent to moderation review.'), 'warning');
@@ -542,6 +557,10 @@ function ai_moderation_comment_form_validate($form, &$form_state) {
   comment_submit($comment);
   $bundle = _ai_moderation_comment_bundle(!empty($comment->node_type) ? $comment->node_type : '');
   $verdict = _ai_moderation_validate_builtin_entity('comment', $bundle, $comment);
+  if (!empty($comment->_ai_moderation_pending_verdict)) {
+    $form_state['comment']->_ai_moderation_pending_verdict = $comment->_ai_moderation_pending_verdict;
+    $form_state['comment']->_ai_moderation_pending_context = $comment->_ai_moderation_pending_context;
+  }
   if (_ai_moderation_enforcement_ready($verdict)) {
     $form_state['values']['status'] = COMMENT_NOT_PUBLISHED;
     backdrop_set_message(t('Your reply was saved unpublished and sent to moderation review.'), 'warning');
@@ -565,7 +584,7 @@ function _ai_moderation_validate_builtin_entity($entity_type, $bundle, $entity) 
   elseif ($entity_type === 'comment' && !empty($entity->cid)) {
     $entity_id = (int) $entity->cid;
   }
-  $verdict = _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $entity, FALSE);
+  $verdict = _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $entity);
   if (empty($verdict['enforce'])) {
     return NULL;
   }
@@ -573,9 +592,13 @@ function _ai_moderation_validate_builtin_entity($entity_type, $bundle, $entity) 
 }
 
 /**
- * Apply the configured built-in target, including optional enforcement.
+ * Evaluate the configured built-in target and attach a pending verdict.
+ *
+ * Never stores a verdict. Evaluation must happen before save() opens its
+ * persistence flow; _ai_moderation_store_builtin_entity_verdict() persists
+ * the pending verdict this attaches once the save succeeds.
  */
-function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $entity, $store = TRUE) {
+function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $entity) {
   ai_moderation_load_include('evaluate');
   $config = config('ai_moderation.settings');
   $profile = $config->get('targets.' . $entity_type . '.' . $bundle);
@@ -612,39 +635,42 @@ function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $
     $verdict = $cache[$cache_key];
   }
   else {
-    $verdict = $store
-      ? ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, ['profile' => $profile])
-      : _ai_moderation_evaluate($text, ['profile' => $profile]);
-    if (!$store) {
-      backdrop_alter('ai_moderation_verdict', $verdict, $context);
-    }
+    $verdict = _ai_moderation_evaluate($text, ['profile' => $profile]);
+    backdrop_alter('ai_moderation_verdict', $verdict, $context);
     $cache[$cache_key] = $verdict;
   }
   if (empty($verdict)) {
     return NULL;
   }
-  if (!$store) {
-    $entity->_ai_moderation_pending_verdict = $verdict;
-    $entity->_ai_moderation_pending_context = $context;
-  }
+  $entity->_ai_moderation_pending_verdict = $verdict;
+  $entity->_ai_moderation_pending_context = $context;
   return $verdict;
 }
 
 /**
  * Store a cached node verdict only after its save has succeeded.
+ *
+ * A save that reaches here without a pending verdict skipped preflight
+ * evaluation (e.g. a programmatic save that bypassed the moderation form).
+ * Rather than silently skip a configured target or evaluate synchronously
+ * after the fact, this queues an async re-scan; if that is unavailable, it
+ * logs an explicit warning so the gap is visible instead of silent.
  */
 function _ai_moderation_store_builtin_entity_verdict($entity, $entity_type, $entity_id) {
-  if (empty($entity->_ai_moderation_pending_verdict)) {
-    return;
-  }
-  if (empty($entity_id)) {
-    throw new RuntimeException('AI moderation verdict cannot be stored without a final entity ID.');
-  }
   $bundle = $entity_type === 'node' ? $entity->type : _ai_moderation_comment_bundle($entity->node_type);
   $config = config('ai_moderation.settings');
   $profile_id = $config->get('targets.' . $entity_type . '.' . $bundle);
   if (empty($profile_id)) {
     return;
+  }
+  if (empty($entity->_ai_moderation_pending_verdict)) {
+    if (!empty($entity_id) && ai_moderation_rescan_entity_async($entity_type, $entity_id) === FALSE) {
+      watchdog('ai_moderation', 'Skipped moderation for @type:@id because no preflight verdict was evaluated and AI Async is unavailable to queue a re-scan.', ['@type' => $entity_type, '@id' => $entity_id], WATCHDOG_WARNING);
+    }
+    return;
+  }
+  if (empty($entity_id)) {
+    throw new RuntimeException('AI moderation verdict cannot be stored without a final entity ID.');
   }
   $context = $entity->_ai_moderation_pending_context ?? [
     'entity_type' => $entity_type,

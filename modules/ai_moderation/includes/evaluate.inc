@@ -565,15 +565,37 @@ function _ai_moderation_process_verdict_outbox() {
       db_update('ai_moderation_verdict_events')->fields(['status' => 'failed', 'changed' => time()])->condition('eid', (int) $event->eid)->execute();
       continue;
     }
-    try {
-      module_invoke_all('ai_moderation_verdict', $payload['verdict'], $payload['context']);
+    $delivered = [];
+    if (!empty($event->delivered)) {
+      $decoded_delivered = json_decode($event->delivered, TRUE);
+      $delivered = is_array($decoded_delivered) ? $decoded_delivered : [];
     }
-    catch (\Throwable $e) {
-      $attempts = ((int) $event->attempts) + 1;
-      $exhausted = $attempts >= AI_MODERATION_OUTBOX_MAX_ATTEMPTS;
-      watchdog('ai_moderation', $exhausted ? 'Moderation verdict observer failed; retries exhausted [@code] (@type; @identifier).' : 'Moderation verdict observer failed; event will be retried [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);
+    $failed = FALSE;
+    foreach (module_implements('ai_moderation_verdict') as $module) {
+      if (in_array($module, $delivered, TRUE)) {
+        continue;
+      }
       try {
-        db_update('ai_moderation_verdict_events')->fields(['status' => $exhausted ? 'failed' : 'pending', 'attempts' => $attempts, 'changed' => time()])->condition('eid', (int) $event->eid)->execute();
+        module_invoke($module, 'ai_moderation_verdict', $payload['verdict'], $payload['context']);
+        $delivered[] = $module;
+      }
+      catch (\Throwable $e) {
+        $failed = TRUE;
+        watchdog('ai_moderation', 'Moderation verdict observer @module failed [@code] (@type; @identifier).', ['@module' => $module] + _ai_moderation_exception_log_context($e, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);
+      }
+    }
+    if ($failed) {
+      $exhausted = $attempts >= AI_MODERATION_OUTBOX_MAX_ATTEMPTS;
+      try {
+        db_update('ai_moderation_verdict_events')
+          ->fields([
+            'status' => $exhausted ? 'failed' : 'pending',
+            'attempts' => $attempts,
+            'delivered' => json_encode($delivered),
+            'changed' => time(),
+          ])
+          ->condition('eid', (int) $event->eid)
+          ->execute();
       }
       catch (\Throwable $storage_exception) {
         watchdog('ai_moderation', 'Failed to update moderation verdict observer outbox [@code] (@type; @identifier).', _ai_moderation_exception_log_context($storage_exception, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);

@@ -179,6 +179,10 @@ function ai_moderation_async_rescan_entity(array $data) {
   $entity = reset($entities);
   $ids = entity_extract_ids($entity_type, $entity);
   $bundle = $ids[2] ?? '';
+  if ($entity_type === 'comment') {
+    $bundle = _ai_moderation_comment_bundle($bundle);
+  }
+  $revision_id = $ids[1] ?? NULL;
   $definitions = ai_moderation_get_entity_info();
   $extract = $definitions[$entity_type]['extract'] ?? '';
   if (!is_callable($extract)) {
@@ -188,7 +192,7 @@ function ai_moderation_async_rescan_entity(array $data) {
   if ($text === '') {
     return ['status' => 'error', 'message' => 'Entity has no moderatable text.'];
   }
-  $verdict = ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text);
+  $verdict = ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, !empty($revision_id) ? ['entity_revision' => $revision_id] : []);
   return $verdict ?: ['status' => 'skipped', 'message' => 'Entity bundle has no configured moderation target.'];
 }
 

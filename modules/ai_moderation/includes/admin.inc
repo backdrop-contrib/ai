@@ -342,6 +342,7 @@ function ai_moderation_settings_form($form, &$form_state) {
     '#type' => 'submit',
     '#value' => t('Save configuration'),
     '#submit' => ['ai_moderation_settings_form_submit'],
+    '#access' => empty($form_state['storage']['adding_profile']),
   ];
   return $form;
 }

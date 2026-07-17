@@ -2,7 +2,7 @@
   "_config_name": "ai_moderation.settings",
   "default_model": "",
   "temperature": 0,
-  "log_all": true,
+  "log_all": false,
   "profiles": {
     "default": {
       "label": "Default moderation profile",

@@ -295,7 +295,7 @@ function _ai_moderation_parse_json_response($content) {
  * Validate model output and apply local score-band policy.
  */
 function _ai_moderation_finalize_verdict(array $parsed, array $profile, array $prefilter, $profile_id, $model, $source) {
-  if (!isset($parsed['score']) || !is_numeric($parsed['score'])) {
+  if (!isset($parsed['score']) || !is_numeric($parsed['score']) || !is_finite((float) $parsed['score'])) {
     return _ai_moderation_failure($profile, t('The model returned a verdict without a numeric score.'), $prefilter, $profile_id, $model);
   }
   $score = max(0, min(100, (int) round($parsed['score'])));
@@ -527,16 +527,16 @@ function _ai_moderation_process_verdict_outbox() {
   }
   // Reclaim events left in "processing" by a request that never finished.
   db_update('ai_moderation_verdict_events')
-    ->fields(['status' => 'failed', 'changed' => REQUEST_TIME])
+    ->fields(['status' => 'failed', 'changed' => time()])
     ->condition('status', 'processing')
-    ->condition('changed', REQUEST_TIME - AI_MODERATION_OUTBOX_LEASE_SECONDS, '<')
+    ->condition('changed', time() - AI_MODERATION_OUTBOX_LEASE_SECONDS, '<')
     ->condition('attempts', AI_MODERATION_OUTBOX_MAX_ATTEMPTS, '>=')
     ->execute();
 
   db_update('ai_moderation_verdict_events')
-    ->fields(['status' => 'pending', 'changed' => REQUEST_TIME])
+    ->fields(['status' => 'pending', 'changed' => time()])
     ->condition('status', 'processing')
-    ->condition('changed', REQUEST_TIME - AI_MODERATION_OUTBOX_LEASE_SECONDS, '<')
+    ->condition('changed', time() - AI_MODERATION_OUTBOX_LEASE_SECONDS, '<')
     ->condition('attempts', AI_MODERATION_OUTBOX_MAX_ATTEMPTS, '<')
     ->execute();
   $events = db_select('ai_moderation_verdict_events', 'ame')
@@ -551,7 +551,7 @@ function _ai_moderation_process_verdict_outbox() {
       ->fields([
         'status' => 'processing',
         'attempts' => $attempts,
-        'changed' => REQUEST_TIME,
+        'changed' => time(),
       ])
       ->condition('eid', (int) $event->eid)
       ->condition('status', 'pending')
@@ -562,7 +562,7 @@ function _ai_moderation_process_verdict_outbox() {
     $payload = json_decode($event->payload, TRUE);
     if (!is_array($payload) || !isset($payload['verdict'], $payload['context']) || !is_array($payload['verdict']) || !is_array($payload['context'])) {
       watchdog('ai_moderation', 'Discarded malformed moderation verdict observer event @id.', ['@id' => (int) $event->eid], WATCHDOG_ERROR);
-      db_update('ai_moderation_verdict_events')->fields(['status' => 'failed', 'changed' => REQUEST_TIME])->condition('eid', (int) $event->eid)->execute();
+      db_update('ai_moderation_verdict_events')->fields(['status' => 'failed', 'changed' => time()])->condition('eid', (int) $event->eid)->execute();
       continue;
     }
     try {
@@ -573,7 +573,7 @@ function _ai_moderation_process_verdict_outbox() {
       $exhausted = $attempts >= AI_MODERATION_OUTBOX_MAX_ATTEMPTS;
       watchdog('ai_moderation', $exhausted ? 'Moderation verdict observer failed; retries exhausted [@code] (@type; @identifier).' : 'Moderation verdict observer failed; event will be retried [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);
       try {
-        db_update('ai_moderation_verdict_events')->fields(['status' => $exhausted ? 'failed' : 'pending', 'attempts' => $attempts, 'changed' => REQUEST_TIME])->condition('eid', (int) $event->eid)->execute();
+        db_update('ai_moderation_verdict_events')->fields(['status' => $exhausted ? 'failed' : 'pending', 'attempts' => $attempts, 'changed' => time()])->condition('eid', (int) $event->eid)->execute();
       }
       catch (\Throwable $storage_exception) {
         watchdog('ai_moderation', 'Failed to update moderation verdict observer outbox [@code] (@type; @identifier).', _ai_moderation_exception_log_context($storage_exception, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);

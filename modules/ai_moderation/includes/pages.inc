@@ -53,12 +53,13 @@ function ai_moderation_queue_page($reported_only = FALSE) {
   }
   $rows = [];
   foreach ($records as $record) {
-    $label = check_plain($record->entity_type . ':' . $record->entity_bundle . '/' . $record->entity_id);
+    $label_source = $record->entity_type . ':' . $record->entity_bundle . '/' . $record->entity_id;
+    $label = check_plain($label_source);
     $entity = $loaded_entities[$record->entity_type][$record->entity_id] ?? NULL;
     if (!empty($entity)) {
       $uri = entity_uri($record->entity_type, $entity);
       if (!empty($uri['path'])) {
-        $label = l($label, $uri['path']);
+        $label = l($label_source, $uri['path']);
       }
     }
     $rows[] = [

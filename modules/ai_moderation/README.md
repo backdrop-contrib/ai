@@ -132,7 +132,9 @@ Custom entities can implement `hook_ai_moderation_entity_info()` to appear in
 the target matrix, or call:
 
 ```php
-$verdict = ai_moderation_gate_entity('forum_post', 'discussion', $id, $text, [
+// Replace 123 with the identifier of the entity being moderated.
+$entity_id = 123;
+$verdict = ai_moderation_gate_entity('forum_post', 'discussion', $entity_id, $text, [
   'profile' => 'default',
 ]);
 ```

@@ -576,6 +576,11 @@ function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $
   if (empty($profile)) {
     return;
   }
+  $profiles = $config->get('profiles') ?: [];
+  if (!isset($profiles[$profile]) && !($profile === 'default' && empty($profiles))) {
+    watchdog('ai_moderation', 'Target references an unknown moderation profile: @profile.', ['@profile' => $profile], WATCHDOG_ERROR);
+    throw new RuntimeException('The configured moderation profile is unavailable.');
+  }
   $info = ai_moderation_get_entity_info();
   $extract = !empty($info[$entity_type]['extract']) ? $info[$entity_type]['extract'] : '';
   if (!is_callable($extract)) {

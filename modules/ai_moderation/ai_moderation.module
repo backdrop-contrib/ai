@@ -503,10 +503,9 @@ function ai_moderation_node_form_validate($form, &$form_state) {
   if (form_get_errors()) {
     return;
   }
-  $node = clone $form_state['node'];
-  foreach ($form_state['values'] as $key => $value) {
-    $node->{$key} = $value;
-  }
+  $moderation_state = $form_state;
+  $moderation_state['node'] = clone $form_state['node'];
+  $node = node_form_submit_build_node($form, $moderation_state);
   $verdict = _ai_moderation_validate_builtin_entity('node', $node->type, $node);
   if (_ai_moderation_enforcement_ready($verdict)) {
     $form_state['values']['status'] = NODE_NOT_PUBLISHED;
@@ -529,9 +528,7 @@ function ai_moderation_comment_form_validate($form, &$form_state) {
     return;
   }
   $comment = clone $form_state['comment'];
-  foreach ($form_state['values'] as $key => $value) {
-    $comment->{$key} = $value;
-  }
+  entity_form_submit_build_entity('comment', $comment, $form, $form_state);
   // Match the entity shape used by comment_form_submit() and presave.
   comment_submit($comment);
   $bundle = _ai_moderation_comment_bundle(!empty($comment->node_type) ? $comment->node_type : '');

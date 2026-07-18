@@ -207,13 +207,10 @@ function ai_moderation_async_rescan_entity(array $data) {
   // to observers, not only before enforcement. A stale verdict is discarded
   // with no review-queue or observer side effects, and a fresh scan is
   // queued for the entity's current content instead.
-  $current_entity = NULL;
-  if (in_array($entity_type, ['node', 'comment'], TRUE)) {
-    $current_entity = _ai_moderation_reload_current_entity($entity_type, $entity_id, $revision_id, $content_hash);
-    if ($current_entity === NULL) {
-      ai_moderation_rescan_entity_async($entity_type, $entity_id);
-      return ['status' => 'skipped', 'message' => 'Entity content changed during evaluation; a new re-scan was queued.'];
-    }
+  $current_entity = _ai_moderation_reload_current_entity($entity_type, $entity_id, $revision_id, $content_hash);
+  if ($current_entity === NULL) {
+    ai_moderation_rescan_entity_async($entity_type, $entity_id);
+    return ['status' => 'skipped', 'message' => 'Entity content changed during evaluation; a new re-scan was queued.'];
   }
 
   $context = [
@@ -572,9 +569,17 @@ function ai_moderation_node_presave($node) {
  * Confirm a pending verdict's content hash still matches the final entity.
  *
  * entity_form_submit_build_entity() only populates Field API values;
- * node_submit() and hook_node_submit() implementations can still transform
- * content afterward, and presave runs after that transformation. Re-extract
- * and re-hash the final text before trusting a verdict evaluated earlier.
+ * node_submit()/comment_submit() and hook_node_submit() implementations can
+ * still transform content afterward, and presave runs after that
+ * transformation. Re-extract and re-hash the final text before trusting a
+ * verdict evaluated earlier.
+ *
+ * The final entity's uid can also still differ from what was captured at
+ * validate time (e.g. another module's earlier hook_node_presave() or
+ * hook_comment_presave() reassigning authorship before ours runs). That
+ * does not invalidate the verdict, since it was evaluated against text, not
+ * authorship, but the pending context's uid is refreshed here so storage
+ * attributes it to the entity actually being persisted.
  */
 function _ai_moderation_pending_verdict_matches_entity($entity_type, $entity) {
   $context = $entity->_ai_moderation_pending_context ?? [];
@@ -588,7 +593,13 @@ function _ai_moderation_pending_verdict_matches_entity($entity_type, $entity) {
     return TRUE;
   }
   $text = call_user_func($extract, $entity);
-  return hash('sha256', (string) $text) === $expected_hash;
+  if (hash('sha256', (string) $text) !== $expected_hash) {
+    return FALSE;
+  }
+  if (isset($entity->_ai_moderation_pending_context)) {
+    $entity->_ai_moderation_pending_context['uid'] = isset($entity->uid) ? (int) $entity->uid : 0;
+  }
+  return TRUE;
 }
 
 /**
@@ -712,6 +723,10 @@ function ai_moderation_node_form_validate($form, &$form_state) {
   $bypass = ai_moderation_user_can_bypass();
   $node = clone $form_state['node'];
   entity_form_submit_build_entity('node', $node, $form, $form_state);
+  // Match the entity shape used by node_form_submit() and presave, so the
+  // pending verdict's captured uid reflects the final "Authored by" value
+  // rather than the clone's pre-edit uid.
+  node_submit($node);
   $verdict = _ai_moderation_validate_builtin_entity('node', $node->type, $node);
   if (!empty($node->_ai_moderation_pending_verdict)) {
     $form_state['node']->_ai_moderation_pending_verdict = $node->_ai_moderation_pending_verdict;

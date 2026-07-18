@@ -267,7 +267,7 @@ function ai_moderation_settings_form($form, &$form_state) {
     '#type' => 'checkbox',
     '#title' => t('Enable prefilter'),
     '#default_value' => !empty($prefilter['enabled']),
-    '#disabled' => empty($moderation_models),
+    '#disabled' => empty($moderation_models) && empty($prefilter['enabled']),
     '#description' => empty($moderation_models) ? t('Requires an enabled provider that advertises moderation support.') : t('Unavailable or failed prefilter calls fall back to chat evaluation.'),
   ];
   $form['prefilter']['model'] = [

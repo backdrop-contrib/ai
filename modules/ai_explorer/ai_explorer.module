@@ -1095,7 +1095,7 @@ function ai_explorer_moderation_form($form, &$form_state) {
     '#default_value' => ai_default_model($models, config_get('ai.settings', 'default_moderation_model'), ['omni-moderation-latest']),
   ];
   $form['response'] = [
-    '#prefix' => '<div id="ai-explorer-moderation-response">',
+    '#prefix' => '<div id="ai-explorer-moderation-response" aria-live="polite" aria-atomic="true">',
     '#suffix' => '</div>',
     '#markup' => _ai_explorer_moderation_response_markup($form_state),
   ];

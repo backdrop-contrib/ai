@@ -172,7 +172,7 @@ function ai_moderation_async_rescan_entity(array $data) {
   if (empty($entity_info) || $entity_id === '') {
     return ['status' => 'error', 'message' => 'Entity type or ID is invalid.'];
   }
-  $entities = entity_load($entity_type, [$entity_id]);
+  $entities = entity_load($entity_type, [$entity_id], [], TRUE);
   if (empty($entities)) {
     return ['status' => 'error', 'message' => 'Entity was not found.'];
   }
@@ -220,7 +220,7 @@ function _ai_moderation_enforce_async_verdict($entity_type, $entity_id, $revisio
   if (!_ai_moderation_enforcement_ready($verdict)) {
     return;
   }
-  $entities = entity_load($entity_type, [$entity_id]);
+  $entities = entity_load($entity_type, [$entity_id], [], TRUE);
   if (empty($entities)) {
     return;
   }

@@ -470,7 +470,7 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
     $verdict['categories'] = _ai_moderation_category_codes($verdict['categories'] ?? []);
   }
   $verdict['action'] = $verdict['action'] ?? ($verdict['verdict'] ?? 'review');
-  $should_store = $config->get('log_all') === TRUE || $verdict['action'] !== 'allow';
+  $should_store = $verdict['verdict'] === 'error' || $config->get('log_all') === TRUE || $verdict['action'] !== 'allow';
   if ($should_store) {
     if (!db_table_exists('ai_moderation_verdicts')) {
       watchdog('ai_moderation', 'Cannot store moderation verdict because verdict storage is unavailable.', [], WATCHDOG_ERROR);

@@ -196,7 +196,8 @@ function ai_moderation_queue_view_page($vid) {
     }
     if (!empty($entities)) {
       $entity = reset($entities);
-      $entity_title = !empty($entity->title) ? $entity->title : (!empty($entity->subject) ? $entity->subject : '');
+      $entity_title = entity_label($record->entity_type, $entity);
+      $entity_title = is_scalar($entity_title) ? trim((string) $entity_title) : '';
       $definitions = ai_moderation_get_entity_info();
       $extract = $definitions[$record->entity_type]['extract'] ?? '';
       if (is_callable($extract)) {

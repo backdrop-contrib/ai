@@ -501,17 +501,19 @@ function ai_moderation_is_text_field($entity_type, $bundle, $field_name) {
  * _ai_moderation_store_builtin_entity_verdict() after the save completes.
  */
 function ai_moderation_node_presave($node) {
-  if (empty($node->_ai_moderation_pending_verdict)) {
-    return;
+  if (!empty($node->_ai_moderation_pending_verdict)) {
+    if (!_ai_moderation_pending_verdict_matches_entity('node', $node)) {
+      unset($node->_ai_moderation_pending_verdict);
+      unset($node->_ai_moderation_pending_context);
+    }
+    else {
+      if (!ai_moderation_user_can_bypass() && _ai_moderation_enforcement_ready($node->_ai_moderation_pending_verdict)) {
+        $node->status = NODE_NOT_PUBLISHED;
+      }
+      return;
+    }
   }
-  if (!_ai_moderation_pending_verdict_matches_entity('node', $node)) {
-    unset($node->_ai_moderation_pending_verdict);
-    unset($node->_ai_moderation_pending_context);
-    return;
-  }
-  if (!ai_moderation_user_can_bypass() && _ai_moderation_enforcement_ready($node->_ai_moderation_pending_verdict)) {
-    $node->status = NODE_NOT_PUBLISHED;
-  }
+  _ai_moderation_fail_closed_without_preflight('node', $node->type, $node);
 }
 
 /**
@@ -538,6 +540,38 @@ function _ai_moderation_pending_verdict_matches_entity($entity_type, $entity) {
 }
 
 /**
+ * Quarantine before save when an enforced target has no preflight verdict.
+ *
+ * A save with no pending verdict skipped preflight evaluation (e.g. a
+ * programmatic save that bypassed the moderation form). Log-only profiles
+ * still get a best-effort async re-scan after save via
+ * _ai_moderation_store_builtin_entity_verdict(). Profiles with enforcement
+ * on cannot be allowed to publish content that was never evaluated, so this
+ * quarantines the entity before it is written; the entity_id may not exist
+ * yet for new content, so the async re-scan itself is still queued after
+ * save once the final ID is known.
+ */
+function _ai_moderation_fail_closed_without_preflight($entity_type, $bundle, $entity) {
+  $config = config('ai_moderation.settings');
+  $profile_id = $config->get('targets.' . $entity_type . '.' . $bundle);
+  if (empty($profile_id)) {
+    return;
+  }
+  ai_moderation_load_include('evaluate');
+  $profile = _ai_moderation_profile($profile_id, []);
+  if ($profile['enforce'] !== 'enforce' || ai_moderation_user_can_bypass()) {
+    return;
+  }
+  $entity->_ai_moderation_needs_async_rescan = TRUE;
+  if ($entity_type === 'node') {
+    $entity->status = NODE_NOT_PUBLISHED;
+  }
+  else {
+    $entity->status = COMMENT_NOT_PUBLISHED;
+  }
+}
+
+/**
  * Attach a verdict recorded during a new-node presave to its final ID.
  */
 function ai_moderation_node_insert($node) {
@@ -560,17 +594,20 @@ function ai_moderation_node_update($node) {
  * _ai_moderation_store_builtin_entity_verdict() after the save completes.
  */
 function ai_moderation_comment_presave($comment) {
-  if (empty($comment->_ai_moderation_pending_verdict)) {
-    return;
+  if (!empty($comment->_ai_moderation_pending_verdict)) {
+    if (!_ai_moderation_pending_verdict_matches_entity('comment', $comment)) {
+      unset($comment->_ai_moderation_pending_verdict);
+      unset($comment->_ai_moderation_pending_context);
+    }
+    else {
+      if (!ai_moderation_user_can_bypass() && _ai_moderation_enforcement_ready($comment->_ai_moderation_pending_verdict)) {
+        $comment->status = COMMENT_NOT_PUBLISHED;
+      }
+      return;
+    }
   }
-  if (!_ai_moderation_pending_verdict_matches_entity('comment', $comment)) {
-    unset($comment->_ai_moderation_pending_verdict);
-    unset($comment->_ai_moderation_pending_context);
-    return;
-  }
-  if (!ai_moderation_user_can_bypass() && _ai_moderation_enforcement_ready($comment->_ai_moderation_pending_verdict)) {
-    $comment->status = COMMENT_NOT_PUBLISHED;
-  }
+  $bundle = _ai_moderation_comment_bundle(!empty($comment->node_type) ? $comment->node_type : '');
+  _ai_moderation_fail_closed_without_preflight('comment', $bundle, $comment);
 }
 
 /**
@@ -767,8 +804,14 @@ function _ai_moderation_store_builtin_entity_verdict($entity, $entity_type, $ent
     return;
   }
   if (empty($entity->_ai_moderation_pending_verdict)) {
-    if (!empty($entity_id) && ai_moderation_rescan_entity_async($entity_type, $entity_id) === FALSE) {
-      watchdog('ai_moderation', 'Skipped moderation for @type:@id because no preflight verdict was evaluated and AI Async is unavailable to queue a re-scan.', ['@type' => $entity_type, '@id' => $entity_id], WATCHDOG_WARNING);
+    $needs_async = !empty($entity->_ai_moderation_needs_async_rescan);
+    unset($entity->_ai_moderation_needs_async_rescan);
+    $queued = !empty($entity_id) ? ai_moderation_rescan_entity_async($entity_type, $entity_id) : FALSE;
+    if ($queued === FALSE) {
+      watchdog('ai_moderation', $needs_async
+        ? 'Quarantined @type:@id for its enforced moderation target, but AI Async is unavailable to evaluate it. Enable AI Async, or grant bypass, to resolve.'
+        : 'Skipped moderation for @type:@id because no preflight verdict was evaluated and AI Async is unavailable to queue a re-scan.',
+        ['@type' => $entity_type, '@id' => $entity_id], $needs_async ? WATCHDOG_ERROR : WATCHDOG_WARNING);
     }
     return;
   }

@@ -121,6 +121,18 @@ function ai_moderation_queue_filter_form($form, &$form_state, $reported_only = F
 }
 
 /**
+ * Reject a minimum score greater than the maximum score.
+ */
+function ai_moderation_queue_filter_form_validate($form, &$form_state) {
+  $values = (array) ($form_state['values']['filters'] ?? []);
+  $min = $values['score_min'] ?? '';
+  $max = $values['score_max'] ?? '';
+  if ($min !== '' && $max !== '' && (int) $min > (int) $max) {
+    form_set_error('filters][score_max', t('Maximum score must be greater than or equal to minimum score.'));
+  }
+}
+
+/**
  * Submit queue filters as query parameters.
  */
 function ai_moderation_queue_filter_form_submit($form, &$form_state) {
@@ -244,7 +256,7 @@ function ai_moderation_queue_view_page($vid) {
       ];
     }
     $build['content']['text'] = [
-      '#markup' => '<h3>' . check_plain($entity_text_label) . '</h3><div class="ai-moderation-reported-content__text"><pre>' . check_plain($entity_text) . '</pre></div>',
+      '#markup' => '<h3>' . check_plain($entity_text_label) . '</h3><div class="ai-moderation-reported-content__text"><pre tabindex="0">' . check_plain($entity_text) . '</pre></div>',
     ];
   }
   return $build;

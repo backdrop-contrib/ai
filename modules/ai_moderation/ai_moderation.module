@@ -224,11 +224,19 @@ function ai_moderation_async_rescan_entity(array $data) {
     'uid' => isset($entity->uid) ? (int) $entity->uid : 0,
   ];
   backdrop_alter('ai_moderation_verdict', $verdict, $context);
-  $verdict = _ai_moderation_store_verdict($verdict, $context, $config);
 
-  if ($current_entity !== NULL) {
-    _ai_moderation_enforce_async_verdict($entity_type, $entity_id, $revision_id, $content_hash, $verdict);
+  // Alter hooks run arbitrary code and can take time; re-check freshness
+  // once more immediately before storing so a change during the alter pass
+  // cannot slip a stale verdict into storage either.
+  $current_entity = _ai_moderation_reload_current_entity($entity_type, $entity_id, $revision_id, $content_hash);
+  if ($current_entity === NULL) {
+    ai_moderation_rescan_entity_async($entity_type, $entity_id);
+    return ['status' => 'skipped', 'message' => 'Entity content changed during evaluation; a new re-scan was queued.'];
   }
+  $context['uid'] = isset($current_entity->uid) ? (int) $current_entity->uid : $context['uid'];
+
+  $verdict = _ai_moderation_store_verdict($verdict, $context, $config);
+  _ai_moderation_enforce_async_verdict($entity_type, $entity_id, $revision_id, $content_hash, $verdict);
   return $verdict;
 }
 
@@ -901,6 +909,7 @@ function _ai_moderation_store_builtin_entity_verdict($entity, $entity_type, $ent
           'content_hash' => NULL,
           'text_length' => 0,
           'profile' => $profile_id,
+          'uid' => isset($entity->uid) ? (int) $entity->uid : 0,
         ];
         _ai_moderation_store_verdict($synthetic_verdict, $context, $config);
       }

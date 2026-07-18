@@ -121,7 +121,8 @@ review UI. No Forum-specific adapter is required.
 
 ## Moderator reports
 
-- **Review queue**: all stored verdicts, including allow results.
+- **Review queue**: all stored verdicts, including allow results when
+  persisted (`log_all` enabled).
 - **Reported content**: review, block, and error results only.
 - Verdict detail pages show the entity's current or reloaded title/text, score,
   editorial level, categories, reason code, model, prefilter result, and source.

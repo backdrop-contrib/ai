@@ -192,8 +192,36 @@ function ai_moderation_async_rescan_entity(array $data) {
   if ($text === '') {
     return ['status' => 'error', 'message' => 'Entity has no moderatable text.'];
   }
-  $verdict = ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, !empty($revision_id) ? ['entity_revision' => $revision_id] : []);
+  $options = !empty($revision_id) ? ['entity_revision' => $revision_id] : [];
+  $options['uid'] = isset($entity->uid) ? (int) $entity->uid : 0;
+  $verdict = ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, $options);
+  if (in_array($entity_type, ['node', 'comment'], TRUE)) {
+    _ai_moderation_enforce_async_verdict($entity_type, $entity, $verdict);
+  }
   return $verdict ?: ['status' => 'skipped', 'message' => 'Entity bundle has no configured moderation target.'];
+}
+
+/**
+ * Quarantine already-saved built-in content flagged by an async re-scan.
+ *
+ * Reuses the same enforcement gate as the presave path. The re-save is
+ * marked to skip another gate pass so it cannot recursively queue or store
+ * another verdict via _ai_moderation_store_builtin_entity_verdict().
+ */
+function _ai_moderation_enforce_async_verdict($entity_type, $entity, $verdict) {
+  if (ai_moderation_user_can_bypass() || !_ai_moderation_enforcement_ready($verdict)) {
+    return;
+  }
+  if ($entity_type === 'node' && (int) $entity->status !== NODE_NOT_PUBLISHED) {
+    $entity->_ai_moderation_skip_gate = TRUE;
+    $entity->status = NODE_NOT_PUBLISHED;
+    node_save($entity);
+  }
+  elseif ($entity_type === 'comment' && (int) $entity->status !== COMMENT_NOT_PUBLISHED) {
+    $entity->_ai_moderation_skip_gate = TRUE;
+    $entity->status = COMMENT_NOT_PUBLISHED;
+    comment_save($entity);
+  }
 }
 
 /**
@@ -657,6 +685,10 @@ function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $
  * logs an explicit warning so the gap is visible instead of silent.
  */
 function _ai_moderation_store_builtin_entity_verdict($entity, $entity_type, $entity_id) {
+  if (!empty($entity->_ai_moderation_skip_gate)) {
+    unset($entity->_ai_moderation_skip_gate);
+    return;
+  }
   $bundle = $entity_type === 'node' ? $entity->type : _ai_moderation_comment_bundle($entity->node_type);
   $config = config('ai_moderation.settings');
   $profile_id = $config->get('targets.' . $entity_type . '.' . $bundle);

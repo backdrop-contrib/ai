@@ -24,7 +24,10 @@ verdict is persisted after the save succeeds.
 - Submissions larger than 100,000 bytes produce a provider-failure verdict
   before prefiltering or any provider request. They may still be allowed when
   the configured `on_failure` policy is **Allow**.
-- Verdicts are stored in `ai_moderation_verdicts`.
+- Verdicts are stored in `ai_moderation_verdicts`. Storing allow verdicts is
+  optional and controlled by the `log_all` setting (off by default); when
+  disabled, allow verdicts are not persisted and do not appear in the review
+  queue. Review, block, and error verdicts are always stored.
 
 When enforcement is **Log only**, content saves normally and the verdict is
 available to moderators. When enforcement is **Enforce** and the action is

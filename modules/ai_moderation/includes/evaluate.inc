@@ -298,10 +298,19 @@ function _ai_moderation_finalize_verdict(array $parsed, array $profile, array $p
   if (!isset($parsed['score']) || !is_numeric($parsed['score']) || !is_finite((float) $parsed['score'])) {
     return _ai_moderation_failure($profile, t('The model returned a verdict without a numeric score.'), $prefilter, $profile_id, $model);
   }
+  if (!isset($parsed['verdict']) || !is_string($parsed['verdict']) || !in_array($parsed['verdict'], ['allow', 'review', 'block'], TRUE)) {
+    return _ai_moderation_failure($profile, t('The model returned a verdict without a valid verdict field.'), $prefilter, $profile_id, $model);
+  }
+  if (!isset($parsed['categories']) || !is_array($parsed['categories'])) {
+    return _ai_moderation_failure($profile, t('The model returned a verdict without a valid categories field.'), $prefilter, $profile_id, $model);
+  }
+  if (!isset($parsed['reason']) || !is_string($parsed['reason'])) {
+    return _ai_moderation_failure($profile, t('The model returned a verdict without a valid reason field.'), $prefilter, $profile_id, $model);
+  }
   $score = max(0, min(100, (int) round($parsed['score'])));
   $verdict = _ai_moderation_score_verdict($score, $profile);
-  $categories = _ai_moderation_category_codes($parsed['categories'] ?? []);
-  $reason = _ai_moderation_reason_code($parsed['reason'] ?? '');
+  $categories = _ai_moderation_category_codes($parsed['categories']);
+  $reason = _ai_moderation_reason_code($parsed['reason']);
   return [
     'score' => $score,
     'verdict' => $verdict,
@@ -443,6 +452,7 @@ function _ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, ar
     'content_hash' => hash('sha256', (string) $text),
     'text_length' => strlen($text),
     'profile' => $profile_id,
+    'uid' => array_key_exists('uid', $options) ? (int) $options['uid'] : NULL,
   ];
   backdrop_alter('ai_moderation_verdict', $verdict, $context);
   return _ai_moderation_store_verdict($verdict, $context, $config);
@@ -467,6 +477,7 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
       throw new RuntimeException('AI moderation verdict storage is unavailable.');
     }
     global $user;
+    $uid = array_key_exists('uid', $context) && $context['uid'] !== NULL ? (int) $context['uid'] : (!empty($user->uid) ? $user->uid : 0);
     $now = REQUEST_TIME;
     $transaction = db_transaction();
     try {
@@ -485,7 +496,7 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
         'model' => $verdict['model'],
         'prefilter_flagged' => $verdict['prefilter_flagged'],
         'source' => $verdict['source'],
-        'uid' => !empty($user->uid) ? $user->uid : 0,
+        'uid' => $uid,
         'created' => $now,
         'changed' => $now,
       ])->execute();

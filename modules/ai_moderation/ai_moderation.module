@@ -196,7 +196,7 @@ function ai_moderation_async_rescan_entity(array $data) {
   $options['uid'] = isset($entity->uid) ? (int) $entity->uid : 0;
   $verdict = ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, $options);
   if (in_array($entity_type, ['node', 'comment'], TRUE)) {
-    _ai_moderation_enforce_async_verdict($entity_type, $entity, $verdict);
+    _ai_moderation_enforce_async_verdict($entity_type, $entity_id, $revision_id, hash('sha256', $text), $verdict);
   }
   return $verdict ?: ['status' => 'skipped', 'message' => 'Entity bundle has no configured moderation target.'];
 }
@@ -207,9 +207,35 @@ function ai_moderation_async_rescan_entity(array $data) {
  * Reuses the same enforcement gate as the presave path. The re-save is
  * marked to skip another gate pass so it cannot recursively queue or store
  * another verdict via _ai_moderation_store_builtin_entity_verdict().
+ *
+ * The entity is reloaded fresh (rather than reusing the object evaluated
+ * before the provider call) and its revision/content hash are compared
+ * against what was actually evaluated; a mismatch means the content changed
+ * during evaluation, so this discards the stale verdict and queues a new
+ * scan instead of quarantining content the verdict no longer describes.
+ * Bypass eligibility is checked against the entity's original submitter,
+ * not whichever account is executing the queued job.
  */
-function _ai_moderation_enforce_async_verdict($entity_type, $entity, $verdict) {
-  if (ai_moderation_user_can_bypass() || !_ai_moderation_enforcement_ready($verdict)) {
+function _ai_moderation_enforce_async_verdict($entity_type, $entity_id, $revision_id, $content_hash, $verdict) {
+  if (!_ai_moderation_enforcement_ready($verdict)) {
+    return;
+  }
+  $entities = entity_load($entity_type, [$entity_id]);
+  if (empty($entities)) {
+    return;
+  }
+  $entity = reset($entities);
+  if (ai_moderation_uid_can_bypass(isset($entity->uid) ? (int) $entity->uid : 0)) {
+    return;
+  }
+  $ids = entity_extract_ids($entity_type, $entity);
+  $current_revision = $ids[1] ?? NULL;
+  $revision_matches = empty($revision_id) || empty($current_revision) || (string) $revision_id === (string) $current_revision;
+  $definitions = ai_moderation_get_entity_info();
+  $extract = $definitions[$entity_type]['extract'] ?? '';
+  $current_text = is_callable($extract) ? call_user_func($extract, $entity) : '';
+  if (!$revision_matches || hash('sha256', (string) $current_text) !== $content_hash) {
+    ai_moderation_rescan_entity_async($entity_type, $entity_id);
     return;
   }
   if ($entity_type === 'node' && (int) $entity->status !== NODE_NOT_PUBLISHED) {
@@ -222,6 +248,18 @@ function _ai_moderation_enforce_async_verdict($entity_type, $entity, $verdict) {
     $entity->status = COMMENT_NOT_PUBLISHED;
     comment_save($entity);
   }
+}
+
+/**
+ * Check whether a specific account (not necessarily the current user) may
+ * bypass automatic enforcement.
+ */
+function ai_moderation_uid_can_bypass($uid) {
+  if (empty($uid)) {
+    return FALSE;
+  }
+  $account = user_load($uid);
+  return $account ? user_access('bypass ai moderation', $account) : FALSE;
 }
 
 /**
@@ -466,9 +504,37 @@ function ai_moderation_node_presave($node) {
   if (empty($node->_ai_moderation_pending_verdict)) {
     return;
   }
+  if (!_ai_moderation_pending_verdict_matches_entity('node', $node)) {
+    unset($node->_ai_moderation_pending_verdict);
+    unset($node->_ai_moderation_pending_context);
+    return;
+  }
   if (!ai_moderation_user_can_bypass() && _ai_moderation_enforcement_ready($node->_ai_moderation_pending_verdict)) {
     $node->status = NODE_NOT_PUBLISHED;
   }
+}
+
+/**
+ * Confirm a pending verdict's content hash still matches the final entity.
+ *
+ * entity_form_submit_build_entity() only populates Field API values;
+ * node_submit() and hook_node_submit() implementations can still transform
+ * content afterward, and presave runs after that transformation. Re-extract
+ * and re-hash the final text before trusting a verdict evaluated earlier.
+ */
+function _ai_moderation_pending_verdict_matches_entity($entity_type, $entity) {
+  $context = $entity->_ai_moderation_pending_context ?? [];
+  $expected_hash = $context['content_hash'] ?? NULL;
+  if (empty($expected_hash)) {
+    return TRUE;
+  }
+  $definitions = ai_moderation_get_entity_info();
+  $extract = $definitions[$entity_type]['extract'] ?? '';
+  if (!is_callable($extract)) {
+    return TRUE;
+  }
+  $text = call_user_func($extract, $entity);
+  return hash('sha256', (string) $text) === $expected_hash;
 }
 
 /**
@@ -495,6 +561,11 @@ function ai_moderation_node_update($node) {
  */
 function ai_moderation_comment_presave($comment) {
   if (empty($comment->_ai_moderation_pending_verdict)) {
+    return;
+  }
+  if (!_ai_moderation_pending_verdict_matches_entity('comment', $comment)) {
+    unset($comment->_ai_moderation_pending_verdict);
+    unset($comment->_ai_moderation_pending_context);
     return;
   }
   if (!ai_moderation_user_can_bypass() && _ai_moderation_enforcement_ready($comment->_ai_moderation_pending_verdict)) {

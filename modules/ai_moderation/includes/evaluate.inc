@@ -166,7 +166,7 @@ function _ai_moderation_profile($profile_id, array $options) {
     'label' => ucfirst(str_replace('_', ' ', $profile_id)),
     'prompt' => '',
     'model' => $config->get('default_model') ?: '',
-    'band_allow_max' => 20,
+    'band_allow_max' => 9,
     'band_review_max' => 70,
     'on_failure' => 'review',
     'enforce' => 'log_only',
@@ -199,7 +199,7 @@ function _ai_moderation_default_profile() {
     'label' => t('Default moderation profile'),
     'prompt' => t('This is a community forum. Flag spam, scams, harassment, threats, explicit material, or content that is unsuitable for the community.'),
     'model' => '',
-    'band_allow_max' => 20,
+    'band_allow_max' => 9,
     'band_review_max' => 70,
     'on_failure' => 'review',
     'enforce' => 'log_only',
@@ -470,7 +470,7 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
     $verdict['categories'] = _ai_moderation_category_codes($verdict['categories'] ?? []);
   }
   $verdict['action'] = $verdict['action'] ?? ($verdict['verdict'] ?? 'review');
-  $should_store = $config->get('log_all') !== FALSE || $verdict['action'] !== 'allow';
+  $should_store = $config->get('log_all') === TRUE || $verdict['action'] !== 'allow';
   if ($should_store) {
     if (!db_table_exists('ai_moderation_verdicts')) {
       watchdog('ai_moderation', 'Cannot store moderation verdict because verdict storage is unavailable.', [], WATCHDOG_ERROR);

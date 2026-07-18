@@ -302,7 +302,7 @@ function ai_moderation_settings_form($form, &$form_state) {
   $form['advanced']['log_all'] = [
     '#type' => 'checkbox',
     '#title' => t('Store allow verdicts too'),
-    '#default_value' => $config->get('log_all') !== FALSE,
+    '#default_value' => $config->get('log_all') === TRUE,
   ];
 
   $form['preview'] = [

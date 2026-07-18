@@ -1121,7 +1121,8 @@ function ai_explorer_moderation_form_submit($form, &$form_state) {
   }
   catch (\Throwable $e) {
     watchdog('ai_explorer', 'Moderation explorer request failed: @message', ['@message' => $e->getMessage()], WATCHDOG_ERROR);
-    $message = function_exists('ai_exception_user_message') ? ai_exception_user_message($e, $e->getMessage()) : $e->getMessage();
+    $generic_message = t('An unexpected error occurred.');
+    $message = function_exists('ai_exception_user_message') ? ai_exception_user_message($e, $generic_message) : $generic_message;
     form_set_error('', t('Moderation request failed: @message', ['@message' => $message]));
   }
   $form_state['rebuild'] = TRUE;

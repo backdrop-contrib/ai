@@ -766,6 +766,7 @@ function _ai_moderation_gate_builtin_entity($entity_type, $bundle, $entity_id, $
     'content_hash' => hash('sha256', (string) $text),
     'text_length' => strlen($text),
     'profile' => $profile,
+    'uid' => isset($entity->uid) ? (int) $entity->uid : 0,
   ];
   if (isset($cache[$cache_key])) {
     $verdict = $cache[$cache_key];

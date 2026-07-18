@@ -9,8 +9,9 @@
  * Merge configured model values missing from discovered options as unavailable.
  */
 function _ai_moderation_augment_model_options(array $options, array $configured_values) {
+  $flat = ai_flatten_models($options);
   foreach ($configured_values as $value) {
-    if (!empty($value) && !isset($options[$value])) {
+    if (!empty($value) && !isset($flat[$value])) {
       $options[$value] = t('@model (unavailable)', ['@model' => $value]);
     }
   }

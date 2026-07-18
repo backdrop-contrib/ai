@@ -562,7 +562,12 @@ function _ai_moderation_process_verdict_outbox() {
     $payload = json_decode($event->payload, TRUE);
     if (!is_array($payload) || !isset($payload['verdict'], $payload['context']) || !is_array($payload['verdict']) || !is_array($payload['context'])) {
       watchdog('ai_moderation', 'Discarded malformed moderation verdict observer event @id.', ['@id' => (int) $event->eid], WATCHDOG_ERROR);
-      db_update('ai_moderation_verdict_events')->fields(['status' => 'failed', 'changed' => time()])->condition('eid', (int) $event->eid)->execute();
+      db_update('ai_moderation_verdict_events')
+        ->fields(['status' => 'failed', 'changed' => time()])
+        ->condition('eid', (int) $event->eid)
+        ->condition('status', 'processing')
+        ->condition('attempts', $attempts)
+        ->execute();
       continue;
     }
     $delivered = [];
@@ -595,6 +600,8 @@ function _ai_moderation_process_verdict_outbox() {
             'changed' => time(),
           ])
           ->condition('eid', (int) $event->eid)
+          ->condition('status', 'processing')
+          ->condition('attempts', $attempts)
           ->execute();
       }
       catch (\Throwable $storage_exception) {
@@ -603,7 +610,11 @@ function _ai_moderation_process_verdict_outbox() {
       continue;
     }
     try {
-      db_delete('ai_moderation_verdict_events')->condition('eid', (int) $event->eid)->execute();
+      db_delete('ai_moderation_verdict_events')
+        ->condition('eid', (int) $event->eid)
+        ->condition('status', 'processing')
+        ->condition('attempts', $attempts)
+        ->execute();
     }
     catch (\Throwable $e) {
       watchdog('ai_moderation', 'Failed to remove delivered moderation verdict observer event [@code] (@type; @identifier).', _ai_moderation_exception_log_context($e, $payload['verdict']['model'] ?? ''), WATCHDOG_ERROR);

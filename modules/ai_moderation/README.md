@@ -10,8 +10,8 @@ Content Moderation, Workflows, or editorial publishing.
 ## What happens when content is submitted
 
 For built-in nodes and comments, configured targets are evaluated automatically
-when a form is submitted and again at presave using the cached verdict for that
-save.
+during form validation. Presave applies the pending cached verdict, and the
+verdict is persisted after the save succeeds.
 
 - Node title and text fields are evaluated together.
 - Comment subject and body are evaluated together.

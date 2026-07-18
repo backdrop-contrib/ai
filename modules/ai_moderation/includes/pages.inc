@@ -28,7 +28,10 @@ function ai_moderation_queue_page($reported_only = FALSE) {
   $query->fields('am')->limit(50)->orderByHeader($header);
   $filters = _ai_moderation_normalize_queue_filters($_GET, $reported_only);
   if ($reported_only) {
-    $query->condition('verdict', 'allow', '<>');
+    $query->condition(db_or()
+      ->condition('action', ['review', 'block'], 'IN')
+      ->condition('verdict', 'error')
+    );
   }
   if ($filters['verdict'] !== '') {
     $query->condition('verdict', $filters['verdict']);

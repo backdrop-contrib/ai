@@ -16,6 +16,12 @@ const AI_MODERATION_OUTBOX_LEASE_SECONDS = 300;
 // Stop retrying an outbox event after this many delivery attempts.
 const AI_MODERATION_OUTBOX_MAX_ATTEMPTS = 10;
 
+// After exhausting delivery attempts, wait this long before giving a failed
+// event a fresh set of attempts. This keeps delivery at-least-once for a
+// transient outage (e.g. an external observer endpoint was down) without
+// letting a persistently failing observer retry in a tight loop.
+const AI_MODERATION_OUTBOX_RETRY_COOLDOWN_SECONDS = 86400;
+
 /**
  * Evaluate text with a forced structured-output tool call.
  */
@@ -549,6 +555,14 @@ function _ai_moderation_process_verdict_outbox() {
     ->condition('status', 'processing')
     ->condition('changed', time() - AI_MODERATION_OUTBOX_LEASE_SECONDS, '<')
     ->condition('attempts', AI_MODERATION_OUTBOX_MAX_ATTEMPTS, '<')
+    ->execute();
+
+  // Give exhausted events a fresh set of attempts after a cooldown period
+  // instead of leaving them permanently stuck once attempts are exhausted.
+  db_update('ai_moderation_verdict_events')
+    ->fields(['status' => 'pending', 'attempts' => 0, 'delivered' => NULL, 'changed' => time()])
+    ->condition('status', 'failed')
+    ->condition('changed', time() - AI_MODERATION_OUTBOX_RETRY_COOLDOWN_SECONDS, '<')
     ->execute();
   $events = db_select('ai_moderation_verdict_events', 'ame')
     ->fields('ame')

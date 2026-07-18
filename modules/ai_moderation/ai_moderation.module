@@ -192,42 +192,63 @@ function ai_moderation_async_rescan_entity(array $data) {
   if ($text === '') {
     return ['status' => 'error', 'message' => 'Entity has no moderatable text.'];
   }
-  $options = !empty($revision_id) ? ['entity_revision' => $revision_id] : [];
-  $options['uid'] = isset($entity->uid) ? (int) $entity->uid : 0;
-  $verdict = ai_moderation_gate_entity($entity_type, $bundle, $entity_id, $text, $options);
-  if (in_array($entity_type, ['node', 'comment'], TRUE)) {
-    _ai_moderation_enforce_async_verdict($entity_type, $entity_id, $revision_id, hash('sha256', $text), $verdict);
+  $config = config('ai_moderation.settings');
+  $profile_id = $config->get('targets.' . $entity_type . '.' . $bundle);
+  if (empty($profile_id)) {
+    return ['status' => 'skipped', 'message' => 'Entity bundle has no configured moderation target.'];
   }
-  return $verdict ?: ['status' => 'skipped', 'message' => 'Entity bundle has no configured moderation target.'];
+
+  ai_moderation_load_include('evaluate');
+  $verdict = _ai_moderation_evaluate($text, ['profile' => $profile_id]);
+  $content_hash = hash('sha256', $text);
+
+  // Evaluation involves a provider call and can take time; re-check freshness
+  // against the current entity before this verdict is stored or dispatched
+  // to observers, not only before enforcement. A stale verdict is discarded
+  // with no review-queue or observer side effects, and a fresh scan is
+  // queued for the entity's current content instead.
+  $current_entity = NULL;
+  if (in_array($entity_type, ['node', 'comment'], TRUE)) {
+    $current_entity = _ai_moderation_reload_current_entity($entity_type, $entity_id, $revision_id, $content_hash);
+    if ($current_entity === NULL) {
+      ai_moderation_rescan_entity_async($entity_type, $entity_id);
+      return ['status' => 'skipped', 'message' => 'Entity content changed during evaluation; a new re-scan was queued.'];
+    }
+  }
+
+  $context = [
+    'entity_type' => $entity_type,
+    'entity_bundle' => $bundle,
+    'entity_id' => (string) $entity_id,
+    'entity_revision' => !empty($revision_id) ? (string) $revision_id : NULL,
+    'content_hash' => $content_hash,
+    'text_length' => strlen($text),
+    'profile' => $profile_id,
+    'uid' => isset($entity->uid) ? (int) $entity->uid : 0,
+  ];
+  backdrop_alter('ai_moderation_verdict', $verdict, $context);
+  $verdict = _ai_moderation_store_verdict($verdict, $context, $config);
+
+  if ($current_entity !== NULL) {
+    _ai_moderation_enforce_async_verdict($entity_type, $current_entity, $verdict);
+  }
+  return $verdict;
 }
 
 /**
- * Quarantine already-saved built-in content flagged by an async re-scan.
+ * Reload an entity and confirm its revision/content hash still match what
+ * was evaluated.
  *
- * Reuses the same enforcement gate as the presave path. The re-save is
- * marked to skip another gate pass so it cannot recursively queue or store
- * another verdict via _ai_moderation_store_builtin_entity_verdict().
- *
- * The entity is reloaded fresh (rather than reusing the object evaluated
- * before the provider call) and its revision/content hash are compared
- * against what was actually evaluated; a mismatch means the content changed
- * during evaluation, so this discards the stale verdict and queues a new
- * scan instead of quarantining content the verdict no longer describes.
- * Bypass eligibility is checked against the entity's original submitter,
- * not whichever account is executing the queued job.
+ * Returns the freshly loaded entity (bypassing the static entity cache)
+ * when current, or NULL when its revision or extracted text has changed
+ * since evaluation, meaning the verdict no longer describes this content.
  */
-function _ai_moderation_enforce_async_verdict($entity_type, $entity_id, $revision_id, $content_hash, $verdict) {
-  if (!_ai_moderation_enforcement_ready($verdict)) {
-    return;
-  }
+function _ai_moderation_reload_current_entity($entity_type, $entity_id, $revision_id, $content_hash) {
   $entities = entity_load($entity_type, [$entity_id], [], TRUE);
   if (empty($entities)) {
-    return;
+    return NULL;
   }
   $entity = reset($entities);
-  if (ai_moderation_uid_can_bypass(isset($entity->uid) ? (int) $entity->uid : 0)) {
-    return;
-  }
   $ids = entity_extract_ids($entity_type, $entity);
   $current_revision = $ids[1] ?? NULL;
   $revision_matches = empty($revision_id) || empty($current_revision) || (string) $revision_id === (string) $current_revision;
@@ -235,7 +256,26 @@ function _ai_moderation_enforce_async_verdict($entity_type, $entity_id, $revisio
   $extract = $definitions[$entity_type]['extract'] ?? '';
   $current_text = is_callable($extract) ? call_user_func($extract, $entity) : '';
   if (!$revision_matches || hash('sha256', (string) $current_text) !== $content_hash) {
-    ai_moderation_rescan_entity_async($entity_type, $entity_id);
+    return NULL;
+  }
+  return $entity;
+}
+
+/**
+ * Quarantine already-saved built-in content flagged by an async re-scan.
+ *
+ * Reuses the same enforcement gate as the presave path. The re-save is
+ * marked to skip another gate pass so it cannot recursively queue or store
+ * another verdict via _ai_moderation_store_builtin_entity_verdict(). The
+ * caller has already confirmed $entity is current before storing $verdict.
+ * Bypass eligibility is checked against the entity's original submitter,
+ * not whichever account is executing the queued job.
+ */
+function _ai_moderation_enforce_async_verdict($entity_type, $entity, $verdict) {
+  if (!_ai_moderation_enforcement_ready($verdict)) {
+    return;
+  }
+  if (ai_moderation_uid_can_bypass(isset($entity->uid) ? (int) $entity->uid : 0)) {
     return;
   }
   if ($entity_type === 'node' && (int) $entity->status !== NODE_NOT_PUBLISHED) {
@@ -813,6 +853,34 @@ function _ai_moderation_store_builtin_entity_verdict($entity, $entity_type, $ent
         ? 'Quarantined @type:@id for its enforced moderation target, but AI Async is unavailable to evaluate it. Enable AI Async, or grant bypass, to resolve.'
         : 'Skipped moderation for @type:@id because no preflight verdict was evaluated and AI Async is unavailable to queue a re-scan.',
         ['@type' => $entity_type, '@id' => $entity_id], $needs_async ? WATCHDOG_ERROR : WATCHDOG_WARNING);
+      if ($needs_async && !empty($entity_id)) {
+        // The entity is quarantined but will never be evaluated without AI
+        // Async. Record that explicitly so it is visible in the moderation
+        // queue instead of sitting unpublished with no trace.
+        ai_moderation_load_include('evaluate');
+        $synthetic_verdict = [
+          'score' => NULL,
+          'verdict' => 'error',
+          'action' => 'block',
+          'categories' => [],
+          'reason' => (string) t('AI Async is unavailable to evaluate this enforced moderation target.'),
+          'model' => '',
+          'source' => 'error',
+          'prefilter_flagged' => NULL,
+          'profile' => $profile_id,
+          'enforce' => TRUE,
+        ];
+        $context = [
+          'entity_type' => $entity_type,
+          'entity_bundle' => $bundle,
+          'entity_id' => (string) $entity_id,
+          'entity_revision' => !empty($entity->vid) ? (string) $entity->vid : NULL,
+          'content_hash' => NULL,
+          'text_length' => 0,
+          'profile' => $profile_id,
+        ];
+        _ai_moderation_store_verdict($synthetic_verdict, $context, $config);
+      }
     }
     return;
   }

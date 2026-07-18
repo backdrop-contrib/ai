@@ -560,7 +560,7 @@ function _ai_moderation_process_verdict_outbox() {
   // Give exhausted events a fresh set of attempts after a cooldown period
   // instead of leaving them permanently stuck once attempts are exhausted.
   db_update('ai_moderation_verdict_events')
-    ->fields(['status' => 'pending', 'attempts' => 0, 'delivered' => NULL, 'changed' => time()])
+    ->fields(['status' => 'pending', 'attempts' => 0, 'changed' => time()])
     ->condition('status', 'failed')
     ->condition('changed', time() - AI_MODERATION_OUTBOX_RETRY_COOLDOWN_SECONDS, '<')
     ->execute();

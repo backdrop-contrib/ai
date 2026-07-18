@@ -230,7 +230,7 @@ function ai_moderation_async_rescan_entity(array $data) {
   $verdict = _ai_moderation_store_verdict($verdict, $context, $config);
 
   if ($current_entity !== NULL) {
-    _ai_moderation_enforce_async_verdict($entity_type, $current_entity, $verdict);
+    _ai_moderation_enforce_async_verdict($entity_type, $entity_id, $revision_id, $content_hash, $verdict);
   }
   return $verdict;
 }
@@ -266,13 +266,25 @@ function _ai_moderation_reload_current_entity($entity_type, $entity_id, $revisio
  *
  * Reuses the same enforcement gate as the presave path. The re-save is
  * marked to skip another gate pass so it cannot recursively queue or store
- * another verdict via _ai_moderation_store_builtin_entity_verdict(). The
- * caller has already confirmed $entity is current before storing $verdict.
- * Bypass eligibility is checked against the entity's original submitter,
- * not whichever account is executing the queued job.
+ * another verdict via _ai_moderation_store_builtin_entity_verdict().
+ *
+ * The caller's freshness check runs before dispatching/storing the verdict;
+ * backdrop_alter() and the verdict DB writes happen after that and before
+ * this runs, so this performs its own optimistic revision/content-hash
+ * check immediately before persisting rather than trusting a snapshot
+ * loaded earlier. A mismatch requeues a fresh scan instead of quarantining
+ * content the verdict may no longer describe, and this only ever saves the
+ * entity it just reloaded here. Bypass eligibility is checked against the
+ * entity's original submitter, not whichever account is executing the
+ * queued job.
  */
-function _ai_moderation_enforce_async_verdict($entity_type, $entity, $verdict) {
+function _ai_moderation_enforce_async_verdict($entity_type, $entity_id, $revision_id, $content_hash, $verdict) {
   if (!_ai_moderation_enforcement_ready($verdict)) {
+    return;
+  }
+  $entity = _ai_moderation_reload_current_entity($entity_type, $entity_id, $revision_id, $content_hash);
+  if ($entity === NULL) {
+    ai_moderation_rescan_entity_async($entity_type, $entity_id);
     return;
   }
   if (ai_moderation_uid_can_bypass(isset($entity->uid) ? (int) $entity->uid : 0)) {
@@ -694,12 +706,10 @@ function ai_moderation_node_form_validate($form, &$form_state) {
   if (in_array('node_form_preview', $submit_handlers, TRUE)) {
     return;
   }
-  if (ai_moderation_user_can_bypass()) {
-    return;
-  }
   if (form_get_errors()) {
     return;
   }
+  $bypass = ai_moderation_user_can_bypass();
   $node = clone $form_state['node'];
   entity_form_submit_build_entity('node', $node, $form, $form_state);
   $verdict = _ai_moderation_validate_builtin_entity('node', $node->type, $node);
@@ -707,7 +717,7 @@ function ai_moderation_node_form_validate($form, &$form_state) {
     $form_state['node']->_ai_moderation_pending_verdict = $node->_ai_moderation_pending_verdict;
     $form_state['node']->_ai_moderation_pending_context = $node->_ai_moderation_pending_context;
   }
-  if (_ai_moderation_enforcement_ready($verdict)) {
+  if (!$bypass && _ai_moderation_enforcement_ready($verdict)) {
     $form_state['values']['status'] = NODE_NOT_PUBLISHED;
     backdrop_set_message(t('Your submission was saved unpublished and sent to moderation review.'), 'warning');
   }
@@ -721,12 +731,10 @@ function ai_moderation_comment_form_validate($form, &$form_state) {
   if (in_array('comment_form_build_preview', $submit_handlers, TRUE)) {
     return;
   }
-  if (ai_moderation_user_can_bypass()) {
-    return;
-  }
   if (form_get_errors()) {
     return;
   }
+  $bypass = ai_moderation_user_can_bypass();
   $comment = clone $form_state['comment'];
   entity_form_submit_build_entity('comment', $comment, $form, $form_state);
   // Match the entity shape used by comment_form_submit() and presave.
@@ -737,7 +745,7 @@ function ai_moderation_comment_form_validate($form, &$form_state) {
     $form_state['comment']->_ai_moderation_pending_verdict = $comment->_ai_moderation_pending_verdict;
     $form_state['comment']->_ai_moderation_pending_context = $comment->_ai_moderation_pending_context;
   }
-  if (_ai_moderation_enforcement_ready($verdict)) {
+  if (!$bypass && _ai_moderation_enforcement_ready($verdict)) {
     $form_state['values']['status'] = COMMENT_NOT_PUBLISHED;
     backdrop_set_message(t('Your reply was saved unpublished and sent to moderation review.'), 'warning');
   }

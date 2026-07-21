@@ -1,0 +1,15 @@
+.ai-explorer-moderation-result {
+  margin-top: 1rem;
+  padding: 1rem;
+  border-left: 4px solid #555;
+}
+
+.ai-explorer-moderation-result.is-safe {
+  border-color: #267a36;
+  background: #edf8ef;
+}
+
+.ai-explorer-moderation-result.is-flagged {
+  border-color: #a82020;
+  background: #fceeee;
+}

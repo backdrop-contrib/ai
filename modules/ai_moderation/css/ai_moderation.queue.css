@@ -1,0 +1,103 @@
+.ai-moderation-level {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: .875rem;
+  font-weight: 600;
+  gap: .35rem;
+  line-height: 1.4;
+  padding: .2rem .6rem;
+  white-space: nowrap;
+}
+
+.ai-moderation-level__icon {
+  border-radius: 50%;
+  display: inline-block;
+  height: .7rem;
+  position: relative;
+  width: .7rem;
+}
+
+.ai-moderation-level--clear {
+  background: #e8f5e9;
+  color: #1b5e20;
+}
+
+.ai-moderation-level--clear .ai-moderation-level__icon {
+  background: #2e7d32;
+}
+
+.ai-moderation-level--needs-review {
+  background: #fff8e1;
+  color: #8a5a00;
+}
+
+.ai-moderation-level--needs-review .ai-moderation-level__icon {
+  background: #f9a825;
+}
+
+.ai-moderation-level--smoldering {
+  background: #fff3e0;
+  color: #a43e00;
+}
+
+.ai-moderation-level--smoldering .ai-moderation-level__icon {
+  background: #ef6c00;
+  box-shadow: 0 -.25rem 0 -.08rem #ffb300;
+}
+
+.ai-moderation-level--dumpster-fire {
+  background: #ffebee;
+  color: #9b1c1c;
+}
+
+.ai-moderation-level--dumpster-fire .ai-moderation-level__icon {
+  background: #d32f2f;
+  box-shadow: 0 -.25rem 0 -.08rem #ff6f00, 0 -.42rem 0 -.16rem #ffc107;
+}
+
+.ai-moderation-level--error {
+  background: #f3e5f5;
+  color: #6a1b9a;
+}
+
+.ai-moderation-level--error .ai-moderation-level__icon {
+  background: #8e24aa;
+  box-shadow: 0 0 0 .12rem #ce93d8;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-moderation-level__icon {
+    box-shadow: none;
+  }
+}
+
+.ai-moderation-reported-content__title {
+  margin: 0 0 1rem;
+}
+
+.ai-moderation-level-legend {
+  background: #f6f7f8;
+  border-left: 4px solid #607d8b;
+  margin: 1rem 0;
+  padding: .75rem 1rem;
+}
+
+.ai-moderation-level-legend__item {
+  display: inline-block;
+  margin-inline-start: 1rem;
+}
+
+.ai-moderation-level-legend p {
+  margin: .5rem 0 0;
+}
+
+.ai-moderation-reported-content__text pre {
+  background: #f6f7f8;
+  border: 1px solid #d9dde1;
+  border-radius: 4px;
+  max-height: 28rem;
+  overflow: auto;
+  padding: 1rem;
+  white-space: pre-wrap;
+}

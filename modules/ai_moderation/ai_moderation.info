@@ -1,5 +1,5 @@
 name = AI Moderation
-description = Provides an interface to test AI content moderation with model selection.
+description = Evaluates configured content targets with provider-neutral AI moderation profiles.
 package = AI
 type = module
 backdrop = 1.x

@@ -1,0 +1,25 @@
+{
+  "_config_name": "ai_moderation.settings",
+  "default_model": "",
+  "temperature": 0,
+  "log_all": false,
+  "profiles": {
+    "default": {
+      "label": "Default moderation profile",
+      "prompt": "This is a community forum. Flag spam, scams, harassment, threats, explicit material, or content that is unsuitable for the community.",
+      "model": "",
+      "band_allow_max": 9,
+      "band_review_max": 70,
+      "on_failure": "review",
+      "enforce": "log_only",
+      "site_context": "off"
+    }
+  },
+  "targets": {},
+  "target_fields": {},
+  "prefilter": {
+    "enabled": false,
+    "model": "",
+    "escalate_score": 95
+  }
+}

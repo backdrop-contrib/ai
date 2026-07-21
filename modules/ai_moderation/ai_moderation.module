@@ -708,7 +708,6 @@ function ai_moderation_comment_update($comment) {
  * form submit handler has started saving and cannot reliably stop that save.
  */
 function ai_moderation_form_alter(&$form, &$form_state, $form_id) {
-  ai_moderation_load_include('evaluate');
   if (!empty($form['#node']) && substr($form_id, -10) === '_node_form' && !empty($form['actions']['submit'])) {
     $form['actions']['submit']['#validate'] = array_merge(
       !empty($form['actions']['submit']['#validate']) ? $form['actions']['submit']['#validate'] : (!empty($form['#validate']) ? $form['#validate'] : []),

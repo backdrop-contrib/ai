@@ -21,13 +21,17 @@ class AITestCase extends BackdropWebTestCase {
    * Sets up the test environment.
    */
   public function setUp() {
-    // Load the AI module plus the deterministic test provider.
-    parent::setUp(['ai', 'ai_agent_test']);
+    // Load AI plus the local Ollama provider and deterministic helper.
+    parent::setUp(['ai', 'ai_provider_ollama', 'ai_agent_test']);
 
     $providers = config('ai.settings');
     $providers->set('providers', [
       'agent_test' => [
         'enabled' => 1,
+      ],
+      'ollama' => [
+        'enabled' => 1,
+        'ollama_base_url' => 'http://host.docker.internal:11434',
       ],
     ]);
     $providers->save();
@@ -47,31 +51,43 @@ class AITestCase extends BackdropWebTestCase {
     $this->backdropGet('admin/config/ai/settings');
 
     // Verify the built-in AI provider settings are present.
-    $this->assertFieldByName('providers[enabled_providers_openai]', '', 'AI enable checkbox found.');
-    $this->assertFieldByName('providers[ai_settings][api_key_openai]', '', 'AI API key field found.');
+    $this->assertFieldByName('providers[enabled_providers_ollama]', '', 'Ollama enable checkbox found.');
+    $this->assertFieldByName('providers[ollama_settings][ollama_base_url]', '', 'Ollama server URL field found.');
 
-    // Save a harmless settings change without enabling live API calls.
+    // Save the local Ollama endpoint through the provider form.
     $edit = [
-      'ai_log_enabled' => 1,
-      'ai_log_max_age' => 3600,
+      'providers[enabled_providers_agent_test]' => 1,
+      'providers[enabled_providers_ollama]' => 1,
+      'providers[ollama_settings][ollama_base_url]' => 'http://host.docker.internal:11434',
     ];
     $this->backdropPost(NULL, $edit, t('Save configuration'));
 
-    // Verify that the form submission is successful.
-    $this->assertText('Provider settings saved successfully.', 'Configuration saved message shown.');
+    $this->assertText('AI provider settings saved.', 'Provider configuration saved message shown.');
+    $saved_providers = config_get('ai.settings', 'providers');
+    $this->assertEqual('http://host.docker.internal:11434', $saved_providers['ollama']['ollama_base_url'], 'Ollama endpoint persisted.');
+
+    // Verify the logging form separately; it is now a dedicated local task.
+    $this->backdropGet('admin/config/ai/settings/logging');
+    $this->assertFieldByName('ai_log_enabled', '', 'AI logging checkbox found.');
+    $this->assertFieldByName('ai_log_max_age', NULL, 'AI log retention field found.');
+    $this->backdropPost(NULL, [
+      'ai_log_enabled' => 1,
+      'ai_log_max_age' => 3600,
+    ], t('Save configuration'));
+    $this->assertText('API logging settings saved.', 'Logging configuration saved message shown.');
     $this->assertTrue((bool) config_get('ai.settings', 'ai_log_enabled'), 'Logging setting persisted.');
   }
 
   /**
-   * Test provider connectivity using the deterministic test provider.
+   * Test provider connectivity using the local Ollama provider.
    */
   public function testAPIConnectivity() {
-    $api = ai_get_api('agent_test');
-    $this->assertTrue(is_object($api), 'Deterministic provider API was created.');
+    $api = ai_get_api('ollama');
+    $this->assertTrue(is_object($api), 'Ollama provider API was created.');
 
     $models = $api->getModels();
 
-    // Verify that models are retrieved without calling the live API.
-    $this->assertEqual(['gpt-4o-mini' => 'GPT-4o Mini'], $models, 'Models retrieved from deterministic provider.');
+    $this->assertTrue(isset($models['qwen3.5:4b']), 'Ollama chat model was retrieved from the live server.');
+    $this->assertTrue(isset($models['nomic-embed-text:latest']), 'Ollama embedding model was retrieved from the live server.');
   }
 }

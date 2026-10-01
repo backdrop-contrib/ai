@@ -1,0 +1,222 @@
+<?php
+
+/**
+ * @file
+ * Install, update, and uninstall functions for AI Usage.
+ */
+
+/**
+ * Implements hook_install().
+ */
+function ai_usage_install() {
+  module_load_install('ai_upgrade');
+  if (function_exists('ai_upgrade_module_install')) {
+    ai_upgrade_module_install('ai_usage');
+  }
+}
+
+/**
+ * Implements hook_schema().
+ */
+function ai_usage_schema() {
+  $schema['ai_usage_records'] = [
+    'description' => 'Normalized usage records for AI provider operations.',
+    'fields' => [
+      'id' => [
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'description' => 'The usage record ID.',
+      ],
+      'timestamp' => [
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Unix timestamp when the operation completed.',
+      ],
+      'uid' => [
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'User who initiated the operation, or zero for anonymous/system work.',
+      ],
+      'module' => [
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Module that initiated the operation.',
+      ],
+      'operation' => [
+        'type' => 'varchar',
+        'length' => 96,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Normalized operation name.',
+      ],
+      'provider' => [
+        'type' => 'varchar',
+        'length' => 96,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Provider machine name.',
+      ],
+      'model' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Provider-local model identifier.',
+      ],
+      'request_id' => [
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Request identifier shared by lifecycle instrumentation.',
+      ],
+      'context_group' => [
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Optional grouping identifier for an agent run or batch.',
+      ],
+      'status' => [
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Whether the provider operation succeeded.',
+      ],
+      'duration_ms' => [
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Provider operation duration in milliseconds.',
+      ],
+      'input_tokens' => [
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Input tokens, exact or estimated according to usage_source.',
+      ],
+      'output_tokens' => [
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Output tokens, exact or estimated according to usage_source.',
+      ],
+      'cached_tokens' => [
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Cached input tokens when the provider reports them.',
+      ],
+      'reasoning_tokens' => [
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Reasoning or thinking tokens when the provider reports them.',
+      ],
+      'total_tokens' => [
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Total tokens, exact or estimated according to usage_source.',
+      ],
+      'input_cost_usd' => [
+        'type' => 'float',
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Estimated input cost in USD.',
+      ],
+      'output_cost_usd' => [
+        'type' => 'float',
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Estimated output cost in USD.',
+      ],
+      'cost_usd' => [
+        'type' => 'float',
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Estimated total cost in USD.',
+      ],
+      'cost_source' => [
+        'type' => 'varchar',
+        'length' => 16,
+        'not null' => TRUE,
+        'default' => 'unknown',
+        'description' => 'manual or unknown pricing source.',
+      ],
+      'usage_source' => [
+        'type' => 'varchar',
+        'length' => 16,
+        'not null' => TRUE,
+        'default' => 'unknown',
+        'description' => 'provider, estimated, or unknown.',
+      ],
+      'error_message' => [
+        'type' => 'text',
+        'description' => 'Bounded provider error message for failed operations.',
+      ],
+    ],
+    'primary key' => ['id'],
+    'indexes' => [
+      'timestamp' => ['timestamp'],
+      'provider_timestamp' => ['provider', 'timestamp'],
+      'module_timestamp' => ['module', 'timestamp'],
+      'uid_timestamp' => ['uid', 'timestamp'],
+      'operation_timestamp' => ['operation', 'timestamp'],
+      'request_id' => ['request_id'],
+    ],
+  ];
+
+  return $schema;
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function ai_usage_uninstall() {
+  foreach (['enabled', 'retention_days', 'pricing', 'budget_enabled', 'budget_action', 'user_token_limit', 'user_cost_limit_usd', 'anonymous_token_limit', 'anonymous_cost_limit_usd', 'alert_threshold_percent', 'admin_bypass'] as $key) {
+    config_clear('ai_usage.settings', $key);
+  }
+  db_drop_table('ai_usage_records');
+}
+
+/**
+ * Add pricing fields to installations created before cost tracking existed.
+ */
+function ai_usage_update_10000() {
+  $fields = [
+    'input_cost_usd' => ['type' => 'float', 'not null' => TRUE, 'default' => 0],
+    'output_cost_usd' => ['type' => 'float', 'not null' => TRUE, 'default' => 0],
+    'cost_usd' => ['type' => 'float', 'not null' => TRUE, 'default' => 0],
+    'cost_source' => ['type' => 'varchar', 'length' => 16, 'not null' => TRUE, 'default' => 'unknown'],
+  ];
+  foreach ($fields as $field => $spec) {
+    if (!db_field_exists('ai_usage_records', $field)) {
+      db_add_field('ai_usage_records', $field, $spec);
+    }
+  }
+  return t('Added AI Usage cost tracking fields.');
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function ai_usage_requirements($phase) {
+  module_load_install('ai_upgrade');
+  return function_exists('ai_upgrade_module_requirements')
+    ? ai_upgrade_module_requirements($phase, 'ai_usage')
+    : [];
+}

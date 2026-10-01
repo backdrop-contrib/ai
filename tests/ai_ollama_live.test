@@ -1,0 +1,105 @@
+<?php
+
+/**
+ * @file
+ * Live provider smoke tests using the local Ollama service.
+ */
+
+class AILiveOllamaTestCase extends BackdropWebTestCase {
+
+  protected $chatModel = 'qwen3.5:4b';
+  protected $embeddingModel = 'nomic-embed-text:latest';
+
+  public function setUp() {
+    parent::setUp([
+      'ai',
+      'ai_provider_ollama',
+      'ai_usage',
+    ]);
+
+    config('ai.settings')
+      ->set('providers', [
+        'ollama' => [
+          'enabled' => 1,
+          'ollama_base_url' => 'http://host.docker.internal:11434',
+        ],
+      ])
+      ->save();
+
+    config('ai_usage.settings')
+      ->set('enabled', TRUE)
+      ->set('budget_enabled', FALSE)
+      ->save();
+
+    db_delete('ai_usage_records')->execute();
+  }
+
+  protected function api() {
+    $api = ai_get_api('ollama');
+    $this->assertTrue(is_object($api), 'The Ollama API wrapper is available.');
+    return $api;
+  }
+
+  public function testLiveChatAndUsageLedger() {
+    $api = $this->api();
+    $models = $api->getModels();
+    $this->assertTrue(isset($models[$this->chatModel]), 'The configured Ollama chat model is available.');
+
+    $answer = $api->chat($this->chatModel, [
+      ['role' => 'user', 'content' => 'Reply with exactly the word READY.'],
+    ], 0.0, 512, FALSE, [
+      'operation' => 'ai_ollama_live_chat',
+    ]);
+
+    $this->assertTrue(is_string($answer) && trim($answer) !== '', 'Ollama returned a non-empty chat response.');
+    $row = db_query('SELECT * FROM {ai_usage_records} WHERE operation = :operation ORDER BY id DESC', [
+      ':operation' => 'ai_ollama_live_chat',
+    ])->fetchObject();
+    $this->assertTrue($row !== FALSE, 'The live chat operation was written to the usage ledger.');
+    $this->assertEqual('ollama', $row->provider, 'The ledger identifies the Ollama provider.');
+    $this->assertEqual($this->chatModel, $row->model, 'The ledger stores the provider-local model id.');
+    $this->assertEqual(1, (int) $row->status, 'The live chat operation is marked successful.');
+    $this->assertTrue(in_array($row->usage_source, ['provider', 'estimated', 'unknown'], TRUE), 'The ledger records a recognized usage source.');
+  }
+
+  public function testLiveEmbeddingAndToolResponseShape() {
+    $api = $this->api();
+    $models = $api->getModels();
+    $this->assertTrue(isset($models[$this->embeddingModel]), 'The configured Ollama embedding model is available.');
+
+    $embedding = $api->embedding('A short embedding smoke test.', $this->embeddingModel);
+    $this->assertTrue(!empty($embedding) && is_array($embedding), 'Ollama returned an embedding vector.');
+    $this->assertTrue(count($embedding) > 1, 'The embedding vector has more than one dimension.');
+
+    $tool_response = $api->chatWithTools($this->chatModel, [
+      ['role' => 'system', 'content' => 'Use the supplied echo tool when asked.'],
+      ['role' => 'user', 'content' => 'Call the echo tool with the value live-ollama.'],
+    ], [[
+      'type' => 'function',
+      'function' => [
+        'name' => 'echo',
+        'description' => 'Echo one short value.',
+        'parameters' => [
+          'type' => 'object',
+          'properties' => [
+            'value' => ['type' => 'string'],
+          ],
+          'required' => ['value'],
+        ],
+      ],
+    ]], 0.0, 512, 'required', [
+      'operation' => 'ai_ollama_live_tools',
+    ]);
+
+    $this->assertTrue(is_array($tool_response), 'Ollama tool calling returned an array response.');
+    $this->assertTrue(isset($tool_response['finish_reason'], $tool_response['content'], $tool_response['tool_calls'], $tool_response['raw']), 'The tool response has the normalized AI response shape.');
+    $this->assertEqual('tool_calls', $tool_response['finish_reason'], 'Ollama honored the required tool choice.');
+    $tool_call = !empty($tool_response['tool_calls'][0]) && is_array($tool_response['tool_calls'][0]) ? $tool_response['tool_calls'][0] : [];
+    $this->assertTrue(!empty($tool_call['name']), 'Ollama returned a normalized tool call name.');
+    $this->assertEqual('echo', isset($tool_call['name']) ? $tool_call['name'] : '', 'Ollama selected the supplied echo tool.');
+
+    $rows = db_query('SELECT COUNT(*) FROM {ai_usage_records} WHERE provider = :provider', [':provider' => 'ollama'])->fetchField();
+    $this->assertTrue((int) $rows >= 2, 'Live embedding and tool operations were both recorded.');
+  }
+
+}

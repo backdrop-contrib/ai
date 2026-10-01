@@ -13,3 +13,19 @@ function ai_alt_tools_ai_tools() {
   return ai_alt_tools_definitions();
 }
 
+/**
+ * Implements hook_permission().
+ */
+function ai_alt_tools_permission() {
+  return [
+    'access ai alt tools' => [
+      'title' => t('Access AI Alt tools'),
+      'description' => t('Inspect image files and their alt text through AI tools.'),
+    ],
+    'manage ai alt text' => [
+      'title' => t('Manage AI alt text'),
+      'description' => t('Generate, update, or rename image files through AI Alt tools.'),
+    ],
+  ];
+}
+

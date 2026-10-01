@@ -1,0 +1,166 @@
+<?php
+
+/**
+ * @file
+ * Translates node content into other site languages using AI, via
+ * Backdrop's node translation sets (core `translation` module).
+ */
+
+/**
+ * Implements hook_config_info().
+ */
+function ai_translate_config_info() {
+  return [
+    'ai_translate.settings' => [
+      'label' => t('AI Translate settings'),
+      'group' => t('AI'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_permission().
+ */
+function ai_translate_permission() {
+  return [
+    'administer ai translate' => [
+      'title' => t('Administer AI Translate settings'),
+      'description' => t('Configure the AI model, prompts, and publish behavior used for AI-generated translations.'),
+      'restrict access' => TRUE,
+    ],
+    'use ai translate' => [
+      'title' => t('Translate content with AI'),
+      'description' => t('Trigger AI-generated translations of content. Each translation makes a billed call to the configured AI provider.'),
+      'restrict access' => TRUE,
+    ],
+  ];
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ai_translate_menu() {
+  $items = [];
+
+  $items['admin/config/ai/ai-translate'] = [
+    'title' => 'AI Translate',
+    'description' => 'Configure the AI model, prompts, and publish behavior used for AI-generated translations.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_translate_settings_form'],
+    'access arguments' => ['administer ai translate'],
+    'file' => 'includes/ai_translate.admin.inc',
+  ];
+
+  $items['node/%node/ai-translate'] = [
+    'title' => 'AI Translate',
+    'type' => MENU_LOCAL_TASK,
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_translate_node_form', 1],
+    'access callback' => '_ai_translate_node_access',
+    'access arguments' => [1],
+    'file' => 'includes/ai_translate.form.inc',
+    'weight' => 5,
+  ];
+
+  return $items;
+}
+
+/**
+ * Menu access callback for the node/%node/ai-translate tab.
+ */
+function _ai_translate_node_access($node) {
+  if (!user_access('use ai translate') || !node_access('view', $node)) {
+    return FALSE;
+  }
+  if (!module_exists('translation') || !translation_supported_type($node->type)) {
+    return FALSE;
+  }
+  return count(language_list()) >= 2;
+}
+
+/**
+ * Translate a node into a target language.
+ *
+ * Public wrapper so other modules (bulk actions, bee commands, tests) have
+ * one stable entry point rather than reaching into includes/ directly.
+ *
+ * @param object $node
+ *   The fully loaded source node.
+ * @param string $target_langcode
+ *   Target language code.
+ *
+ * @return array
+ *   ['status' => bool, 'node' => object|NULL, 'message' => string]
+ */
+function ai_translate_translate_node($node, $target_langcode) {
+  module_load_include('inc', 'ai_translate', 'includes/ai_translate.translate');
+  return ai_translate_node($node, $target_langcode);
+}
+
+/**
+ * Resolves the configured or default AI model for translation.
+ *
+ * @return string|false
+ *   The model identifier (e.g. 'openai/gpt-4o-mini'), or FALSE if none available.
+ */
+function _ai_translate_get_model() {
+  $config = config('ai_translate.settings');
+  $model = $config->get('model');
+  if (empty($model) && function_exists('ai_default_model')) {
+    $model = ai_default_model('chat');
+  }
+  return !empty($model) ? $model : FALSE;
+}
+
+/**
+ * Implements hook_ai_async_callbacks().
+ */
+function ai_translate_ai_async_callbacks() {
+  return [
+    'ai_translate_async_node' => t('AI Translate: Translate a node into a target site language in the background.'),
+  ];
+}
+
+/**
+ * Async callback to translate a node in the background.
+ *
+ * @param array $data
+ *   Array containing:
+ *   - 'nid': Node ID to translate.
+ *   - 'target_langcode': Target language code.
+ *
+ * @return array
+ *   Result array containing status, message, and translated_nid.
+ */
+function ai_translate_async_node(array $data) {
+  if (empty($data['nid']) || empty($data['target_langcode'])) {
+    return ['status' => FALSE, 'message' => 'Missing nid or target_langcode parameter.'];
+  }
+
+  $node = node_load((int) $data['nid']);
+  if (!$node) {
+    return ['status' => FALSE, 'message' => t('Node @nid could not be loaded.', ['@nid' => $data['nid']])];
+  }
+
+  module_load_include('inc', 'ai_translate', 'includes/ai_translate.translate');
+  $result = ai_translate_node($node, (string) $data['target_langcode']);
+
+  return [
+    'status' => !empty($result['status']),
+    'message' => $result['message'],
+    'source_nid' => (int) $data['nid'],
+    'target_langcode' => (string) $data['target_langcode'],
+    'translated_nid' => !empty($result['node']->nid) ? (int) $result['node']->nid : NULL,
+  ];
+}
+
+/**
+ * Implements hook_ai_tools().
+ */
+function ai_translate_ai_tools() {
+  if (!module_exists('ai_tools')) {
+    return [];
+  }
+  module_load_include('inc', 'ai_translate', 'includes/translate.tools');
+  return ai_translate_tools_definitions();
+}

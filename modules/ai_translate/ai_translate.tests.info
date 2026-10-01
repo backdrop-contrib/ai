@@ -1,0 +1,7 @@
+[AITranslateUnitTestCase]
+name = AI Translate unit tests
+description = Verifies AI Translate field handling and batch definitions.
+group = AI
+file = tests/ai_translate.test
+backdrop = 1.x
+php = 8.0

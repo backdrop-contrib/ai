@@ -21,6 +21,33 @@ issue queue for updates.
 
 - Enable the core `ai` module and the feature modules that meet your needs.
 
+## Model capability assignments
+
+Open `admin/config/ai/settings/capabilities` and choose **Configure** for a
+provider. Automatic classification uses API metadata where available and
+provider fallback rules otherwise.
+
+Enable **Override** above a capability column, select the models that support
+it, then save. This replaces automatic classification for that column across
+the shared AI API and its capability-specific selectors. Select no models to
+disable a capability; untick Override to restore automatic detection. Models
+can belong to several categories. Manual assignments cannot add an operation
+that the provider adapter does not implement.
+
+Columns cover text/chat, vision, image generation, embeddings, TTS, STT,
+moderation, tools, thinking, fill-in-the-middle, audio input, OCR, and voice
+conversion. Audio input does not imply dedicated TTS/STT support. Unknown
+capabilities remain unclassified and can be assigned manually.
+
+Overrides are exportable under
+`ai.settings: providers.PROVIDER.manual_capability_models`. Missing capability
+keys mean automatic detection; an empty array explicitly means no models.
+Saving clears model caches. Large submissions that exceed PHP input limits are
+rejected without saving partial assignments.
+
+Offline regression tests:
+`php modules/contrib/ai/tests/model_capabilities.php` from the site root.
+
 ## Included Submodules
 
 ### **ai_alt**

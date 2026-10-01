@@ -23,6 +23,8 @@ interface AIProviderClient {
 
   public function getSpeechToTextModels(): array;
 
+  public function getDecisionModels(): array;
+
   public function completions(string $model, string $prompt, $temperature, $max_tokens = 512, bool $stream_response = FALSE);
 
   public function chat(string $model, array $messages, $temperature, $max_tokens = 1024, bool $stream_response = FALSE, array $context_extra = []);
@@ -38,4 +40,6 @@ interface AIProviderClient {
   public function embedding(string $input, string $model, bool $log = TRUE): array;
 
   public function chatWithTools(string $model, array $messages, array $tools, $temperature, $max_tokens = 1024, string $tool_choice = 'auto', array $context_extra = []): array;
+
+  public function decide(string $input, array $questions, string $model = '', array $context_extra = []): array;
 }

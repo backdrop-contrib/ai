@@ -20,12 +20,16 @@
  *   New config object name (e.g. 'ai_provider_anthropic.settings').
  * @param callable|null $transform
  *   Optional ($data, $old_name, $new_name) -> $data transformer.
+ * @param string|null $owner
+ *   Module that ships $new_name as default config. When given, a target that
+ *   still matches the shipped default is treated as unconfigured.
  *
  * @return bool
- *   TRUE if config was migrated, FALSE if old was empty or new already populated.
+ *   TRUE if config was migrated, FALSE if old was empty or new already
+ *   customized.
  */
-function ai_upgrade_migrate_config($old_name, $new_name, $transform = NULL) {
-  return _ai_migrate_config_object($old_name, $new_name, $transform);
+function ai_upgrade_migrate_config($old_name, $new_name, $transform = NULL, $owner = NULL) {
+  return _ai_migrate_config_object($old_name, $new_name, $transform, FALSE, $owner);
 }
 
 /**
@@ -33,8 +37,8 @@ function ai_upgrade_migrate_config($old_name, $new_name, $transform = NULL) {
  *
  * @return int Count of migrated configs.
  */
-function ai_upgrade_migrate_prefixed($old_prefix, $new_prefix) {
-  return _ai_migrate_prefixed_config($old_prefix, $new_prefix);
+function ai_upgrade_migrate_prefixed($old_prefix, $new_prefix, $owner = NULL) {
+  return _ai_migrate_prefixed_config($old_prefix, $new_prefix, $owner);
 }
 
 /**
@@ -87,7 +91,7 @@ function ai_upgrade_install_warning(array $legacy_modules, $new_module_label) {
       'title' => t('@new — legacy module(s) detected', ['@new' => $new_module_label]),
       'value' => implode(', ', $enabled),
       'description' => t(
-        'Installing @new will migrate config from and disable: @legacy. For bulk upgrades, enable the optional AI Upgrade UI module and use admin/config/ai/upgrade.',
+        'Installing @new will copy config and data from: @legacy. The legacy module(s) stay enabled until you complete the cutover with the AI Upgrade UI module at admin/config/ai/upgrade.',
         [
           '@new' => $new_module_label,
           '@legacy' => implode(', ', $enabled),
@@ -109,14 +113,25 @@ function ai_upgrade_registry() {
     'ai_agent' => [
       'module' => 'ai_agents',
       'label' => 'AI Agents',
+      'permission_map' => [
+        'administer openai agents' => 'administer ai agents',
+      ],
       'legacy_modules' => ['openai_agent'],
-      'config_map' => ['openai_agent.settings' => 'ai_agents.settings'],
+      'config_map' => [
+        'openai_agent.settings' => [
+          'new' => 'ai_agents.settings',
+          'transform' => '_ai_transform_agent_config',
+        ],
+      ],
       'table_map' => [
         ['old' => 'openai_agent_pending_run', 'new' => 'ai_agents_pending_run', 'primary_keys' => ['token']],
       ],
     ],
     'ai_content_audit' => [
       'label' => 'AI Content Audit',
+      'permission_map' => [
+        'administer openai content audit' => 'administer ai content audit',
+      ],
       'legacy_modules' => ['openai_agent_content_audit', 'ai_agents_content_audit'],
       'config_map' => [
         'openai_agent_content_audit.settings' => 'ai_content_audit.settings',
@@ -133,6 +148,9 @@ function ai_upgrade_registry() {
     ],
     'ai_agents_maintenance' => [
       'label' => 'AI Agents Maintenance',
+      'permission_map' => [
+        'administer openai maintenance' => 'administer ai maintenance',
+      ],
       'legacy_modules' => ['openai_agent_maintenance'],
       'config_map' => ['openai_agent_maintenance.settings' => 'ai_agents_maintenance.settings'],
       'table_map' => [
@@ -145,9 +163,25 @@ function ai_upgrade_registry() {
       'module' => 'ai_assistants',
       'label' => 'AI Assistants',
       'legacy_modules' => ['openai_assistant'],
-      'config_map' => ['openai_assistant.settings' => 'ai_assistants.settings'],
+      'config_map' => [
+        'openai_assistant.settings' => [
+          'new' => 'ai_assistants.settings',
+          'transform' => '_ai_transform_assistant_config',
+        ],
+      ],
       'table_map' => [
         ['old' => 'openai_assistant_thread', 'new' => 'ai_assistants_thread', 'primary_keys' => ['thread_id']],
+      ],
+    ],
+    // openai_assistant also provided the chat block; ai_chatbot replaces it.
+    'ai_chatbot' => [
+      'label' => 'AI Chatbot',
+      'legacy_modules' => ['openai_assistant'],
+      'block_map' => [
+        'openai_assistant:openai_assistant_chat_form' => [
+          'plugin' => 'ai_chatbot:ai_chatbot_chat_form',
+          'settings_callback' => '_ai_upgrade_assistant_block_settings',
+        ],
       ],
     ],
     'ai_async' => [
@@ -159,11 +193,29 @@ function ai_upgrade_registry() {
     ],
     'ai_content_lifecycle' => [
       'label' => 'AI Content Lifecycle',
+      'permission_map' => [
+        'administer openai content lifecycle' => 'administer ai content lifecycle',
+      ],
       'legacy_modules' => ['openai_content_lifecycle'],
       'config_map' => ['openai_content_lifecycle.settings' => 'ai_content_lifecycle.settings'],
     ],
+    'ai_alt_bulk' => [
+      'label' => 'AI Alt Bulk',
+      'legacy_modules' => ['openai_alt_bulk'],
+    ],
+    'ai_alt_tools' => [
+      'label' => 'AI Alt Tools',
+      'legacy_modules' => ['openai_alt_tools'],
+    ],
+    'ai_devel' => [
+      'label' => 'AI Developer Tools',
+      'legacy_modules' => ['openai_devel'],
+    ],
     'ai_field_automator' => [
       'label' => 'AI Field Automator',
+      'permission_map' => [
+        'administer openai field automator' => 'administer ai field automator',
+      ],
       'legacy_modules' => ['openai_field_automator'],
       'config_prefix_map' => [
         ['old' => 'openai_field_automator.', 'new' => 'ai_field_automator.'],
@@ -171,10 +223,16 @@ function ai_upgrade_registry() {
     ],
     'ai_mcp' => [
       'label' => 'AI MCP Server',
+      'permission_map' => [
+        'administer openai mcp' => 'administer ai mcp',
+      ],
       'legacy_modules' => ['openai_mcp'],
     ],
     'ai_metatag' => [
       'label' => 'AI Metatag Assistant',
+      'permission_map' => [
+        'generate metatags with openai' => 'generate metatags with ai',
+      ],
       'legacy_modules' => ['openai_metatag'],
       'config_map' => ['openai_metatag.settings' => 'ai_metatag.settings'],
     ],
@@ -223,6 +281,11 @@ function ai_upgrade_registry() {
     ],
     'ai_related_content' => [
       'label' => 'AI Related Content',
+      'block_map' => [
+        'openai_related_content:openai_related_content_block' => [
+          'plugin' => 'ai_related_content:ai_related_content_block',
+        ],
+      ],
       'legacy_modules' => ['openai_related_content'],
       'config_map' => [
         'openai_related_content.settings' => 'ai_related_content.settings',
@@ -234,6 +297,11 @@ function ai_upgrade_registry() {
     ],
     'ai_seo_advisor' => [
       'label' => 'AI SEO Advisor',
+      'permission_map' => [
+        'analyze content seo with openai' => 'analyze content seo with ai',
+        'view openai seo reports' => 'view ai seo reports',
+        'administer openai seo settings' => 'administer ai seo settings',
+      ],
       'legacy_modules' => ['openai_seo_advisor'],
       'config_map' => ['openai_seo_advisor.settings' => 'ai_seo_advisor.settings'],
       'config_prefix_map' => [
@@ -258,6 +326,9 @@ function ai_upgrade_registry() {
     ],
     'ai_content' => [
       'label' => 'AI Content Editing Tools',
+      'permission_map' => [
+        'access openai content tools' => 'access ai content tools',
+      ],
       'legacy_modules' => ['openai_content'],
       'config_map' => ['openai_content.settings' => 'ai_content.settings'],
     ],
@@ -312,11 +383,25 @@ function ai_upgrade_registry() {
     // Modules with ai_* replacements.
     'ai_ckeditor' => [
       'label' => 'AI CKEditor Integration',
+      'permission_map' => [
+        'use openai ckeditor' => 'use ai ckeditor',
+      ],
       'legacy_modules' => ['openai_ckeditor'],
     ],
     'ai_moderation' => [
       'label' => 'AI Moderation',
+      'permission_map' => [
+        'access openai moderation' => 'access ai moderation',
+      ],
       'legacy_modules' => ['openai_moderation'],
+    ],
+    'ai_tools' => [
+      'label' => 'AI Tools',
+      'legacy_modules' => ['openai_tools'],
+    ],
+    'ai_webform_tools' => [
+      'label' => 'AI Webform Tools',
+      'legacy_modules' => ['openai_webform_tools'],
     ],
     // Deprecated modules — no replacement, just disable.
     'openai_prompt' => [
@@ -333,21 +418,33 @@ function ai_upgrade_registry() {
     'openai_chatgpt' => [
       'module' => 'ai_explorer',
       'label' => 'OpenAI ChatGPT Explorer (consolidated into AI Explorer)',
+      'permission_map' => [
+        'access openai chatgpt' => 'access ai explorer',
+      ],
       'legacy_modules' => ['openai_chatgpt'],
     ],
     'openai_audio' => [
       'module' => 'ai_explorer',
       'label' => 'OpenAI Speech to Text (consolidated into AI Explorer)',
+      'permission_map' => [
+        'access openai audio' => 'access ai explorer',
+      ],
       'legacy_modules' => ['openai_audio'],
     ],
     'openai_tts' => [
       'module' => 'ai_explorer',
       'label' => 'OpenAI Text to Speech (consolidated into AI Explorer)',
+      'permission_map' => [
+        'access openai tts' => 'access ai explorer',
+      ],
       'legacy_modules' => ['openai_tts'],
     ],
     'openai_dalle' => [
       'module' => 'ai_explorer',
       'label' => 'OpenAI DALL·E (consolidated into AI Explorer)',
+      'permission_map' => [
+        'access openai dalle' => 'access ai explorer',
+      ],
       'legacy_modules' => ['openai_dalle'],
     ],
     // search_api_ai -> ai_search family.
@@ -359,25 +456,38 @@ function ai_upgrade_registry() {
     'ai_search_openai' => [
       'label' => 'AI Search OpenAI',
       'legacy_modules' => ['search_api_ai_openai'],
+      'project' => 'ai_search_provider_openai',
     ],
     'ai_search_ollama' => [
       'label' => 'AI Search Ollama',
       'legacy_modules' => ['search_api_ai_ollama'],
+      'project' => 'ai_search_provider_ollama',
     ],
     'ai_search_milvus' => [
       'label' => 'AI Search Milvus',
       'legacy_modules' => ['search_api_ai_milvus'],
+      'project' => 'ai_search_provider_milvus',
     ],
     'ai_search_pinecone' => [
       'label' => 'AI Search Pinecone',
       'legacy_modules' => ['search_api_ai_pinecone'],
+      'project' => 'ai_search_provider_pinecone',
     ],
     'ai_search_openrouter' => [
       'label' => 'AI Search OpenRouter',
       'legacy_modules' => ['search_api_ai_openrouter'],
+      'project' => 'ai_search_provider_openrouter',
     ],
     'ai_search_search_block' => [
       'label' => 'AI Search Block',
+      'block_map' => [
+        'search_api_ai_search_block:search_api_ai_search_block' => [
+          'plugin' => 'ai_search_search_block:ai_search_search_block',
+        ],
+        'search_api_ai_search_block:search_api_ai_search_block_response' => [
+          'plugin' => 'ai_search_search_block:ai_search_search_block_response',
+        ],
+      ],
       'legacy_modules' => ['search_api_ai_search_block'],
     ],
     'ai_search_search_block_log' => [
@@ -390,6 +500,11 @@ function ai_upgrade_registry() {
     ],
     'ai_search_simple_chatbot' => [
       'label' => 'AI Search Simple Chatbot',
+      'block_map' => [
+        'search_api_ai_simple_chatbot:search_api_ai_chat_form' => [
+          'plugin' => 'ai_search_simple_chatbot:ai_search_chat_form',
+        ],
+      ],
       'legacy_modules' => ['search_api_ai_simple_chatbot'],
       'config_map' => ['search_api_ai_simple_chatbot.settings' => 'ai_search_simple_chatbot.settings'],
     ],
@@ -440,24 +555,23 @@ function ai_upgrade_runtime_active($set = NULL) {
 }
 
 /**
- * Migrate config and disable matching legacy module(s) for one AI module.
+ * Migrate config and data for one AI module from its legacy module(s).
+ *
+ * Copying config and table rows is non-destructive, so it runs on every
+ * install. Destructive steps (forced config overwrites, table renames and
+ * disabling legacy modules) only run during an explicit AI upgrade run, so the
+ * operator controls when the cutover happens.
  */
 function ai_upgrade_module_install($module) {
-  // Plainly enabling ai_* modules should not migrate or disable legacy
-  // modules. Those side effects only belong to an explicit AI upgrade run.
-  if (!ai_upgrade_runtime_active()) {
-    $result = ['migrated' => 0, 'disabled' => [], 'tables' => []];
-    ai_upgrade_install_result($module, $result);
-    return $result;
-  }
-
   $info = ai_upgrade_module_info($module);
   if (empty($info)) {
-    $result = ['migrated' => 0, 'disabled' => [], 'tables' => []];
+    $result = ['migrated' => 0, 'disabled' => [], 'tables' => [], 'permissions' => 0, 'blocks' => 0];
     ai_upgrade_install_result($module, $result);
     return $result;
   }
 
+  $explicit = ai_upgrade_runtime_active();
+  $owner = !empty($info['module']) ? $info['module'] : $module;
   $migrated = 0;
 
   if (!empty($info['config_map'])) {
@@ -466,10 +580,10 @@ function ai_upgrade_module_install($module) {
       $force = FALSE;
       if (is_array($new_name)) {
         $transform = !empty($new_name['transform']) ? $new_name['transform'] : NULL;
-        $force = !empty($new_name['force']);
+        $force = $explicit && !empty($new_name['force']);
         $new_name = $new_name['new'];
       }
-      if (_ai_migrate_config_object($old_name, $new_name, $transform, $force)) {
+      if (_ai_migrate_config_object($old_name, $new_name, $transform, $force, $owner)) {
         $migrated++;
       }
     }
@@ -477,32 +591,167 @@ function ai_upgrade_module_install($module) {
 
   if (!empty($info['config_prefix_map'])) {
     foreach ($info['config_prefix_map'] as $mapping) {
-      $migrated += _ai_migrate_prefixed_config($mapping['old'], $mapping['new']);
+      $migrated += _ai_migrate_prefixed_config($mapping['old'], $mapping['new'], $owner);
     }
   }
 
   $tables = [];
   if (!empty($info['table_map'])) {
     foreach ($info['table_map'] as $mapping) {
-      $tables[] = ai_upgrade_migrate_table($mapping['old'], $mapping['new'], $mapping['primary_keys']);
+      $tables[] = ai_upgrade_migrate_table($mapping['old'], $mapping['new'], $mapping['primary_keys'], $explicit);
     }
   }
 
-  $disabled = ai_upgrade_disable_legacy($info['legacy_modules'], FALSE);
+  $disabled = $explicit ? ai_upgrade_disable_legacy($info['legacy_modules'], FALSE) : [];
+
+  $permissions = !empty($info['permission_map']) ? ai_upgrade_migrate_permissions($info['permission_map']) : 0;
+  $blocks = ai_upgrade_migrate_entry_blocks($module);
 
   $result = [
     'migrated' => $migrated,
     'disabled' => $disabled,
     'tables' => $tables,
+    'permissions' => $permissions,
+    'blocks' => $blocks,
   ];
   ai_upgrade_install_result($module, $result);
   return $result;
 }
 
 /**
- * Copy data from an old table into its replacement, or rename when possible.
+ * Grant each role the new permission for every legacy permission it holds.
+ *
+ * Additive only: legacy permissions are left in place.
+ *
+ * @return int
+ *   Number of role/permission grants added.
  */
-function ai_upgrade_migrate_table($old_table, $new_table, array $primary_keys) {
+function ai_upgrade_migrate_permissions(array $permission_map) {
+  $granted = 0;
+  foreach (array_keys(user_roles()) as $role_name) {
+    $role = user_role_load($role_name);
+    if (!$role || !is_array($role->permissions)) {
+      continue;
+    }
+    $add = [];
+    foreach ($permission_map as $old => $new) {
+      if (in_array($old, $role->permissions, TRUE) && !in_array($new, $role->permissions, TRUE)) {
+        $add[$new] = $new;
+      }
+    }
+    if ($add) {
+      user_role_grant_permissions($role_name, array_values($add));
+      $granted += count($add);
+    }
+  }
+  return $granted;
+}
+
+/**
+ * Swap legacy block placements for one registry entry, when safe.
+ *
+ * Only runs once the replacement is enabled and every legacy module is
+ * disabled, so a placement never points at a block that cannot render.
+ *
+ * @return int
+ *   Number of placements swapped.
+ */
+function ai_upgrade_migrate_entry_blocks($key) {
+  $info = ai_upgrade_module_info($key);
+  if (empty($info['block_map']) || !empty($info['deprecated'])) {
+    return 0;
+  }
+  $replacement = !empty($info['module']) ? $info['module'] : $key;
+  if (!module_exists($replacement)) {
+    return 0;
+  }
+  foreach ($info['legacy_modules'] as $legacy) {
+    if (module_exists($legacy)) {
+      return 0;
+    }
+  }
+  return ai_upgrade_migrate_blocks($info['block_map']);
+}
+
+/**
+ * Point layout block placements at their replacement blocks.
+ *
+ * Covers layouts and mini layouts. Placement position, style and generic
+ * settings are kept; module-specific settings can be converted by a
+ * 'settings_callback'.
+ *
+ * @param array $block_map
+ *   Keyed by legacy plugin ("module:delta"); values hold 'plugin' and an
+ *   optional 'settings_callback' ($settings) -> $settings.
+ *
+ * @return int
+ *   Number of placements swapped.
+ */
+function ai_upgrade_migrate_blocks(array $block_map) {
+  $swapped = 0;
+  foreach (config_get_names_with_prefix('layout.') as $name) {
+    $config = config($name);
+    $content = $config->get('content');
+    if (!is_array($content)) {
+      continue;
+    }
+    $changed = FALSE;
+    foreach ($content as $uuid => $block) {
+      $plugin = isset($block['plugin']) ? $block['plugin'] : '';
+      if (!isset($block_map[$plugin])) {
+        continue;
+      }
+      $mapping = $block_map[$plugin];
+      list($module, $delta) = explode(':', $mapping['plugin'], 2);
+      $block['plugin'] = $mapping['plugin'];
+      $block['data']['module'] = $module;
+      $block['data']['delta'] = $delta;
+      if (!empty($mapping['settings_callback'])) {
+        $settings = isset($block['data']['settings']) && is_array($block['data']['settings']) ? $block['data']['settings'] : [];
+        $block['data']['settings'] = call_user_func($mapping['settings_callback'], $settings);
+      }
+      $content[$uuid] = $block;
+      $changed = TRUE;
+      $swapped++;
+    }
+    if ($changed) {
+      $config->set('content', $content);
+      $config->save();
+    }
+  }
+  if ($swapped && function_exists('layout_reset_caches')) {
+    layout_reset_caches();
+  }
+  return $swapped;
+}
+
+/**
+ * Convert the legacy global chat block config into per-placement settings.
+ */
+function _ai_upgrade_assistant_block_settings(array $settings) {
+  $legacy = config_get('openai_assistant.settings', 'block_config');
+  if (!is_array($legacy) || empty($legacy)) {
+    $legacy = config_get('ai_assistants.settings', 'block_config');
+  }
+  $legacy = is_array($legacy) ? $legacy : [];
+
+  $uuid = new Uuid();
+  $settings['block_settings'] = isset($settings['block_settings']) && is_array($settings['block_settings']) ? $settings['block_settings'] : [];
+  $settings['block_settings']['ai_assistants_block'] = [
+    'custom_title' => isset($legacy['custom_title']) ? (string) $legacy['custom_title'] : '',
+    'assistant_id' => isset($legacy['assistant_id']) ? (string) $legacy['assistant_id'] : '',
+    'instance_id' => $uuid->generate(),
+  ];
+  return $settings;
+}
+
+/**
+ * Copy data from an old table into its replacement, or rename when possible.
+ *
+ * The old table is never dropped. Pass FALSE for $allow_rename while the
+ * legacy module may still be using the old table.
+ */
+function ai_upgrade_migrate_table($old_table, $new_table, array $primary_keys, $allow_rename = TRUE) {
   $result = [
     'old' => $old_table,
     'new' => $new_table,
@@ -516,6 +765,9 @@ function ai_upgrade_migrate_table($old_table, $new_table, array $primary_keys) {
   }
 
   if (!db_table_exists($new_table)) {
+    if (!$allow_rename) {
+      return $result;
+    }
     db_rename_table($old_table, $new_table);
     $result['renamed'] = TRUE;
     return $result;
@@ -524,9 +776,16 @@ function ai_upgrade_migrate_table($old_table, $new_table, array $primary_keys) {
   $query = db_select($old_table, 't');
   $query->fields('t');
   $rows = $query->execute();
+  $target_fields = [];
 
   foreach ($rows as $row) {
     $record = (array) $row;
+    foreach ($primary_keys as $key) {
+      if (!array_key_exists($key, $record)) {
+        $result['skipped']++;
+        continue 2;
+      }
+    }
     $exists_query = db_select($new_table, 'n');
     $exists_query->addExpression('1');
     foreach ($primary_keys as $key) {
@@ -539,8 +798,25 @@ function ai_upgrade_migrate_table($old_table, $new_table, array $primary_keys) {
       continue;
     }
 
+    // Legacy tables can contain columns that were removed or renamed in the
+    // replacement schema. Keep the shared columns and let the new schema
+    // supply defaults for fields introduced by the replacement module.
+    $fields = [];
+    foreach ($record as $field => $value) {
+      if (!array_key_exists($field, $target_fields)) {
+        $target_fields[$field] = db_field_exists($new_table, $field);
+      }
+      if ($target_fields[$field]) {
+        $fields[$field] = $value;
+      }
+    }
+    if (empty($fields)) {
+      $result['skipped']++;
+      continue;
+    }
+
     db_insert($new_table)
-      ->fields($record)
+      ->fields($fields)
       ->execute();
     $result['copied']++;
   }
@@ -595,7 +871,7 @@ function ai_upgrade_module_requirements($phase, $module) {
 /**
  * Copy a legacy config object into its AI namespace replacement.
  */
-function _ai_migrate_config_object($old_name, $new_name, $transform_callback = NULL, $force = FALSE) {
+function _ai_migrate_config_object($old_name, $new_name, $transform_callback = NULL, $force = FALSE, $owner = NULL) {
   $old = config($old_name);
   $data = $old->get();
   if (empty($data) || !is_array($data)) {
@@ -604,8 +880,14 @@ function _ai_migrate_config_object($old_name, $new_name, $transform_callback = N
 
   $new = config($new_name);
   $new_data = $new->get();
+  $pristine = FALSE;
   if (!empty($new_data) && !$force) {
-    return FALSE;
+    // Backdrop writes a module's default config before hook_install() runs,
+    // so an untouched shipped default must not block the migration.
+    if (!_ai_upgrade_config_is_shipped_default($owner, $new_name, $new_data)) {
+      return FALSE;
+    }
+    $pristine = TRUE;
   }
 
   if ($transform_callback) {
@@ -616,6 +898,11 @@ function _ai_migrate_config_object($old_name, $new_name, $transform_callback = N
     return FALSE;
   }
 
+  if ($pristine) {
+    // Legacy values win; shipped defaults fill keys the legacy config lacks.
+    $data += $new_data;
+  }
+
   $data['_config_name'] = $new_name;
   $new->setData($data);
   $new->save();
@@ -624,15 +911,40 @@ function _ai_migrate_config_object($old_name, $new_name, $transform_callback = N
 }
 
 /**
+ * Whether $data still matches the default config $owner ships for $name.
+ */
+function _ai_upgrade_config_is_shipped_default($owner, $name, array $data) {
+  // Views embed their own machine name, so a copied legacy view would be
+  // broken; never replace a shipped view.
+  if (empty($owner) || strpos($name, 'views.view.') === 0) {
+    return FALSE;
+  }
+  $path = backdrop_get_path('module', $owner);
+  if (empty($path)) {
+    return FALSE;
+  }
+  $storage = new ConfigFileStorage($path . '/config');
+  if (!$storage->exists($name)) {
+    return FALSE;
+  }
+  $default = $storage->read($name);
+  if (!is_array($default)) {
+    return FALSE;
+  }
+  unset($default['_config_name'], $data['_config_name']);
+  return $default == $data;
+}
+
+/**
  * Copy prefixed legacy configs into AI namespace replacements.
  */
-function _ai_migrate_prefixed_config($old_prefix, $new_prefix) {
+function _ai_migrate_prefixed_config($old_prefix, $new_prefix, $owner = NULL) {
   $migrated = 0;
 
   foreach (config_get_names_with_prefix($old_prefix) as $old_name) {
     $suffix = substr($old_name, strlen($old_prefix));
     $new_name = $new_prefix . $suffix;
-    if (_ai_migrate_config_object($old_name, $new_name)) {
+    if (_ai_migrate_config_object($old_name, $new_name, NULL, FALSE, $owner)) {
       $migrated++;
     }
   }
@@ -677,13 +989,73 @@ function _ai_transform_settings_config(array $data, $old_name, $new_name) {
 }
 
 /**
+ * Qualify a legacy model ID with its implied provider.
+ *
+ * The legacy suite routed unprefixed model IDs to OpenAI; the AI suite routes
+ * them to the first enabled provider, so they must become "openai/<model>".
+ */
+function _ai_upgrade_qualify_model($model) {
+  if (!is_string($model) || $model === '' || strpos($model, '/') !== FALSE) {
+    return $model;
+  }
+  return 'openai/' . $model;
+}
+
+/**
+ * Qualify the 'model' of every item in $items; returns how many changed.
+ */
+function _ai_upgrade_qualify_item_models(array &$items) {
+  $changed = 0;
+  foreach ($items as &$item) {
+    if (is_array($item) && isset($item['model'])) {
+      $qualified = _ai_upgrade_qualify_model($item['model']);
+      if ($qualified !== $item['model']) {
+        $item['model'] = $qualified;
+        $changed++;
+      }
+    }
+  }
+  return $changed;
+}
+
+/**
+ * Normalize openai_agent.settings data for ai_agents.settings.
+ */
+function _ai_transform_agent_config(array $data, $old_name, $new_name) {
+  unset($old_name);
+  if (!empty($data['agents']) && is_array($data['agents'])) {
+    _ai_upgrade_qualify_item_models($data['agents']);
+  }
+  // Keep agents that ship with (or were added to) ai_agents but that the
+  // legacy config lacks.
+  $existing = config($new_name)->get('agents');
+  if (is_array($existing)) {
+    $data['agents'] = (isset($data['agents']) && is_array($data['agents']) ? $data['agents'] : []) + $existing;
+  }
+  return $data;
+}
+
+/**
+ * Normalize openai_assistant.settings data for ai_assistants.settings.
+ */
+function _ai_transform_assistant_config(array $data, $old_name, $new_name) {
+  unset($old_name, $new_name);
+  if (!empty($data['assistants']) && is_array($data['assistants'])) {
+    _ai_upgrade_qualify_item_models($data['assistants']);
+  }
+  return $data;
+}
+
+/**
  * Migrate suite config from legacy openai_* names to ai_* names.
  */
 function _ai_migrate_legacy_suite_config() {
   $exact_mappings = [
     'openai.settings' => ['new' => 'ai.settings', 'transform' => '_ai_transform_settings_config', 'force' => TRUE],
-    'openai_agent.settings' => ['new' => 'ai_agent.settings'],
-    'openai_assistant.settings' => ['new' => 'ai_assistant.settings'],
+    'openai_agent.settings' => ['new' => 'ai_agents.settings', 'transform' => '_ai_transform_agent_config'],
+    'openai_assistant.settings' => ['new' => 'ai_assistants.settings', 'transform' => '_ai_transform_assistant_config'],
+    'openai_agent_content_audit.settings' => ['new' => 'ai_content_audit.settings'],
+    'openai_agent_maintenance.settings' => ['new' => 'ai_agents_maintenance.settings'],
     'openai_alt.settings' => ['new' => 'ai_alt.settings'],
     'openai_content.settings' => ['new' => 'ai_content.settings'],
     'openai_content_lifecycle.settings' => ['new' => 'ai_content_lifecycle.settings'],
@@ -725,49 +1097,19 @@ function _ai_migrate_legacy_suite_config() {
  * so sites still running only the openai_* suite are not affected.
  */
 function _ai_disable_legacy_suite_modules() {
-  // Map legacy openai_* module => ai_* replacement module.
-  $module_pairs = [
-    'openai' => 'ai',
-    'openai_agent' => 'ai_agent',
-    'openai_agent_content_audit' => 'ai_agent_content_audit',
-    'openai_agent_maintenance' => 'ai_agent_maintenance',
-    'openai_alt' => 'ai_alt',
-    'openai_alt_bulk' => 'ai_alt_bulk',
-    'openai_alt_tools' => 'ai_alt_tools',
-    'openai_assistant' => 'ai_assistant',
-    'openai_async' => 'ai_async',
-    'openai_aws_bedrock' => 'ai_provider_aws_bedrock',
-    'openai_anthropic' => 'ai_provider_anthropic',
-    'openai_browser' => 'ai_provider_browser',
-    'openai_ckeditor' => 'ai_ckeditor',
-    'openai_content' => 'ai_content',
-    'openai_content_lifecycle' => 'ai_content_lifecycle',
-    'openai_dblog' => 'ai_dblog',
-    'openai_devel' => 'ai_devel',
-    'openai_elevenlabs' => 'ai_provider_elevenlabs',
-    'openai_field_automator' => 'ai_field_automator',
-    'openai_google_gemini' => 'ai_provider_google_gemini',
-    'openai_groq' => 'ai_provider_groq',
-    'openai_guardrails' => 'ai_guardrails',
-    'openai_litellm' => 'ai_provider_litellm',
-    'openai_mcp' => 'ai_mcp',
-    'openai_metatag' => 'ai_metatag',
-    'openai_moderation' => 'ai_moderation',
-    'openai_ollama' => 'ai_provider_ollama',
-    'openai_openrouter' => 'ai_provider_openrouter',
-    'openai_privacy' => 'ai_privacy',
-    'openai_rate_limit' => 'ai_rate_limit',
-    'openai_related_content' => 'ai_related_content',
-    'openai_seo_advisor' => 'ai_seo_advisor',
-    'openai_site_context' => 'ai_site_context',
-    'openai_tools' => 'ai_tools',
-    'openai_webform_tools' => 'ai_webform_tools',
-  ];
-
   $to_disable = [];
-  foreach ($module_pairs as $legacy => $replacement) {
-    if (module_exists($legacy) && module_exists($replacement)) {
-      $to_disable[] = $legacy;
+  foreach (ai_upgrade_registry() as $registry_key => $info) {
+    if (!empty($info['deprecated'])) {
+      continue;
+    }
+    $replacement = !empty($info['module']) ? $info['module'] : $registry_key;
+    if (!module_exists($replacement)) {
+      continue;
+    }
+    foreach ($info['legacy_modules'] as $legacy) {
+      if (module_exists($legacy)) {
+        $to_disable[$legacy] = $legacy;
+      }
     }
   }
 

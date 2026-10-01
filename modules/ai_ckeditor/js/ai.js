@@ -1,28 +1,8 @@
 (function ($, Backdrop, CKEditor5) {
   "use strict";
 
-  // Utility to get and set active format in Backdrop
-  $(document).ready(function () {
-    const $formatSelector = $('.filter-list:input');
-
-    if ($formatSelector.length) {
-      const setActiveFormat = () => {
-        const activeFormat = $formatSelector.val();
-        Backdrop.settings.filter = Backdrop.settings.filter || {};
-        Backdrop.settings.filter.activeFormat = activeFormat;
-        //console.log('Setting active format:', Backdrop.settings.filter.activeFormat);
-
-        // Trigger an event for CKEditor5 with the new active format
-        $(document).trigger('backdrop:activeFormatChanged', [activeFormat]);
-      };
-
-      setActiveFormat();
-      $formatSelector.on('change', setActiveFormat);
-    }
-  });
-
   function cleanResponse(response) {
-    return response.replace(/```html|```/g, '').trim();
+    return String(response || '').replace(/```html|```/g, '').trim();
   }
 
   class AI extends CKEditor5.core.Plugin {
@@ -423,28 +403,15 @@
         return dropdownView;
       });
 
-      // Listen for active format changes
-      $(document).on('backdrop:activeFormatChanged', (event, newFormat) => {
-        this.activeFormat = newFormat;
-        //console.log('Active format updated in CKEditor plugin:', this.activeFormat);
-
-        // Immediately load the AI settings for the new format
-        const openAISettings = this.loadAISettings(this.activeFormat);
-        editor.config.define('ai', openAISettings);
-        //console.log('AI settings loaded for new format:', openAISettings);
-      });
-
-      // Set initial format on load
-      this.activeFormat = Backdrop.settings.filter?.activeFormat;
-      //console.log('Initial active format in CKEditor plugin:', this.activeFormat);
-      editor.config.define('ai', this.loadAISettings(this.activeFormat));
+      const editorSettings = editor.config.get('ai') || {};
+      this.activeFormat = editorSettings.format || '';
+      this.aiSettings = editorSettings;
     }
 
     loadAISettings(format) {
-      //console.log(format);
-      //console.log('Editor settings for format:', Backdrop.settings.filter?.formats?.[format]?.editorSettings);
-      //console.log('AI settings:', Backdrop.settings.filter?.formats?.[format]?.editorSettings?.ai);
-
+      if (!format || format === this.activeFormat) {
+        return this.aiSettings || {};
+      }
       return Backdrop.settings.filter?.formats?.[format]?.editorSettings?.ai || {};
     }
 
@@ -596,19 +563,13 @@
           const toneValue = formElement.querySelector('#toneInput').value.trim();
           if (toneValue) {
             this.updateStatus('sendingRequest', editorContainer);
-            // Construct the prompt for tone change
-            const selection = this.editor.model.document.selection;
-            const range = selection.getFirstRange();
-            let selectedText = '';
-            for (const item of range.getItems()) {
-              if (item.data !== undefined) {
-                selectedText += item.data + ' ';
-              }
-            }
-
-            if (selectedText) {
-              const prompt = `Please rewrite the following text with a tone that is ${toneValue} while preserving the original meaning:\n${selectedText}`;
-              this._sendPromptToAI(prompt, editorContainer);
+            const selected = this._getSelectedText();
+            if (selected.text) {
+              const prompt = this._replacePrompt(
+                this._getPromptTemplate('tone', 'Please rewrite the following text with a tone that is {{tone}} while preserving the original meaning:\n{{selectedText}}'),
+                { tone: toneValue, selectedText: selected.text }
+              );
+              this._sendPromptToAI(prompt, editorContainer, selected.range);
             }
           }
           this._closeForm(formElement);
@@ -620,10 +581,19 @@
       });
     }
 
-    // Refactored utility function for extracting and sending selected text
-    _extractAndSendSelectedText(promptTemplate, statusKey, editorContainer) {
-      const selection = this.editor.model.document.selection;
-      const range = selection.getFirstRange();
+    _getPromptTemplate(operation, fallback) {
+      const prompts = this.aiSettings && this.aiSettings.prompts ? this.aiSettings.prompts : {};
+      return prompts[operation] || fallback;
+    }
+
+    _replacePrompt(template, values) {
+      return Object.keys(values).reduce((result, key) => {
+        return result.replace(new RegExp(`{{\\s*${key}\\s*}}`, 'g'), values[key]);
+      }, template);
+    }
+
+    _getSelectedText() {
+      const range = this.editor.model.document.selection.getFirstRange();
       let selectedText = '';
 
       for (const item of range.getItems()) {
@@ -632,16 +602,23 @@
         }
       }
 
-      if (!selectedText.trim()) {
+      return { text: selectedText.trim(), range };
+    }
+
+    // Extract selected text and send it with the current selection range.
+    _extractAndSendSelectedText(promptTemplate, statusKey, editorContainer) {
+      const selected = this._getSelectedText();
+
+      if (!selected.text) {
         console.warn(`No text selected for ${statusKey}.`);
         this.updateStatus(`No text selected for ${statusKey}`, editorContainer);
         return;
       }
 
-      const prompt = promptTemplate.replace('{{selectedText}}', selectedText);
+      const prompt = this._replacePrompt(promptTemplate, { selectedText: selected.text });
 
       this.updateStatus('sendingRequest', editorContainer);
-      this._sendPromptToAI(prompt, editorContainer);
+      this._sendPromptToAI(prompt, editorContainer, selected.range);
     }
 
     _summarizeSelectedText() {
@@ -649,7 +626,7 @@
       this.updateStatus('Preparing to send text to AI...', editorContainer);
 
       this._extractAndSendSelectedText(
-        'Create a concise summary of the following text, keeping the key points intact:\n{{selectedText}}',
+        this._getPromptTemplate('summarize', 'Create a concise summary of the following text, keeping the key points intact:\n{{selectedText}}'),
         'summarization',
         editorContainer
       );
@@ -666,8 +643,9 @@
         submitCallback: (formElement) => {
           const languageValue = formElement.querySelector('#languageInput').value.trim();
           if (languageValue) {
-            const promptTemplate = `Please accurately translate the following text into ${languageValue}:\n{{selectedText}}`;
-            this._extractAndSendSelectedText(promptTemplate, 'translation', editorContainer);
+            const promptTemplate = this._getPromptTemplate('translate', 'Please accurately translate the following text into {{language}}:\n{{selectedText}}');
+            const prompt = this._replacePrompt(promptTemplate, { language: languageValue });
+            this._extractAndSendSelectedText(prompt, 'translate', editorContainer);
           }
           this._closeForm(formElement);
         },
@@ -683,8 +661,8 @@
       this.updateStatus('Preparing to send text to AI...', editorContainer);
 
       this._extractAndSendSelectedText(
-        'Please fix this text to be marked up with semantic HTML using only lists, headers, or paragraph tags: {{selectedText}}',
-        'reformatting',
+        this._getPromptTemplate('reformat', 'Please fix this text to be marked up with semantic HTML using only lists, headers, or paragraph tags: {{selectedText}}'),
+        'reformat',
         editorContainer
       );
     }
@@ -696,15 +674,23 @@
     }
 
 
-    _sendPromptToAI(prompt, editorContainer) {
+    _sendPromptToAI(prompt, editorContainer, range = null) {
       const currentSettings = this.loadAISettings(this.activeFormat);
+      const format = currentSettings.format || this.activeFormat;
 
-      if (!currentSettings || Object.keys(currentSettings).length === 0) {
-        console.error('AI settings are not available or are empty.');
+      if (!currentSettings || !currentSettings.token || !format) {
+        console.error('AI settings are not available or are incomplete.');
         this.updateStatus('Error: AI settings are missing', editorContainer);
         return;
       }
 
+      if (this.requestInFlight) {
+        this.updateStatus('An AI request is already in progress', editorContainer);
+        return;
+      }
+
+      const requestRange = range || this.editor.model.document.selection.getFirstRange();
+      this.requestInFlight = true;
       this.updateStatus('Request sent to AI, awaiting response...', editorContainer);
 
       fetch('/api/ai-ckeditor/completion', {
@@ -713,12 +699,8 @@
           'Content-Type': 'application/json'},
         body: JSON.stringify({
           prompt: prompt,
-          format: this.activeFormat,
-          options: {
-            model: currentSettings.model,
-            temperature: currentSettings.temperature,
-            max_tokens: currentSettings.max_tokens,
-          },
+          format: format,
+          token: currentSettings.token,
         }),
       })
         .then(response => {
@@ -731,8 +713,7 @@
         })
         .then(data => {
           if (data.responseText) {
-            const range = this.editor.model.document.selection.getFirstRange();
-            this._writeHTML(cleanResponse(data.responseText), range);
+            this._writeHTML(cleanResponse(data.responseText), requestRange);
             this.updateStatus('Content inserted successfully', editorContainer);
           } else {
             this.updateStatus('Error: No response text found', editorContainer);
@@ -741,6 +722,9 @@
         .catch(error => {
           console.error('Error during AI fetch:', error);
           this.updateStatus('Error occurred during request', editorContainer);
+        })
+        .finally(() => {
+          this.requestInFlight = false;
         });
     }
   }

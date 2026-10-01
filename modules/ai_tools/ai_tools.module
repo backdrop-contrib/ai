@@ -55,8 +55,23 @@ function ai_tools_prepare_tool($tool_key, array $tool) {
 
   $tool['definition'] = ai_tools_normalize_definition_schema($tool['definition']);
 
+  // Fail closed: a tool that does not say it only reads is treated as a
+  // write, so agents ask for approval before running it. Otherwise a new
+  // tool that forgets 'operation' would run unattended, which is exactly
+  // what a prompt-injected model would exploit.
+  if (empty($tool['operation'])) {
+    $warned = &backdrop_static(__FUNCTION__, []);
+    if (empty($warned[$tool_key])) {
+      $warned[$tool_key] = TRUE;
+      watchdog('ai_tools', 'Tool %tool (module %module) does not declare an operation; treating it as a write that requires approval. Declare \'operation\' => \'read\' if it only reads.', [
+        '%tool' => $tool_key,
+        '%module' => $tool['module'] ?? 'unknown',
+      ], WATCHDOG_WARNING);
+    }
+    $tool['operation'] = 'write';
+  }
+
   $tool += [
-    'operation' => 'read',
     'destructive' => FALSE,
     'permission' => '',
     'requirements' => NULL,
@@ -150,8 +165,17 @@ function ai_tools_dispatch($name, array $arguments) {
       $arguments['_' . $key] = $value;
     }
   }
-  $result = $callback($arguments);
-  return is_string($result) ? $result : json_encode($result);
+  try {
+    $result = $callback($arguments);
+    return is_string($result) ? $result : json_encode($result);
+  }
+  catch (\Throwable $e) {
+    watchdog('ai_tools', 'Error executing tool @name: @msg', [
+      '@name' => $name,
+      '@msg' => $e->getMessage(),
+    ], WATCHDOG_ERROR);
+    return json_encode(['error' => 'Tool execution error: ' . $e->getMessage()]);
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -171,6 +195,15 @@ function ai_tools_menu() {
     'file'             => 'includes/explorer.inc',
     'type'             => MENU_NORMAL_ITEM,
     'weight'           => -1,
+  ];
+  // Backward-compatible route alias for documentation and test suites.
+  $items['admin/config/ai/tool-explorer'] = [
+    'title'            => 'Tool Explorer',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_tools_explorer_form'],
+    'access arguments' => ['administer site configuration'],
+    'file'             => 'includes/explorer.inc',
+    'type'             => MENU_CALLBACK,
   ];
   return $items;
 }

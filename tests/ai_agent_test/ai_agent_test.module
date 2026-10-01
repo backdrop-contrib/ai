@@ -33,10 +33,32 @@ function ai_agent_test_ai_chat_messages_alter(array &$messages, array &$context)
  */
 function ai_agent_test_ai_chat_response_alter(&$response, array &$context) {
   if (empty($context['test_suffix_response']) || !is_string($response)) {
+    if (!empty($context['test_provider_email_response']) && is_string($response)) {
+      $response = 'Contact us at secret@example.com.';
+    }
     return;
   }
 
   $response .= ' [post-altered]';
+}
+
+/**
+ * Implements hook_ai_provider_failure_alter().
+ */
+function ai_agent_test_ai_provider_failure_alter(array &$context, \Throwable $exception, $operation) {
+  if (!empty($context['test_failover_response'])) {
+    if ($operation === 'chat') {
+      $context['failover_response'] = 'Fallback response.';
+    }
+    elseif ($operation === 'chat_with_tools' || $operation === 'chat') {
+      $context['failover_result'] = [
+        'finish_reason' => 'stop',
+        'content' => 'Fallback tool response.',
+        'tool_calls' => [],
+        'raw' => [],
+      ];
+    }
+  }
 }
 
 /**
@@ -219,7 +241,7 @@ function ai_agent_test_execute_test_write_message(array $args) {
 /**
  * Pre-execute hook for deterministic agent tests.
  */
-function ai_agent_test_ai_agent_tool_pre_execute($tool_name, &$args, $agent_config) {
+function ai_agent_test_ai_agents_tool_pre_execute($tool_name, &$args, $agent_config) {
   if ($tool_name === 'test_controlled_message') {
     if (isset($args['message'])) {
       $args['message'] = 'Hooked: ' . $args['message'];

@@ -31,6 +31,7 @@ https://docs.backdropcms.org/php-standards
   - `litellm`
   - `ollama`
   - `openrouter`
+  - `mistral`
 - Watchdog channels should match module machine names, e.g. `ai_google_gemini`, `ai_field_automator`.
 - Functions and local variables should use snake_case: `$api_key`, `$base_url`, `$provider_id`, `$field_name`.
 - Class names should use UpperCamelCase.

@@ -11,10 +11,13 @@
         "content_tools": "prompt_only",
         "image_generation": "prompt_only",
         "seo_analysis": "none",
+        "metatag": "prompt_only",
         "moderation": "none",
         "embedding_generate": "none",
         "text_to_speech": "none",
-        "speech_to_text": "none"
+        "speech_to_text": "none",
+        "ai_translate": "none",
+        "content_lifecycle": "none"
     },
     "default_mode": "full"
 }

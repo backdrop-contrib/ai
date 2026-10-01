@@ -68,20 +68,22 @@ function ai_tools_execute_image_to_text(array $args) {
     return ['error' => "Access denied for file: $fid"];
   }
 
-  $path = backdrop_realpath($file->uri);
-  if (!$path || !is_file($path)) {
-    return ['error' => "File path not found for fid $fid"];
-  }
+  // Read through the stream wrapper rather than backdrop_realpath(), which
+  // returns FALSE for remote schemes such as s3://.
   $max_bytes = 20 * 1024 * 1024;
-  $size = filesize($path);
+  $size = !empty($file->filesize) ? (int) $file->filesize : @filesize($file->uri);
   if ($size === FALSE || $size > $max_bytes) {
     return ['error' => "Image is too large for OCR: $fid"];
   }
 
-  $data = base64_encode(file_get_contents($path));
-  if (!$data) {
+  $contents = @file_get_contents($file->uri, FALSE, NULL, 0, $max_bytes + 1);
+  if ($contents === FALSE || $contents === '') {
     return ['error' => "Could not read file data for fid $fid"];
   }
+  if (strlen($contents) > $max_bytes) {
+    return ['error' => "Image is too large for OCR: $fid"];
+  }
+  $data = base64_encode($contents);
 
   $mime = !empty($file->filemime) ? $file->filemime : 'image/jpeg';
   $url = 'data:' . $mime . ';base64,' . $data;

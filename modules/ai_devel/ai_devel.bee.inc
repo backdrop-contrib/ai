@@ -10,9 +10,9 @@ function ai_devel_bee_command() {
       'options' => [
         'bundles' => 'Comma-separated list of content types to generate. Defaults to all content types.',
         'system' => 'AI system prompt for generating content. Defaults to a standard prompt.',
-        'model' => 'AI model to use (e.g., gpt-3.5-turbo). Defaults to gpt-3.5-turbo.',
+        'model' => 'AI model to use. Defaults to the configured enabled chat model.',
         'temperature' => 'Sampling temperature (0-2, default: 0.7).',
-        'max_tokens' => 'Maximum tokens for the response (default: 512).',
+        'max_tokens' => 'Maximum tokens for the response (default: 512; maximum: 4096).',
         'max_comments' => 'Maximum number of comments per node (default: 0).',
         'add_alias' => 'If set, add a URL alias to generated content.',
         'title_length' => 'Approximate number of words for the title (default: 4).',
@@ -36,7 +36,7 @@ function ai_devel_generate_content_command($args, $options) {
   $options += [
     'node_types' => isset($options['bundles']) ? explode(',', $options['bundles']) : array_keys(node_type_get_types()),
     'system' => 'Your task is to generate content.',
-    'model' => 'gpt-3.5-turbo',
+    'model' => ai_devel_resolve_model(config_get('ai.settings', 'default_text_model')),
     'temperature' => 0.7,
     'max_tokens' => 512,
     'add_alias' => FALSE,

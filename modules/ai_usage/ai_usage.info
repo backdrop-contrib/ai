@@ -1,0 +1,7 @@
+name = AI Usage
+description = Records normalized AI operation usage for reporting and future budget controls.
+package = AI
+backdrop = 1.x
+type = module
+dependencies[] = ai
+configure = admin/config/ai/ai-usage

@@ -13,6 +13,37 @@ function ai_alt_config_info() {
 }
 
 /**
+ * Implements hook_permission().
+ */
+function ai_alt_permission() {
+  return [
+    'access ai alt text generation' => [
+      'title' => t('Generate AI alt text'),
+      'description' => t('Generate AI alt text for files the user can view.'),
+    ],
+  ];
+}
+
+/**
+ * Access callback for generation endpoints.
+ */
+function ai_alt_generation_access() {
+  return user_access('access ai alt text generation') || user_access('administer site configuration');
+}
+
+/**
+ * Implements hook_cron_queue_info().
+ */
+function ai_alt_cron_queue_info() {
+  return [
+    'ai_alt_filename_queue' => [
+      'worker callback' => 'ai_alt_filename_queue_worker',
+      'time' => 30,
+    ],
+  ];
+}
+
+/**
  * Implements hook_menu().
  */
 function ai_alt_menu() {
@@ -30,8 +61,7 @@ function ai_alt_menu() {
 
   $items['ai-alt/generate-alt-text'] = [
     'page callback' => 'ai_alt_generate_alt_text_callback',
-    'access callback' => 'user_access',
-    'access arguments' => ['administer site configuration'],
+    'access callback' => 'ai_alt_generation_access',
     'type' => MENU_CALLBACK,
     'delivery callback' => 'backdrop_json_output',
     'file' => 'includes/ai_alt.ajax.inc',
@@ -39,8 +69,7 @@ function ai_alt_menu() {
 
   $items['ai-alt/ckeditor-autogenerate'] = [
     'page callback' => 'ai_alt_generate_alt_text_for_ckeditor_autogenerate',
-    'access callback' => 'user_access',
-    'access arguments' => ['administer site configuration'],
+    'access callback' => 'ai_alt_generation_access',
     'type' => MENU_CALLBACK,
     'delivery callback' => 'backdrop_json_output',
     'file' => 'includes/ai_alt.ajax.inc',
@@ -75,38 +104,49 @@ function ai_alt_form_alter(&$form, &$form_state, $form_id) {
 }
 
 /**
- * Implements hook_file_presave().
+ * Implements hook_file_insert().
  */
-function ai_alt_file_presave($file) {
-  if (!$file->isNew()) {
+function ai_alt_file_insert($file) {
+  if (!$file || empty($file->fid) || empty($file->filemime) || strpos($file->filemime, 'image/') !== 0 || !config_get('ai_alt.settings', 'rename_filenames')) {
     return;
   }
 
-  if (empty($file->filemime) || strpos($file->filemime, 'image/') !== 0) {
+  BackdropQueue::get('ai_alt_filename_queue')->createItem(['fid' => (int) $file->fid]);
+}
+
+/**
+ * Process one queued filename generation task.
+ */
+function ai_alt_filename_queue_worker($data) {
+  $fid = !empty($data['fid']) ? (int) $data['fid'] : 0;
+  if (!$fid || !config_get('ai_alt.settings', 'rename_filenames')) {
     return;
   }
 
-  if (!config_get('ai_alt.settings', 'rename_filenames')) {
+  $file = file_load($fid);
+  if (!$file || empty($file->filemime) || strpos($file->filemime, 'image/') !== 0) {
     return;
   }
 
   module_load_include('inc', 'ai_alt', 'includes/ai_alt.filename');
-  $new_filename = _ai_alt_generate_short_filename_for_file($file);
-  if (empty($new_filename)) {
-    watchdog('ai_alt', 'Could not generate filename for new image file.', [], WATCHDOG_WARNING);
-    return;
-  }
+  try {
+    $new_filename = _ai_alt_generate_short_filename_for_file($file);
+    if (empty($new_filename) || backdrop_basename($file->uri) === $new_filename) {
+      return;
+    }
 
-  $current_filename = backdrop_basename($file->uri);
-  if ($current_filename === $new_filename) {
-    return;
-  }
+    if (!_ai_alt_file_uses_local_stream_wrapper($file->uri)) {
+      watchdog('ai_alt', 'Skipped queued filename rename for remote file @fid.', ['@fid' => $fid], WATCHDOG_WARNING);
+      return;
+    }
 
-  $destination = file_stream_wrapper_uri_normalize(backdrop_dirname($file->uri) . '/' . $new_filename);
-  $new_uri = file_unmanaged_move($file->uri, $destination, FILE_EXISTS_RENAME);
-  if ($new_uri) {
-    $file->uri = $new_uri;
-    $file->filename = backdrop_basename($new_uri);
+    _ai_alt_move_file_to_filename($file, $new_filename);
+  }
+  catch (\Throwable $e) {
+    watchdog('ai_alt', 'Queued filename generation failed for file @fid: @error', [
+      '@fid' => $fid,
+      '@error' => $e->getMessage(),
+    ], WATCHDOG_ERROR);
   }
 }
 

@@ -18,6 +18,27 @@ function _ai_alt_ajax_alert($message) {
 }
 
 /**
+ * Validate a token for a raw JSON generation request.
+ */
+function _ai_alt_valid_json_token($token, $path) {
+  return is_string($token) && $token !== '' && backdrop_valid_token($token, $path);
+}
+
+/**
+ * Load an accessible image file.
+ */
+function _ai_alt_load_accessible_image($fid, $op = 'view') {
+  $file = file_load((int) $fid);
+  if (!$file || empty($file->filemime) || strpos($file->filemime, 'image/') !== 0) {
+    return FALSE;
+  }
+  if (function_exists('file_access') && !file_access($op, $file)) {
+    return FALSE;
+  }
+  return $file;
+}
+
+/**
  * AJAX callback to generate alt text in the CKEditor modal.
  */
 function ai_alt_generate_alt_text_for_ckeditor($form, array &$form_state) {
@@ -53,7 +74,7 @@ function ai_alt_generate_alt_text_for_ckeditor($form, array &$form_state) {
 
     backdrop_set_message(t('Failed to generate alt text. Please try again.'), 'error');
   }
-  catch (\Exception $e) {
+  catch (\Throwable $e) {
     watchdog('ai_alt', 'Error generating alt text: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
     return _ai_alt_ajax_alert(t('An error occurred while generating alt text.'));
   }
@@ -66,46 +87,25 @@ function ai_alt_generate_alt_text_for_ckeditor($form, array &$form_state) {
  */
 function ai_alt_generate_alt_text_for_ckeditor_autogenerate() {
   module_load_include('inc', 'ai_alt', 'includes/ai_alt.generate');
-  $fid = $_POST['fid'] ?? NULL;
-  $src = $_POST['src'] ?? NULL;
+  $fid = !empty($_POST['fid']) ? (int) $_POST['fid'] : 0;
+  $token = $_POST['token'] ?? '';
 
-  if (!$fid && !$src) {
-    watchdog('ai_alt', 'No file ID (fid) or source (src) provided.', [], WATCHDOG_WARNING);
-    backdrop_json_output(['status' => 'error', 'message' => 'No image provided.']);
+  if (!_ai_alt_valid_json_token($token, 'ai-alt/ckeditor-autogenerate')) {
+    backdrop_json_output(['status' => 'error', 'message' => 'Invalid request token.']);
+    return;
+  }
+  if (!$fid) {
+    backdrop_json_output(['status' => 'error', 'message' => 'A managed image file is required.']);
     return;
   }
 
   try {
-    if ($fid) {
-      $file = file_load($fid);
-      if (!$file) {
-        backdrop_json_output(['status' => 'error', 'message' => 'Failed to load image file.']);
-        return;
-      }
-      if (function_exists('file_access') && !file_access('view', $file)) {
-        backdrop_json_output(['status' => 'error', 'message' => 'Access denied.']);
-        return;
-      }
-      $generated_alt_text = _ai_alt_generate_from_file($file, TRUE);
-      if (!$generated_alt_text) {
-        backdrop_json_output(['status' => 'error', 'message' => 'Failed to load image file.']);
-        return;
-      }
+    $file = _ai_alt_load_accessible_image($fid);
+    if (!$file) {
+      backdrop_json_output(['status' => 'error', 'message' => 'Image not found or access denied.']);
+      return;
     }
-    else {
-      // Only allow local public images — reject external URLs and private URIs.
-      $src_scheme = file_uri_scheme($src);
-      if ($src_scheme !== FALSE && $src_scheme !== 'public') {
-        backdrop_json_output(['status' => 'error', 'message' => 'Only local public images are supported.']);
-        return;
-      }
-      if ($src_scheme === FALSE && (strpos($src, '//') === 0 || strpos($src, 'http') === 0)) {
-        backdrop_json_output(['status' => 'error', 'message' => 'External image sources are not allowed.']);
-        return;
-      }
-      // Preserve existing behavior for library-selected images supplied as src.
-      $generated_alt_text = _ai_alt_describe_image_url(file_create_url($src));
-    }
+    $generated_alt_text = _ai_alt_generate_from_file($file, TRUE);
 
     if (!empty($generated_alt_text)) {
       backdrop_json_output(['status' => 'success', 'alt_text' => $generated_alt_text]);
@@ -114,7 +114,7 @@ function ai_alt_generate_alt_text_for_ckeditor_autogenerate() {
 
     backdrop_json_output(['status' => 'error', 'message' => 'Failed to generate alt text.']);
   }
-  catch (\Exception $e) {
+  catch (\Throwable $e) {
     watchdog('ai_alt', 'Error generating alt text: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
     backdrop_json_output(['status' => 'error', 'message' => 'An error occurred while generating alt text.']);
   }
@@ -149,7 +149,7 @@ function ai_alt_generate_alt_text_ajax($form, array &$form_state) {
   try {
     $generated_alt_text = _ai_alt_generate_from_file($file, TRUE);
   }
-  catch (\Exception $e) {
+  catch (\Throwable $e) {
     watchdog('ai_alt', 'Error generating alt text: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
     backdrop_set_message(t('An error occurred while generating alt text.'), 'error');
     return _ai_alt_ajax_alert(t('An error occurred while generating alt text. Please try again.'));
@@ -177,28 +177,25 @@ function ai_alt_generate_alt_text_ajax($form, array &$form_state) {
  */
 function ai_alt_generate_alt_text_callback() {
   module_load_include('inc', 'ai_alt', 'includes/ai_alt.generate');
-  $fid = $_POST['fid'] ?? NULL;
-  $field_name = $_POST['field_name'] ?? NULL;
-  $delta = $_POST['delta'] ?? NULL;
+  $fid = !empty($_POST['fid']) ? (int) $_POST['fid'] : 0;
+  $token = $_POST['token'] ?? '';
 
-  if (!$fid || !$field_name || $delta === NULL) {
-    watchdog('ai_alt', 'Missing parameters in AJAX request.');
-    return ['status' => 'error', 'message' => 'Invalid request.'];
+  if (!_ai_alt_valid_json_token($token, 'ai-alt/generate-alt-text')) {
+    return ['status' => 'error', 'message' => 'Invalid request token.'];
+  }
+  if (!$fid) {
+    return ['status' => 'error', 'message' => 'Invalid file.'];
   }
 
-  $file = file_load($fid);
+  $file = _ai_alt_load_accessible_image($fid);
   if (!$file) {
-    watchdog('ai_alt', 'File not found for fid: @fid', ['@fid' => $fid]);
-    return ['status' => 'error', 'message' => 'File not found.'];
-  }
-  if (function_exists('file_access') && !file_access('view', $file)) {
-    return ['status' => 'error', 'message' => 'Access denied.'];
+    return ['status' => 'error', 'message' => 'Image not found or access denied.'];
   }
 
   try {
     $generated_alt_text = _ai_alt_generate_from_file($file, FALSE);
   }
-  catch (\Exception $e) {
+  catch (\Throwable $e) {
     watchdog('ai_alt', 'Error generating alt text: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
     return ['status' => 'error', 'message' => 'An error occurred while generating alt text.'];
   }
@@ -210,6 +207,5 @@ function ai_alt_generate_alt_text_callback() {
   return [
     'status' => 'success',
     'alt_text' => $generated_alt_text,
-    'wrapper_id' => "ai-alt-field-wrapper-{$field_name}-{$delta}",
   ];
 }

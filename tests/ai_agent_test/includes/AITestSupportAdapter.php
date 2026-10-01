@@ -9,6 +9,9 @@ class AITestSupportAdapter implements AIProviderClient {
   public static $chatWithToolsCalls = [];
 
   protected function extractRequestedContentTypeLabel($message) {
+    if (preg_match('/\bdescription\s+for\s+(.+?)\s+to\s+be\b/i', $message, $matches)) {
+      return trim($matches[1], " \t\n\r\0\x0B\\\"'");
+    }
     if (preg_match('/\bcontent\s+types?\s+(?:called|named)\s+["\']?(.+?)["\']?(?:\s+with\b|\s+add\b|\s+also\b|\s*[,!?]|\s*$)/i', $message, $matches)) {
       return trim($matches[1]);
     }
@@ -24,6 +27,9 @@ class AITestSupportAdapter implements AIProviderClient {
   }
 
   protected function extractRequestedContentTypeDescription($message) {
+    if (preg_match('/\b(?:update|change|set)\s+the\s+description\s+for\s+.+?\s+to\s+be\s+["\']?(.+?)["\']?\s*$/i', $message, $matches)) {
+      return trim($matches[1]);
+    }
     if (preg_match('/\b(?:update|change|set)\s+the\s+description\s+for\s+.+?\s+to\s+be\s+["\']?(.+?)["\']?(?:\s*[,!?]|\s*$)/i', $message, $matches)) {
       return trim($matches[1]);
     }
@@ -43,10 +49,38 @@ class AITestSupportAdapter implements AIProviderClient {
   }
 
   public function getModelsByCapability($capability): array {
-    if ($capability === 'tools' || $capability === 'text') {
+    if (in_array($capability, ['tools', 'tool_calling', 'text'], TRUE)) {
       return $this->getModels();
     }
     return [];
+  }
+
+  public function getChatModels(): array {
+    return $this->getModelsByCapability('text');
+  }
+
+  public function getImageModels(): array {
+    return $this->getModelsByCapability('image');
+  }
+
+  public function getVisionModels(): array {
+    return $this->getModelsByCapability('vision');
+  }
+
+  public function getEmbeddingModels(): array {
+    return $this->getModelsByCapability('embeddings');
+  }
+
+  public function getModerationModels(): array {
+    return $this->getModelsByCapability('moderation');
+  }
+
+  public function getSpeechToTextModels(): array {
+    return $this->getModelsByCapability('stt');
+  }
+
+  public function getDecisionModels(): array {
+    return $this->getModelsByCapability('decision');
   }
 
   public function completions(string $model, string $prompt, $temperature, $max_tokens = 512, bool $stream_response = FALSE) {
@@ -64,6 +98,37 @@ class AITestSupportAdapter implements AIProviderClient {
     }
     if (!empty($context_extra['throw_unsupported_exception'])) {
       throw new \Exception('Tool calling is not supported by this provider.');
+    }
+    if (!empty($context_extra['operation']) && $context_extra['operation'] === 'ai_assistants_router') {
+      $user_message = '';
+      foreach (array_reverse($messages) as $message_entry) {
+        if (!empty($message_entry['role']) && $message_entry['role'] === 'user') {
+          $payload = json_decode((string) ($message_entry['content'] ?? ''), TRUE);
+          $user_message = is_array($payload) && isset($payload['user_message'])
+            ? (string) $payload['user_message']
+            : (string) ($message_entry['content'] ?? '');
+          break;
+        }
+      }
+      if (stripos($user_message, 'content type') !== FALSE && stripos($user_message, 'field') !== FALSE) {
+        return '{"strategy":"ask_many","agent_ids":["content_type_agent","field_agent"],"reason":"content type and fields"}';
+      }
+      if (stripos($user_message, 'description') !== FALSE) {
+        return '{"strategy":"choose_one","agent_ids":["content_type_agent"],"reason":"content type edit"}';
+      }
+      if (stripos($user_message, 'taxonomy') !== FALSE && stripos($user_message, 'add dutch') !== FALSE) {
+        return '{"strategy":"choose_one","agent_ids":["taxonomy_agent"],"reason":"taxonomy request"}';
+      }
+      if (stripos($user_message, 'hello multi') !== FALSE) {
+        return '{"strategy":"ask_many","agent_ids":["assistant_test_agent","assistant_test_agent_two"],"reason":"multi-agent test"}';
+      }
+      if (stripos($user_message, 'content type') !== FALSE) {
+        return '{"strategy":"choose_one","agent_ids":["content_type_agent"],"reason":"content type request"}';
+      }
+      return '{"strategy":"choose_one","agent_ids":[],"reason":"no matching test agent"}';
+    }
+    if (!empty($context_extra['test_provider_email_response'])) {
+      return 'Contact us at secret@example.com.';
     }
     return 'chat';
   }
@@ -134,7 +199,7 @@ class AITestSupportAdapter implements AIProviderClient {
       }
     }
 
-    if (in_array('edit_content_type', $tool_names, TRUE)) {
+    if (in_array('edit_content_type', $tool_names, TRUE) && (stripos($user_text, 'description') !== FALSE || stripos($user_text, 'update') !== FALSE)) {
       $label = $this->extractRequestedContentTypeLabel($user_text);
       if ($label === '') {
         $label = 'Generated Type';
@@ -234,5 +299,42 @@ class AITestSupportAdapter implements AIProviderClient {
       ],
       'raw' => [],
     ];
+  }
+
+  public function decide(string $input, array $questions, string $model = '', array $context_extra = []): array {
+    $results = [];
+    foreach ($questions as $q) {
+      $id = isset($q['id']) ? $q['id'] : 'q';
+      $type = isset($q['type']) ? $q['type'] : 'boolean';
+      if ($type === 'boolean') {
+        $results[] = [
+          'id' => $id,
+          'type' => 'boolean',
+          'answer' => TRUE,
+          'probability' => 0.95,
+          'probabilities' => ['true' => 0.95, 'false' => 0.05],
+        ];
+      }
+      elseif ($type === 'choice') {
+        $chosen = !empty($q['options']) ? reset($q['options']) : 'default';
+        $results[] = [
+          'id' => $id,
+          'type' => 'choice',
+          'answer' => $chosen,
+          'probability' => 0.9,
+          'probabilities' => [$chosen => 0.9],
+        ];
+      }
+      else {
+        $results[] = [
+          'id' => $id,
+          'type' => 'score',
+          'answer' => 1.0,
+          'probability' => 1.0,
+          'probabilities' => ['1' => 1.0],
+        ];
+      }
+    }
+    return $results;
   }
 }

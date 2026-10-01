@@ -91,16 +91,6 @@ function ai_alt_settings_form(array $form, array &$form_state) {
         '%model' => $flat_all_models[$current_model],
       ]), 'warning');
     }
-    else {
-      $parts = explode('/', $current_model);
-      $provider_id = $parts[0] ?? '';
-      $providers_root = config_get('ai.settings', 'providers') ?: [];
-      if (!empty($providers_root[$provider_id]['enabled'])) {
-        $provider_label = ai_get_provider_label($provider_id);
-        $models[$provider_label][$current_model] = $current_model . ' ' . t('(currently selected)');
-        $flat_models[$current_model] = $current_model;
-      }
-    }
   }
 
   if (empty($models)) {
@@ -108,7 +98,7 @@ function ai_alt_settings_form(array $form, array &$form_state) {
     backdrop_set_message(t('No suitable models are available from your configured providers. Please !link in AI settings.', ['!link' => $link]), 'warning');
   }
 
-  $default_model = config_get('ai.settings', 'default_text_model') ?: '';
+  $default_model = config_get('ai.settings', 'default_vision_model') ?: '';
   if (!empty($flat_models) && !isset($flat_models[$default_model])) {
     reset($flat_models);
     $default_model = key($flat_models);

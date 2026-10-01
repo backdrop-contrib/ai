@@ -13,9 +13,11 @@
  * Implements hook_install().
  */
 function ai_install() {
-  // Config migration and legacy module disabling are intentionally NOT done
-  // here. Use the AI Upgrade UI at admin/config/ai/upgrade to migrate from
-  // openai_* modules — that way the operator controls when the cutover happens.
+  // Copies legacy openai config and logs only; the legacy module stays enabled
+  // until the operator runs the AI Upgrade UI at admin/config/ai/upgrade.
+  if (module_load_install('ai_upgrade')) {
+    ai_upgrade_module_install('ai');
+  }
 }
 
 /**
@@ -230,19 +232,15 @@ function ai_update_1001() {
 }
 
 /**
- * Disable legacy OpenAI modules that have AI replacements.
+ * Formerly disabled legacy OpenAI modules; cutover is now operator-driven.
  */
 function ai_update_1002() {
-  module_load_install('ai_upgrade');
-  _ai_disable_legacy_suite_modules();
-  return t('Disabled legacy OpenAI modules that have AI replacements.');
+  return t('Legacy OpenAI modules are not disabled automatically. Use AI Upgrade at admin/config/ai/upgrade to complete the cutover.');
 }
 
 /**
- * Disable all remaining legacy OpenAI modules that have AI replacements.
+ * Formerly disabled legacy OpenAI modules; cutover is now operator-driven.
  */
 function ai_update_1003() {
-  module_load_install('ai_upgrade');
-  _ai_disable_legacy_suite_modules();
-  return t('Disabled all remaining legacy OpenAI modules that have AI replacements.');
+  return t('Legacy OpenAI modules are not disabled automatically. Use AI Upgrade at admin/config/ai/upgrade to complete the cutover.');
 }

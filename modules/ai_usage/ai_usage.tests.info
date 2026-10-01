@@ -1,0 +1,7 @@
+[AIUsageTestCase]
+name = AI Usage
+description = Verifies normalized AI usage records and estimates.
+group = AI
+file = tests/ai_usage.test
+backdrop = 1.x
+php = 8.0

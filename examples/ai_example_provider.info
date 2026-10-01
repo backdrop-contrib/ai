@@ -1,6 +1,7 @@
 name = AI Example Provider
 description = Example provider module.
 backdrop = 1.x
+type = module
 package = AI (Examples)
 
 ; This example module is intended as documentation and a copy-from template.

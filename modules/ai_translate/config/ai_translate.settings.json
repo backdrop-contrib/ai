@@ -1,0 +1,10 @@
+{
+    "_config_name": "ai_translate.settings",
+    "model": "",
+    "temperature": 0.3,
+    "max_tokens": 2048,
+    "prompt": "You are a professional translator. Translate the following content from {source_language} into {target_language}.\r\nPreserve the original meaning, tone, and any HTML markup exactly as structured.\r\nDo not translate HTML tag names or attribute names, only translate visible text and attribute values meant for readers (such as alt text or link titles).\r\nDo not add commentary, explanations, or quotation marks around the result.\r\nRespond with only the translated content and nothing else.",
+    "language_prompts": {},
+    "reference_depth": 0,
+    "publish_behavior": "draft"
+}

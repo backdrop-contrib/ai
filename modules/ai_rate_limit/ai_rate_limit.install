@@ -57,6 +57,7 @@ function ai_rate_limit_schema() {
       'timestamp'           => ['timestamp'],
       'provider_timestamp'  => ['provider', 'timestamp'],
       'operation_timestamp' => ['operation', 'timestamp'],
+      'uid_timestamp'       => ['uid', 'timestamp'],
     ],
   ];
 
@@ -70,6 +71,8 @@ function ai_rate_limit_uninstall() {
   config_clear('ai_rate_limit.settings', 'enabled');
   config_clear('ai_rate_limit.settings', 'global_limit');
   config_clear('ai_rate_limit.settings', 'global_window');
+  config_clear('ai_rate_limit.settings', 'user_limit');
+  config_clear('ai_rate_limit.settings', 'user_window');
   config_clear('ai_rate_limit.settings', 'provider_limits');
   db_drop_table('ai_rate_limit_events');
 }
@@ -80,6 +83,17 @@ function ai_rate_limit_uninstall() {
 function ai_rate_limit_update_10000() {
   if (db_table_exists('ai_rate_limit_events')) {
     db_add_index('ai_rate_limit_events', 'timestamp', ['timestamp']);
+  }
+}
+
+/**
+ * Add a (uid, timestamp) index to speed per-user rate limit checks.
+ */
+function ai_rate_limit_update_10001() {
+  if (db_table_exists('ai_rate_limit_events')) {
+    if (!db_index_exists('ai_rate_limit_events', 'uid_timestamp')) {
+      db_add_index('ai_rate_limit_events', 'uid_timestamp', ['uid', 'timestamp']);
+    }
   }
 }
 

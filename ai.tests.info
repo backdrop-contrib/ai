@@ -71,6 +71,22 @@ file = tests/ai_provider.test
 backdrop = 1.x
 php = 8.0
 
+[AIResilienceTestCase]
+name = AI resilience
+description = Verifies failure, privacy, guardrail, failover, and rate-limit behavior.
+group = AI
+file = tests/ai_resilience.test
+backdrop = 1.x
+php = 8.0
+
+[AILiveOllamaTestCase]
+name = AI live Ollama provider
+description = Verifies live chat, tools, embeddings, and usage accounting through Ollama.
+group = AI Live
+file = tests/ai_ollama_live.test
+backdrop = 1.x
+php = 8.0
+
 [AIStringHelperTestCase]
 name = AI string helper
 description = Verifies string helper behavior.

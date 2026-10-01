@@ -28,13 +28,16 @@ function ai_autoload_info() {
     'AIException' => 'includes/AIException.php',
     'AIConfigurationException' => 'includes/AIConfigurationException.php',
     'AIRateLimitException' => 'includes/AIRateLimitException.php',
+    'AIUsageLimitException' => 'includes/AIUsageLimitException.php',
     'AIUnsupportedCapabilityException' => 'includes/AIUnsupportedCapabilityException.php',
     'AIProviderResponseException' => 'includes/AIProviderResponseException.php',
+    'AIInvalidArgumentException' => 'includes/AIInvalidArgumentException.php',
     'AICompatibleTrait' => 'includes/AICompatibleTrait.php',
     'AIContentExtractor' => 'includes/AIContentExtractor.php',
     'AILog' => 'includes/AILog.inc',
     'AIStreamingResponse' => 'includes/AIStreamingResponse.php',
     'AIStringHelper' => 'includes/AIStringHelper.php',
+    'AIImageHelper' => 'includes/AIImageHelper.php',
   ];
 }
 
@@ -62,6 +65,83 @@ function ai_entity_info() {
 function ai_log_load($id) {
   $log = entity_load('ai_log', [$id]);
   return $log ? reset($log) : FALSE;
+}
+
+/**
+ * Implements hook_modules_enabled().
+ *
+ * Runs the non-destructive legacy migration for every enabled replacement,
+ * including ones whose own hook_install() does not call it.
+ */
+function ai_modules_enabled($modules) {
+  if (!module_load_install('ai_upgrade')) {
+    return;
+  }
+  foreach (ai_upgrade_registry() as $key => $info) {
+    // Skip entries whose own hook_install() already ran the migration.
+    if (empty($info['deprecated']) && in_array(!empty($info['module']) ? $info['module'] : $key, $modules, TRUE) && ai_upgrade_install_result($key) === NULL) {
+      ai_upgrade_module_install($key);
+    }
+  }
+}
+
+/**
+ * Implements hook_modules_disabled().
+ *
+ * Once a legacy module is off, point its placed blocks at the replacement.
+ */
+function ai_modules_disabled($modules) {
+  // An explicit AI upgrade run swaps blocks itself and reports the count.
+  if (!module_load_install('ai_upgrade') || ai_upgrade_runtime_active()) {
+    return;
+  }
+  foreach (ai_upgrade_registry() as $key => $info) {
+    if (!empty($info['block_map']) && array_intersect($info['legacy_modules'], $modules)) {
+      ai_upgrade_migrate_entry_blocks($key);
+    }
+  }
+}
+
+/**
+ * Implements hook_module_implements_alter().
+ */
+function ai_module_implements_alter(&$implementations, $hook) {
+  // ai_modules_uninstalled() wraps user_modules_uninstalled(); see there.
+  if ($hook === 'modules_uninstalled' && isset($implementations['user'])) {
+    unset($implementations['user']);
+    $implementations['ai'] = FALSE;
+  }
+}
+
+/**
+ * Implements hook_modules_uninstalled().
+ *
+ * Core revokes every permission name an uninstalled module declared, even when
+ * an enabled module still declares the same name. Several ai_* replacements
+ * reuse legacy permission names, so uninstalling the legacy module would
+ * strip them from roles. Run core's cleanup, then restore any revoked
+ * permission that an enabled module still provides.
+ */
+function ai_modules_uninstalled($modules) {
+  $before = [];
+  foreach (array_keys(user_roles()) as $role_name) {
+    $role = user_role_load($role_name);
+    $before[$role_name] = $role && is_array($role->permissions) ? $role->permissions : [];
+  }
+
+  user_modules_uninstalled($modules);
+
+  $provided = user_permission_get_modules();
+  foreach ($before as $role_name => $permissions) {
+    $role = user_role_load($role_name);
+    if (!$role) {
+      continue;
+    }
+    $restore = array_diff(array_intersect($permissions, array_keys($provided)), $role->permissions);
+    if ($restore) {
+      user_role_grant_permissions($role_name, array_values($restore));
+    }
+  }
 }
 
 /**
@@ -95,6 +175,28 @@ function ai_menu() {
     'weight' => -10,
   ];
 
+  $items['admin/config/ai/settings/capabilities'] = [
+    'title' => 'Model Capabilities',
+    'description' => 'Review what each provider reports its models can do, and override it.',
+    'page callback' => 'ai_capabilities_overview_page',
+    'access arguments' => ['administer site configuration'],
+    'file' => 'ai.capabilities.inc',
+    'type' => MENU_LOCAL_TASK,
+    'weight' => -9,
+  ];
+
+  // Per-provider capability matrix. The wildcard is argument 5 on this path
+  // (admin/config/ai/settings/capabilities/%), not 4.
+  $items['admin/config/ai/settings/capabilities/%'] = [
+    'title callback' => 'ai_capabilities_page_title',
+    'title arguments' => [5],
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_capabilities_form', 5],
+    'access arguments' => ['administer site configuration'],
+    'file' => 'ai.capabilities.inc',
+    'type' => MENU_CALLBACK,
+  ];
+
   $items['admin/config/ai/settings/defaults'] = [
     'title' => 'Default Models',
     'page callback' => 'backdrop_get_form',
@@ -102,7 +204,7 @@ function ai_menu() {
     'access arguments' => ['administer site configuration'],
     'file' => 'ai.admin.inc',
     'type' => MENU_LOCAL_TASK,
-    'weight' => -9,
+    'weight' => -8,
   ];
 
   $items['admin/config/ai/settings/logging'] = [
@@ -112,7 +214,7 @@ function ai_menu() {
     'access arguments' => ['administer site configuration'],
     'file' => 'ai.admin.inc',
     'type' => MENU_LOCAL_TASK,
-    'weight' => -8,
+    'weight' => -7,
   ];
 
   $items['admin/reports/ai'] = [
@@ -300,8 +402,12 @@ function ai_admin_overview_category($path, $title) {
  */
 function ai_menu_local_tasks_alter(&$data, $router_item, $root_path) {
   if ($root_path === 'admin/config/ai' && !empty($router_item['path']) && $router_item['path'] === 'admin/config/ai') {
-    $data['tabs'][0]['output'] = [];
-    $data['tabs'][1]['output'] = [];
+    foreach ([0, 1] as $level) {
+      if (isset($data['tabs'][$level])) {
+        $data['tabs'][$level]['count'] = 0;
+        $data['tabs'][$level]['output'] = [];
+      }
+    }
   }
 }
 
@@ -422,6 +528,661 @@ function ai_get_provider_setting($provider, $key, $default = NULL) {
   $providers = config_get('ai.settings', 'providers') ?: [];
   $value = isset($providers[$provider][$key]) ? $providers[$provider][$key] : NULL;
   return ($value !== NULL && $value !== '') ? $value : $default;
+}
+
+/**
+ * Logs an embedding error, suppressing known probing noise.
+ *
+ * Adapter embedding() methods catch exceptions and conditionally log to
+ * watchdog — but only when the error is NOT a "does not support embeddings"
+ * probe or a simple "not found" response. This helper centralises that
+ * suppression logic so adapters do not repeat it.
+ *
+ * @param string $module
+ *   Watchdog module key, e.g. 'ai_provider_groq'.
+ * @param string $message
+ *   The exception message to evaluate.
+ * @param bool $log
+ *   When FALSE the call is a probe and nothing should be logged.
+ */
+function ai_log_embedding_error($module, $message, $log = TRUE) {
+  if (!$log) {
+    return;
+  }
+  if (strpos($message, 'does not support embeddings') !== FALSE) {
+    return;
+  }
+  if (strpos($message, 'not found') !== FALSE) {
+    return;
+  }
+  watchdog($module, 'Embedding error: @error', ['@error' => $message], WATCHDOG_ERROR);
+}
+
+/**
+ * Implements hook_theme().
+ */
+function ai_theme() {
+  return [
+    'ai_capability_matrix' => [
+      'render element' => 'element',
+    ],
+  ];
+}
+
+/**
+ * Canonical capability list used by manual capability mapping UIs.
+ *
+ * @return array
+ *   Map of canonical capability name => human label.
+ */
+function ai_capability_labels() {
+  return [
+    'text' => t('Text / Chat'),
+    'vision' => t('Vision'),
+    'image' => t('Image gen'),
+    'embeddings' => t('Embeddings'),
+    'tts' => t('TTS'),
+    'stt' => t('STT'),
+    'moderation' => t('Moderation'),
+    'decision' => t('Decision / Classification'),
+    'tool_calling' => t('Tool calling'),
+    'thinking' => t('Thinking / reasoning'),
+    'insert' => t('Fill-in-the-middle'),
+    'audio' => t('Audio input'),
+    'ocr' => t('OCR'),
+    'speech_to_speech' => t('Speech to speech'),
+  ];
+}
+
+/**
+ * Build a model x capability checkbox matrix element.
+ *
+ * Rows are models, columns are capabilities. Each column carries an "Override"
+ * toggle: while it is off the column shows what the provider reports on its
+ * own (auto-detected) and saves nothing; while it is on, the ticked models are
+ * the only ones offered for that capability. Values are stored in the shape
+ * ai_get_provider_manual_capability_models() reads:
+ * manual_capability_models[capability][model_id].
+ *
+ * @param array $models
+ *   Map of model_id => label, in display order.
+ * @param mixed $defaults
+ *   Existing manual_capability_models config value (capability => list).
+ * @param array $parents
+ *   Form #parents of the manual_capability_models value itself, e.g.
+ *   ['manual_capability_models'].
+ * @param array $options
+ *   Optional keys:
+ *   - title, description, weight, empty_message: presentation.
+ *   - auto: capability => [model_id => TRUE], auto-detected baseline used as
+ *     the shown state while a column is not overridden.
+ *   - override_parents: #parents of the per-capability override toggles.
+ *     Defaults to ['capability_overrides'].
+ *
+ * @return array
+ *   Renderable form element.
+ */
+function ai_capability_matrix_element(array $models, $defaults, array $parents, array $options = []) {
+  $capabilities = ai_capability_labels();
+  $auto = isset($options['auto']) && is_array($options['auto']) ? $options['auto'] : [];
+  $override_parents = isset($options['override_parents']) ? $options['override_parents'] : ['capability_overrides'];
+
+  // Normalize saved values to capability => [model_id => TRUE].
+  $checked = [];
+  if (is_array($defaults)) {
+  foreach ($defaults as $capability => $value) {
+      $canonical = ai_normalize_capability_name($capability);
+      if ($canonical === '') {
+        continue;
+      }
+      $checked[$canonical] = [];
+      foreach (ai_parse_provider_model_list($value) as $model_id) {
+        $checked[$canonical][$model_id] = TRUE;
+      }
+    }
+  }
+
+  // Keep rows for models that are selected but no longer advertised, so the
+  // admin can still see and clear them.
+  foreach ($checked as $capability => $ids) {
+    foreach (array_keys($ids) as $model_id) {
+      if (!isset($models[$model_id])) {
+        $models[$model_id] = t('@id (not currently available)', ['@id' => $model_id]);
+      }
+    }
+  }
+  natcasesort($models);
+
+  $element = [
+    '#type' => 'fieldset',
+    '#title' => isset($options['title']) ? $options['title'] : t('Model capabilities'),
+    '#description' => isset($options['description'])
+      ? $options['description']
+      : t('Tick the capabilities each model supports. A column only takes effect once its <em>Override</em> box is ticked; otherwise the provider\'s own detection is used.'),
+    '#tree' => TRUE,
+  ];
+  if (isset($options['weight'])) {
+    $element['#weight'] = $options['weight'];
+  }
+
+  if (empty($models)) {
+    $element['empty'] = [
+      '#type' => 'markup',
+      '#markup' => '<div class="description"><em>'
+        . (isset($options['empty_message']) ? $options['empty_message'] : t('No models available to configure.'))
+        . '</em></div>',
+    ];
+  }
+
+  $element['matrix'] = [
+    '#theme' => 'ai_capability_matrix',
+    '#capabilities' => $capabilities,
+    '#models' => $models,
+    '#overridden' => [],
+    '#attached' => [
+      'js' => [backdrop_get_path('module', 'ai') . '/js/ai.capability_matrix.js'],
+      'css' => [backdrop_get_path('module', 'ai') . '/css/ai.admin-overview.css'],
+    ],
+  ];
+
+  foreach ($capabilities as $capability => $capability_label) {
+    $is_overridden = array_key_exists($capability, $checked);
+    $element['matrix']['#overridden'][$capability] = $is_overridden;
+
+    $toggle_parents = array_merge($override_parents, [$capability]);
+    $element['matrix']['override__' . $capability] = [
+      '#type' => 'checkbox',
+      '#title' => t('Override @capability', ['@capability' => $capability_label]),
+      '#title_display' => 'invisible',
+      '#default_value' => $is_overridden ? 1 : 0,
+      '#parents' => $toggle_parents,
+      '#attributes' => [
+        'class' => ['ai-capability-override-toggle'],
+        'data-ai-capability' => $capability,
+      ],
+    ];
+
+    foreach ($models as $model_id => $label) {
+      // While a column is not overridden it displays the auto-detected state,
+      // so ticking a box starts from what the provider already reports.
+      $default = $is_overridden
+        ? (!empty($checked[$capability][$model_id]) ? 1 : 0)
+        : (!empty($auto[$capability][$model_id]) ? 1 : 0);
+
+      $element['matrix'][ai_capability_matrix_key($capability, $model_id)] = [
+        '#type' => 'checkbox',
+        '#title' => t('@capability: @model', ['@capability' => $capability_label, '@model' => $model_id]),
+        '#title_display' => 'invisible',
+        '#default_value' => $default,
+        '#parents' => array_merge($parents, [$capability, $model_id]),
+        // The capability is what the column's All/None buttons select on.
+        '#attributes' => ['data-ai-capability' => $capability],
+      ];
+    }
+  }
+
+  return $element;
+}
+
+/**
+ * Build the HTML form element name for a set of #parents.
+ */
+function ai_form_element_name(array $parents) {
+  $name = array_shift($parents);
+  foreach ($parents as $parent) {
+    $name .= '[' . $parent . ']';
+  }
+  return $name;
+}
+
+/**
+ * Build the child element key for one matrix cell.
+ */
+function ai_capability_matrix_key($capability, $model_id) {
+  return $capability . '__' . hash('sha256', (string) $model_id);
+}
+
+/**
+ * Returns HTML for a model x capability checkbox matrix.
+ */
+function theme_ai_capability_matrix($variables) {
+  $element = $variables['element'];
+  $capabilities = $element['#capabilities'];
+  $models = $element['#models'];
+  $overridden = !empty($element['#overridden']) ? $element['#overridden'] : [];
+
+  $header = [t('Model')];
+  foreach ($capabilities as $capability => $capability_label) {
+    $status = !empty($overridden[$capability])
+      ? '<span class="ai-capability-status ai-capability-status--overridden">' . t('Overridden') . '</span>'
+      : '<span class="ai-capability-status ai-capability-status--auto">' . t('Auto') . '</span>';
+    $toggle = isset($element['override__' . $capability]) ? backdrop_render($element['override__' . $capability]) : '';
+
+    // Bulk select for the column. Only meaningful while the column is
+    // overridden, since the model checkboxes are disabled until then; the
+    // JS mirrors that state onto these buttons.
+    $bulk = '<span class="ai-capability-bulk" data-ai-capability="' . check_plain($capability) . '">'
+      . '<button type="button" class="ai-capability-bulk__button" data-ai-bulk="all">' . t('All') . '</button>'
+      . '<span class="ai-capability-bulk__sep">/</span>'
+      . '<button type="button" class="ai-capability-bulk__button" data-ai-bulk="none">' . t('None') . '</button>'
+      . '</span>';
+
+    $header[] = [
+      'data' => '<span class="ai-capability-name">' . check_plain($capability_label) . '</span>'
+        . $status
+        . '<span class="ai-capability-override">' . $toggle . '<span class="ai-capability-override-label">' . t('Override') . '</span></span>'
+        . $bulk,
+      'class' => ['ai-capability-col'],
+    ];
+  }
+
+  $rows = [];
+  foreach ($models as $model_id => $label) {
+    // Row bulk select. No capability attribute: the JS treats a bulk control
+    // without one as row-scoped and works within its own <tr>, which avoids
+    // building attribute selectors out of model labels.
+    $row_bulk = '<span class="ai-capability-bulk ai-capability-bulk--row">'
+      . '<button type="button" class="ai-capability-bulk__button" data-ai-bulk="all">' . t('All') . '</button>'
+      . '<span class="ai-capability-bulk__sep">/</span>'
+      . '<button type="button" class="ai-capability-bulk__button" data-ai-bulk="none">' . t('None') . '</button>'
+      . '</span>';
+
+    $row = [
+      [
+        'data' => '<span class="ai-capability-model-name">' . check_plain($label) . '</span>' . $row_bulk,
+        'class' => ['ai-capability-model'],
+      ],
+    ];
+    foreach (array_keys($capabilities) as $capability) {
+      $key = ai_capability_matrix_key($capability, $model_id);
+      $row[] = [
+        'data' => isset($element[$key]) ? backdrop_render($element[$key]) : '',
+        'class' => ['ai-capability-cell'],
+      ];
+    }
+    $rows[] = $row;
+  }
+
+  $output = theme('table', [
+    'header' => $header,
+    'rows' => $rows,
+    'attributes' => ['class' => ['ai-capability-matrix']],
+  ]);
+
+  return '<div class="ai-capability-matrix-wrapper">' . $output . '</div>';
+}
+
+/**
+ * Map of canonical capability => adapter method used to detect its models.
+ */
+function ai_capability_probe_methods() {
+  return [
+    'text' => ['getChatModels', []],
+    'vision' => ['getVisionModels', []],
+    'image' => ['getImageModels', []],
+    'embeddings' => ['getEmbeddingModels', []],
+    'tts' => ['getModelsByCapability', ['tts']],
+    'stt' => ['getSpeechToTextModels', []],
+    'moderation' => ['getModerationModels', []],
+    'decision' => ['getDecisionModels', []],
+    'tool_calling' => ['getModelsByCapability', ['tool_calling']],
+    'thinking' => ['getModelsByCapability', ['thinking']],
+    'insert' => ['getModelsByCapability', ['insert']],
+    'audio' => ['getModelsByCapability', ['audio']],
+    'ocr' => ['getModelsByCapability', ['ocr']],
+    'speech_to_speech' => ['getModelsByCapability', ['speech_to_speech']],
+  ];
+}
+
+/**
+ * Read or set the manual-capability bypass flag.
+ *
+ * The capability admin UI needs to see what a provider reports on its own,
+ * without the saved overrides folded in. Adapters call
+ * ai_filter_models_by_manual_capability(), which honours this flag.
+ *
+ * @param bool|null $set
+ *   TRUE/FALSE to change the flag, NULL to read it.
+ *
+ * @return bool
+ *   Current flag value.
+ */
+function ai_manual_capability_bypass($set = NULL) {
+  $bypass = &backdrop_static(__FUNCTION__, FALSE);
+  if ($set !== NULL) {
+    $bypass = (bool) $set;
+  }
+  return $bypass;
+}
+
+/**
+ * Get every model a provider advertises, ignoring capability overrides.
+ *
+ * @param string $provider_id
+ *   Provider machine name.
+ *
+ * @return array
+ *   Map of model_id => label. Empty when the provider cannot be reached.
+ */
+function ai_get_provider_models($provider_id) {
+  $cache = &backdrop_static(__FUNCTION__, []);
+  if (isset($cache[$provider_id])) {
+    return $cache[$provider_id];
+  }
+
+  $models = [];
+  try {
+    $api = ai_get_api($provider_id);
+    if ($api) {
+      $models = (array) $api->getModels();
+    }
+  }
+  catch (\Exception $e) {
+    watchdog('ai', 'Failed to fetch models from @provider: @message', [
+      '@provider' => $provider_id,
+      '@message' => $e->getMessage(),
+    ], WATCHDOG_WARNING);
+  }
+
+  $normalized = [];
+  foreach ($models as $model_id => $label) {
+    $model_id = is_int($model_id) ? (string) $label : (string) $model_id;
+    if ($model_id !== '') {
+      $normalized[$model_id] = is_scalar($label) && (string) $label !== '' ? (string) $label : $model_id;
+    }
+  }
+  natcasesort($normalized);
+
+  $cache[$provider_id] = $normalized;
+  return $normalized;
+}
+
+/**
+ * Get the capabilities a provider reports on its own, per capability.
+ *
+ * @param string $provider_id
+ *   Provider machine name.
+ *
+ * @return array
+ *   Map of capability => [model_id => TRUE].
+ */
+function ai_get_provider_auto_capability_models($provider_id) {
+  $cache = &backdrop_static(__FUNCTION__, []);
+  if (isset($cache[$provider_id])) {
+    return $cache[$provider_id];
+  }
+
+  $auto = [];
+  $api = NULL;
+  try {
+    $api = ai_get_api($provider_id);
+  }
+  catch (\Exception $e) {
+    watchdog('ai', 'Failed to load provider @provider: @message', [
+      '@provider' => $provider_id,
+      '@message' => $e->getMessage(),
+    ], WATCHDOG_WARNING);
+  }
+
+  if (!$api) {
+    $cache[$provider_id] = $auto;
+    return $auto;
+  }
+
+  ai_manual_capability_bypass(TRUE);
+  try {
+    foreach (ai_capability_probe_methods() as $capability => $probe) {
+      list($method, $args) = $probe;
+      try {
+        $models = method_exists($api, $method)
+          ? call_user_func_array([$api, $method], $args)
+          : $api->getModelsByCapability($capability);
+      }
+      catch (\Exception $e) {
+        $models = [];
+      }
+      foreach ((array) $models as $model_id => $label) {
+        $model_id = is_int($model_id) ? (string) $label : (string) $model_id;
+        if ($model_id !== '') {
+          $auto[$capability][$model_id] = TRUE;
+        }
+      }
+    }
+  }
+  catch (\Exception $e) {
+    watchdog('ai', 'Capability probe failed for @provider: @message', [
+      '@provider' => $provider_id,
+      '@message' => $e->getMessage(),
+    ], WATCHDOG_WARNING);
+  }
+  ai_manual_capability_bypass(FALSE);
+
+  $cache[$provider_id] = $auto;
+  return $auto;
+}
+
+/**
+ * List the capabilities that carry a saved override for a provider.
+ *
+ * @param string $provider_id
+ *   Provider machine name.
+ *
+ * @return array
+ *   Map of capability => number of models selected.
+ */
+function ai_get_provider_capability_overrides($provider_id) {
+  $overrides = [];
+  foreach (ai_get_provider_manual_capability_models($provider_id) as $capability => $models) {
+    $overrides[$capability] = count($models);
+  }
+  return $overrides;
+}
+
+/**
+ * Human-readable summary of a provider's capability overrides.
+ *
+ * @param string $provider_id
+ *   Provider machine name.
+ *
+ * @return string
+ *   Empty string when nothing is overridden.
+ */
+function ai_capability_override_summary($provider_id) {
+  $overrides = ai_get_provider_capability_overrides($provider_id);
+  if (empty($overrides)) {
+    return '';
+  }
+
+  $labels = ai_capability_labels();
+  $parts = [];
+  foreach ($overrides as $capability => $count) {
+    $label = isset($labels[$capability]) ? $labels[$capability] : $capability;
+    $parts[] = t('@capability (@count)', ['@capability' => $label, '@count' => $count]);
+  }
+  return implode(', ', $parts);
+}
+
+/**
+ * Inline notice markup describing a provider's capability overrides.
+ *
+ * @param string $provider_id
+ *   Provider machine name.
+ *
+ * @return string
+ *   Empty string when nothing is overridden.
+ */
+function ai_provider_capability_override_notice($provider_id) {
+  $summary = ai_capability_override_summary($provider_id);
+  if ($summary === '') {
+    return '';
+  }
+
+  return '<div class="messages warning ai-capability-notice">' . t('Capability overrides are active for @summary. Models outside those selections are hidden from every model dropdown. <a href="@url">Review</a>', [
+    '@summary' => $summary,
+    '@url' => url('admin/config/ai/settings/capabilities/' . $provider_id),
+  ]) . '</div>';
+}
+
+/**
+ * Normalize capability aliases to canonical capability names.
+ *
+ * @param string $capability
+ *   Capability value from callers.
+ *
+ * @return string
+ *   Canonical capability name.
+ */
+function ai_normalize_capability_name($capability) {
+  $capability = strtolower(trim((string) $capability));
+  $aliases = [
+    'chat' => 'text',
+    'completion' => 'text',
+    'completions' => 'text',
+    'embedding' => 'embeddings',
+    'text_to_speech' => 'tts',
+    'speech_to_text' => 'stt',
+    'speech2text' => 'stt',
+    'tools' => 'tool_calling',
+    'function_calling' => 'tool_calling',
+    'classify' => 'decision',
+    'classification' => 'decision',
+    'decide' => 'decision',
+  ];
+  return isset($aliases[$capability]) ? $aliases[$capability] : $capability;
+}
+
+/**
+ * Parse one model list value from provider settings.
+ *
+ * Supports newline/comma-delimited strings and Form API checkbox arrays.
+ *
+ * @param mixed $value
+ *   Raw config value.
+ *
+ * @return array
+ *   Unique model IDs.
+ */
+function ai_parse_provider_model_list($value) {
+  $items = [];
+
+  if (is_string($value)) {
+    $items = preg_split('/[\r\n,]+/', $value);
+  }
+  elseif (is_array($value)) {
+    foreach ($value as $key => $item) {
+      // Checkboxes submit key => key for checked, key => 0 for unchecked.
+      if (($item === 0 || $item === '0' || $item === '' || $item === NULL) && is_string($key)) {
+        continue;
+      }
+      if (is_string($item)) {
+        $items[] = $item;
+      }
+      elseif (is_string($key)) {
+        $items[] = $key;
+      }
+    }
+  }
+
+  $normalized = [];
+  foreach ($items as $item) {
+    $id = trim((string) $item);
+    if ($id !== '') {
+      $normalized[$id] = $id;
+    }
+  }
+  return array_values($normalized);
+}
+
+/**
+ * Get manual provider capability model mappings from config.
+ *
+ * @param string $provider_id
+ *   Provider machine name (e.g. ollama, openrouter).
+ *
+ * @return array
+ *   Map of canonical capability => array of model IDs.
+ */
+function ai_get_provider_manual_capability_models($provider_id) {
+  $providers = config_get('ai.settings', 'providers') ?: [];
+  $manual = [];
+  $raw = !empty($providers[$provider_id]['manual_capability_models']) && is_array($providers[$provider_id]['manual_capability_models'])
+    ? $providers[$provider_id]['manual_capability_models']
+    : [];
+
+  foreach ($raw as $capability => $value) {
+    $normalized_capability = ai_normalize_capability_name($capability);
+    $models = ai_parse_provider_model_list($value);
+    if (!empty($normalized_capability)) {
+      $manual[$normalized_capability] = $models;
+    }
+  }
+
+  return $manual;
+}
+
+/**
+ * Apply manual capability model filtering for one provider.
+ *
+ * @param array $models
+ *   Model map (model_id => label).
+ * @param string $provider_id
+ *   Provider machine name.
+ * @param string $capability
+ *   Requested capability.
+ * @param bool $applied
+ *   (output) TRUE when manual mapping was applied.
+ *
+ * @return array
+ *   Filtered model map.
+ */
+function ai_filter_models_by_manual_capability(array $models, $provider_id, $capability, &$applied = FALSE) {
+  $applied = FALSE;
+
+  // The capability admin UI probes providers with overrides switched off.
+  if (ai_manual_capability_bypass()) {
+    return $models;
+  }
+
+  $normalized_capability = ai_normalize_capability_name($capability);
+  if ($normalized_capability === '') {
+    return $models;
+  }
+
+  $manual = ai_get_provider_manual_capability_models($provider_id);
+  if (!array_key_exists($normalized_capability, $manual)) {
+    return $models;
+  }
+
+  $applied = TRUE;
+  $selected = [];
+  foreach ($manual[$normalized_capability] as $candidate) {
+    if (isset($models[$candidate])) {
+      $selected[$candidate] = $models[$candidate];
+      continue;
+    }
+
+    // Allow provider-prefixed candidates where model IDs are unprefixed.
+    $provider_prefix = $provider_id . '/';
+    if (strpos($candidate, $provider_prefix) === 0) {
+      $stripped = substr($candidate, strlen($provider_prefix));
+      if (isset($models[$stripped])) {
+        $selected[$stripped] = $models[$stripped];
+        continue;
+      }
+    }
+
+    // Allow unprefixed candidates where model IDs are provider-scoped.
+    if (strpos($candidate, '/') === FALSE) {
+      $suffix = '/' . $candidate;
+      foreach ($models as $model_id => $label) {
+        if (substr($model_id, -strlen($suffix)) === $suffix) {
+          $selected[$model_id] = $label;
+        }
+      }
+    }
+  }
+
+  return $selected;
 }
 
 /**
@@ -645,16 +1406,15 @@ function ai_get_all_embedding_models_with_dimensions() {
     }
   }
 
+  uasort($models, function ($a, $b) {
+    return strnatcasecmp($a['label'], $b['label']);
+  });
+
   return $models;
 }
 
 /**
  * Dynamically detect embedding dimension by making a test API call.
- *
- * @param string $model_id
- *   The model ID.
- * @param string $provider_id
- *   The provider ID.
  *
  * @return int
  *   The detected dimension, or 0 if detection failed.
@@ -763,6 +1523,86 @@ function ai_moderation($input, $model = 'omni-moderation-latest') {
 }
 
 /**
+ * Convenience wrapper for single-question decision evaluation.
+ *
+ * @param string $input
+ *   The context or text to evaluate.
+ * @param array $question
+ *   The question envelope, containing at minimum 'type' and 'prompt'.
+ *   If 'id' is omitted, defaults to 'q0'.
+ * @param string|null $model
+ *   Optional model override (or provider-qualified model).
+ * @param string|null $provider
+ *   Optional provider machine name.
+ *
+ * @return mixed
+ *   Evaluated answer (boolean, string option, or score), or NULL on failure.
+ */
+function ai_decide(string $input, array $question, ?string $model = NULL, ?string $provider = NULL) {
+  if (empty($question['id'])) {
+    $question['id'] = 'q0';
+  }
+  $stripped_model = '';
+  if (!empty($model)) {
+    list($parsed_provider, $stripped_model) = ai_parse_model_id($model);
+    if (!empty($parsed_provider)) {
+      $provider = $parsed_provider;
+    }
+  }
+  $api = $provider ? ai_get_api($provider) : (!empty($model) ? ai_get_api_for_model($model, $stripped_model) : ai_get_api());
+  if (!$api) {
+    return NULL;
+  }
+  try {
+    $results = $api->decide($input, [$question], $stripped_model ?: ($model ?: ''));
+    return isset($results[0]['answer']) ? $results[0]['answer'] : NULL;
+  }
+  catch (\Exception $e) {
+    watchdog('ai', 'ai_decide failed: @message', ['@message' => $e->getMessage()], WATCHDOG_WARNING);
+    return NULL;
+  }
+}
+
+/**
+ * Convenience wrapper for multi-question decision classification.
+ *
+ * @param string $input
+ *   The context or text to evaluate.
+ * @param array $questions
+ *   List of question envelope arrays.
+ * @param string|null $model
+ *   Optional model override (or provider-qualified model).
+ * @param string|null $provider
+ *   Optional provider machine name.
+ *
+ * @return array
+ *   Array of evaluated outcome arrays, indexed by question order.
+ */
+function ai_classify(string $input, array $questions, ?string $model = NULL, ?string $provider = NULL): array {
+  if (empty($questions)) {
+    return [];
+  }
+  $stripped_model = '';
+  if (!empty($model)) {
+    list($parsed_provider, $stripped_model) = ai_parse_model_id($model);
+    if (!empty($parsed_provider)) {
+      $provider = $parsed_provider;
+    }
+  }
+  $api = $provider ? ai_get_api($provider) : (!empty($model) ? ai_get_api_for_model($model, $stripped_model) : ai_get_api());
+  if (!$api) {
+    return [];
+  }
+  try {
+    return $api->decide($input, $questions, $stripped_model ?: ($model ?: ''));
+  }
+  catch (\Exception $e) {
+    watchdog('ai', 'ai_classify failed: @message', ['@message' => $e->getMessage()], WATCHDOG_WARNING);
+    return [];
+  }
+}
+
+/**
  * Get all models from enabled providers.
  */
 function ai_get_all_models() {
@@ -809,6 +1649,27 @@ function ai_get_all_stt_models() {
  */
 function ai_get_all_moderation_models() {
   return ai_get_all_models_for_method('getModelsByCapability', ['moderation']);
+}
+
+/**
+ * Get all decision models from enabled providers.
+ */
+function ai_get_all_decision_models() {
+  return ai_get_all_models_for_method('getModelsByCapability', ['decision']);
+}
+
+/**
+ * Get all tool-calling models from enabled providers.
+ */
+function ai_get_all_tool_calling_models() {
+  return ai_get_all_models_for_method('getModelsByCapability', ['tool_calling']);
+}
+
+/**
+ * Get all thinking / reasoning models from enabled providers.
+ */
+function ai_get_all_thinking_models() {
+  return ai_get_all_models_for_method('getModelsByCapability', ['thinking']);
 }
 
 /**
@@ -869,6 +1730,10 @@ function ai_get_all_models_for_method($method, array $method_args = []) {
   }
 
   ksort($models);
+  foreach ($models as $provider_label => &$provider_models) {
+    natcasesort($provider_models);
+  }
+  unset($provider_models);
   return $models;
 }
 
@@ -901,9 +1766,40 @@ function ai_default_model(array $grouped, $preferred = NULL, array $fallbacks = 
   if ($preferred && isset($flat[$preferred])) {
     return $preferred;
   }
+  if ($preferred) {
+    // If preferred was stored without provider prefix (or different provider prefix),
+    // match by the model ID part.
+    foreach (array_keys($flat) as $key) {
+      $model_part = strpos($key, '/') !== FALSE ? substr($key, strpos($key, '/') + 1) : $key;
+      if ($key === $preferred || $model_part === $preferred) {
+        return $key;
+      }
+    }
+  }
   foreach ($fallbacks as $candidate) {
     if (isset($flat[$candidate])) {
       return $candidate;
+    }
+    foreach (array_keys($flat) as $key) {
+      $model_part = strpos($key, '/') !== FALSE ? substr($key, strpos($key, '/') + 1) : $key;
+      if ($key === $candidate || $model_part === $candidate) {
+        return $key;
+      }
+    }
+  }
+  // If no explicit fallback matched, prioritize common modern flagship models.
+  $flagships = [
+    '/gpt-4o(?:-mini)?$/i',
+    '/claude-3-(?:7|5)-sonnet/i',
+    '/gemini-2\.0-flash/i',
+    '/llama-3\.[123]-(?:70b|8b)/i',
+    '/mistral-large/i',
+  ];
+  foreach ($flagships as $pattern) {
+    foreach (array_keys($flat) as $key) {
+      if (preg_match($pattern, $key)) {
+        return $key;
+      }
     }
   }
   reset($flat);

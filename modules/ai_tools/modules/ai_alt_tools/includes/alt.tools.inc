@@ -9,7 +9,7 @@
  * Tool definitions.
  */
 function ai_alt_tools_definitions() {
-  return [
+  $definitions = [
     'find_images_missing_alt' => [
       'definition' => [
         'type' => 'function',
@@ -193,6 +193,29 @@ function ai_alt_tools_definitions() {
       'category' => 'media',
     ],
   ];
+
+  $write_tools = [
+    'generate_alt_for_image',
+    'seed_alt_for_image_from_usage',
+    'copy_usage_alt_to_global',
+    'set_alt_for_image',
+    'rename_file_for_image',
+  ];
+  foreach ($definitions as $name => &$definition) {
+    $definition['permission'] = in_array($name, $write_tools, TRUE) ? 'manage ai alt text' : 'access ai alt tools';
+    $definition['operation'] = in_array($name, $write_tools, TRUE) ? 'write' : 'read';
+    $definition['destructive'] = ($name === 'rename_file_for_image');
+  }
+  unset($definition);
+
+  return $definitions;
+}
+
+/**
+ * Check access for a file operation used by a tool executor.
+ */
+function ai_alt_tools_file_access($file, $op = 'view') {
+  return !function_exists('file_access') || file_access($op, $file);
 }
 
 /**
@@ -223,8 +246,6 @@ function ai_alt_tools_execute_find_images_missing_alt(array $args) {
   $file_query->fields('a', [$alt_field . '_value']);
   $file_query->where('(a.' . $alt_field . '_value IS NULL OR a.' . $alt_field . '_value = :empty)', [':empty' => '']);
   $file_rows = $file_query->execute()->fetchAll(PDO::FETCH_ASSOC);
-  $total_missing += count($file_rows);
-
   foreach ($file_rows as $row) {
     if (count($images) >= $limit) {
       break;
@@ -233,9 +254,13 @@ function ai_alt_tools_execute_find_images_missing_alt(array $args) {
     if (!$file) {
       continue;
     }
+    if (!ai_alt_tools_file_access($file, 'view')) {
+      continue;
+    }
     if (!ai_alt_tools_file_has_allowed_usage($file)) {
       continue;
     }
+    $total_missing++;
     $images[] = ai_alt_tools_build_file_image_row($file);
   }
 
@@ -265,6 +290,9 @@ function ai_alt_tools_execute_get_image_details(array $args) {
   if (!$file) {
     return ['error' => "No file found with fid $fid."];
   }
+  if (!ai_alt_tools_file_access($file, 'view')) {
+    return ['error' => "Access denied for file $fid."];
+  }
   if (strpos((string) $file->filemime, 'image/') !== 0) {
     return ['error' => "File $fid is not an image."];
   }
@@ -289,6 +317,9 @@ function ai_alt_tools_execute_generate_alt_for_image(array $args) {
   $file = file_load($fid);
   if (!$file) {
     return ['error' => "No file found with fid $fid."];
+  }
+  if (!ai_alt_tools_file_access($file, 'view') || !ai_alt_tools_file_access($file, 'update')) {
+    return ['error' => "Access denied for file $fid."];
   }
   if (strpos((string) $file->filemime, 'image/') !== 0) {
     return ['error' => "File $fid is not an image."];
@@ -345,7 +376,7 @@ function ai_alt_tools_execute_generate_alt_for_image(array $args) {
       'operation' => 'ai_alt_tools_generate_alt',
     ]);
   }
-  catch (\Exception $e) {
+  catch (\Throwable $e) {
     return ['error' => $e->getMessage()];
   }
 
@@ -376,6 +407,9 @@ function ai_alt_tools_execute_seed_alt_for_image_from_usage(array $args) {
   $file = file_load($fid);
   if (!$file) {
     return ['error' => "No file found with fid $fid."];
+  }
+  if (!ai_alt_tools_file_access($file, 'view') || !ai_alt_tools_file_access($file, 'update')) {
+    return ['error' => "Access denied for file $fid."];
   }
   if (strpos((string) $file->filemime, 'image/') !== 0) {
     return ['error' => "File $fid is not an image."];
@@ -449,6 +483,17 @@ function ai_alt_tools_execute_set_alt_for_image(array $args) {
   if (!$file) {
     return ['error' => "No file found with fid $fid."];
   }
+  if (!ai_alt_tools_file_access($file, 'update')) {
+    return ['error' => "Access denied for file $fid."];
+  }
+  if (strpos((string) $file->filemime, 'image/') !== 0) {
+    return ['error' => "File $fid is not an image."];
+  }
+
+  $alt_text = ai_alt_tools_normalize_alt_text($alt_text);
+  if ($alt_text === '') {
+    return ['error' => 'alt_text must not be empty.'];
+  }
 
   ai_alt_tools_set_file_alt_text($file, $alt_text);
 
@@ -472,6 +517,9 @@ function ai_alt_tools_execute_rename_file_for_image(array $args) {
   $file = file_load($fid);
   if (!$file) {
     return ['error' => "No file found with fid $fid."];
+  }
+  if (!ai_alt_tools_file_access($file, 'view') || !ai_alt_tools_file_access($file, 'update')) {
+    return ['error' => "Access denied for file $fid."];
   }
   if (strpos((string) $file->filemime, 'image/') !== 0) {
     return ['error' => "File $fid is not an image."];
@@ -599,55 +647,61 @@ function ai_alt_tools_scan_entity_for_file_alt($entity_type, $entity, $file) {
   $bundle_key = !empty($entity_info['entity keys']['bundle']) ? $entity_info['entity keys']['bundle'] : NULL;
   $bundle = $bundle_key && isset($entity->{$bundle_key}) ? $entity->{$bundle_key} : $entity_type;
   $instances = field_info_instances($entity_type, $bundle);
-  $lang = LANGUAGE_NONE;
 
   foreach ($instances as $field_name => $instance) {
     $field_info = field_info_field($field_name);
-    if (empty($field_info['type']) || empty($entity->{$field_name}[$lang])) {
+    $field_values = isset($entity->{$field_name}) && is_array($entity->{$field_name}) ? $entity->{$field_name} : [];
+    if (empty($field_info['type']) || empty($field_values)) {
       continue;
     }
 
-    switch ($field_info['type']) {
-      case 'image':
-        foreach ($entity->{$field_name}[$lang] as $item) {
-          if (!empty($item['fid']) && (int) $item['fid'] === (int) $file->fid && !empty($item['alt'])) {
-            $alt = trim($item['alt']);
-            if ($alt !== '') {
+    foreach ($field_values as $items) {
+      if (empty($items) || !is_array($items)) {
+        continue;
+      }
+
+      switch ($field_info['type']) {
+        case 'image':
+          foreach ($items as $item) {
+            if (!empty($item['fid']) && (int) $item['fid'] === (int) $file->fid && !empty($item['alt'])) {
+              $alt = trim($item['alt']);
+              if ($alt !== '') {
+                return $alt;
+              }
+            }
+          }
+          break;
+
+        case 'text':
+        case 'text_long':
+        case 'text_with_summary':
+          foreach ($items as $item) {
+            if (empty($item['value'])) {
+              continue;
+            }
+            $alt = ai_alt_tools_find_alt_in_html($item['value'], $file);
+            if ($alt !== FALSE) {
               return $alt;
             }
           }
-        }
-        break;
+          break;
 
-      case 'text':
-      case 'text_long':
-      case 'text_with_summary':
-        foreach ($entity->{$field_name}[$lang] as $item) {
-          if (empty($item['value'])) {
-            continue;
+        case 'paragraphs':
+          foreach ($items as $item) {
+            if (empty($item['value'])) {
+              continue;
+            }
+            $children = entity_load('paragraphs_item', [$item['value']]);
+            if (empty($children[$item['value']])) {
+              continue;
+            }
+            $alt = ai_alt_tools_scan_entity_for_file_alt('paragraphs_item', $children[$item['value']], $file);
+            if ($alt !== FALSE) {
+              return $alt;
+            }
           }
-          $alt = ai_alt_tools_find_alt_in_html($item['value'], $file);
-          if ($alt !== FALSE) {
-            return $alt;
-          }
-        }
-        break;
-
-      case 'paragraphs':
-        foreach ($entity->{$field_name}[$lang] as $item) {
-          if (empty($item['value'])) {
-            continue;
-          }
-          $children = entity_load('paragraphs_item', [$item['value']]);
-          if (empty($children[$item['value']])) {
-            continue;
-          }
-          $alt = ai_alt_tools_scan_entity_for_file_alt('paragraphs_item', $children[$item['value']], $file);
-          if ($alt !== FALSE) {
-            return $alt;
-          }
-        }
-        break;
+          break;
+      }
     }
   }
 
@@ -738,14 +792,16 @@ function ai_alt_tools_src_to_fid($src) {
     if (preg_match('#^styles/[^/]+/public/(.+)$#', $file_path, $m)) {
       $file_path = $m[1];
     }
-    $uri = 'public://' . $file_path;
+    $raw_uri = 'public://' . $file_path;
+    $uri = 'public://' . rawurldecode($file_path);
   }
   elseif ($private_path && strpos($src, $private_path . '/') === 0) {
     $file_path = substr($src, strlen($private_path) + 1);
     if (preg_match('#^styles/[^/]+/private/(.+)$#', $file_path, $m)) {
       $file_path = $m[1];
     }
-    $uri = 'private://' . $file_path;
+    $raw_uri = 'private://' . $file_path;
+    $uri = 'private://' . rawurldecode($file_path);
   }
   else {
     return FALSE;
@@ -753,7 +809,8 @@ function ai_alt_tools_src_to_fid($src) {
 
   return db_select('file_managed', 'fm')
     ->fields('fm', ['fid'])
-    ->condition('uri', $uri)
+    ->condition('uri', array_unique([$uri, $raw_uri]), 'IN')
+    ->orderBy('fid', 'ASC')
     ->execute()
     ->fetchField();
 }
@@ -868,8 +925,8 @@ function ai_alt_tools_alt_table($alt_field) {
  * Resolve available chat model from AI settings.
  */
 function ai_alt_tools_default_chat_model() {
-  $configured = trim((string) config_get('ai.settings', 'default_text_model'));
-  $models_grouped = function_exists('ai_get_all_chat_models') ? ai_get_all_chat_models() : [];
+  $configured = trim((string) config_get('ai.settings', 'default_vision_model'));
+  $models_grouped = function_exists('ai_get_all_vision_models') ? ai_get_all_vision_models() : [];
 
   $flat = [];
   foreach ($models_grouped as $group) {
@@ -890,7 +947,7 @@ function ai_alt_tools_default_chat_model() {
     return key($flat);
   }
 
-  return config_get('ai.settings', 'default_text_model') ?: 'gpt-4o-mini';
+  return $configured;
 }
 
 /**
@@ -940,7 +997,8 @@ function ai_alt_tools_normalize_alt_text($text) {
   $text = trim((string) $text);
   $text = preg_replace('/^\s*(alt text|alt|caption)\s*:\s*/i', '', $text);
   $text = trim($text, " \t\n\r\0\x0B\"'");
-  return trim(preg_replace('/\s+/', ' ', $text));
+  $text = trim(preg_replace('/\s+/', ' ', $text));
+  return function_exists('truncate_utf8') ? truncate_utf8($text, 255, TRUE, TRUE) : substr($text, 0, 255);
 }
 
 /**
@@ -1029,34 +1087,52 @@ function ai_alt_tools_find_inline_missing_alt($bundle = '', $limit = 20) {
     $nodes = node_load_multiple($nids);
     foreach ($nodes as $node) {
       foreach ($text_fields as $field_name) {
-        $items = field_get_items('node', $node, $field_name);
-        if (empty($items)) {
+        $field_values = isset($node->{$field_name}) && is_array($node->{$field_name}) ? $node->{$field_name} : [];
+        if (empty($field_values)) {
           continue;
         }
-        foreach ($items as $delta => $item) {
-        foreach (ai_alt_tools_extract_inline_images((string) ($item['value'] ?? '')) as $match) {
-          if (!empty($match['alt'])) {
+        foreach ($field_values as $field_lang => $items) {
+          if (empty($items) || !is_array($items)) {
             continue;
           }
-          $total++;
-          $results[] = [
-            'source' => 'inline',
-            'entity_type' => 'node',
-            'entity_id' => (int) $node->nid,
-              'bundle' => $node->type,
-              'title' => $node->title,
-              'field' => $field_name,
-              'delta' => (int) $delta,
-              'src' => $match['src'],
-              'fid' => !empty($match['fid']) ? (int) $match['fid'] : NULL,
-            ];
-            if (count($results) >= $limit) {
-              return [$results, $total];
-            }
+          foreach ($items as $delta => $item) {
+            foreach (ai_alt_tools_extract_inline_images((string) ($item['value'] ?? '')) as $match) {
+              if (!empty($match['alt'])) {
+                continue;
+              }
+
+              $match_fid = !empty($match['fid']) ? (int) $match['fid'] : 0;
+              if (!$match_fid && !empty($match['src'])) {
+                $match_fid = (int) ai_alt_tools_src_to_fid($match['src']);
+              }
+              if ($match_fid) {
+                $match_file = file_load($match_fid);
+                if (!$match_file || !ai_alt_tools_file_access($match_file, 'view')) {
+                  continue;
+                }
+              }
+
+              $total++;
+              $results[] = [
+                'source' => 'inline',
+                'entity_type' => 'node',
+                'entity_id' => (int) $node->nid,
+                'bundle' => $node->type,
+                'title' => $node->title,
+                'field' => $field_name,
+                'delta' => (int) $delta,
+                'langcode' => $field_lang,
+                'src' => $match['src'],
+                'fid' => $match_fid ?: NULL,
+              ];
+              if (count($results) >= $limit) {
+                return [$results, $total];
           }
         }
       }
+      }
     }
+  }
   }
 
   return [$results, $total];
@@ -1083,26 +1159,32 @@ function ai_alt_tools_find_inline_usage_contexts($fid, $limit = 20) {
       if (empty($field['type']) || !in_array($field['type'], ['text', 'text_long', 'text_with_summary'], TRUE)) {
         continue;
       }
-      $items = field_get_items('node', $node, $field_name);
-      if (empty($items)) {
+      $field_values = isset($node->{$field_name}) && is_array($node->{$field_name}) ? $node->{$field_name} : [];
+      if (empty($field_values)) {
         continue;
       }
-      foreach ($items as $delta => $item) {
-        foreach (ai_alt_tools_extract_inline_images((string) ($item['value'] ?? '')) as $match) {
-          if (empty($match['fid']) || (int) $match['fid'] !== (int) $fid) {
-            continue;
-          }
-          $matches[] = [
-            'entity_type' => 'node',
-            'entity_id' => (int) $node->nid,
-            'bundle' => $node->type,
-            'title' => $node->title,
-            'field' => $field_name,
-            'delta' => (int) $delta,
-            'src' => $match['src'],
-          ];
-          if (count($matches) >= $limit) {
-            return $matches;
+      foreach ($field_values as $field_lang => $items) {
+        if (empty($items) || !is_array($items)) {
+          continue;
+        }
+        foreach ($items as $delta => $item) {
+          foreach (ai_alt_tools_extract_inline_images((string) ($item['value'] ?? '')) as $match) {
+            if (empty($match['fid']) || (int) $match['fid'] !== (int) $fid) {
+              continue;
+            }
+            $matches[] = [
+              'entity_type' => 'node',
+              'entity_id' => (int) $node->nid,
+              'bundle' => $node->type,
+              'title' => $node->title,
+              'field' => $field_name,
+              'delta' => (int) $delta,
+              'langcode' => $field_lang,
+              'src' => $match['src'],
+            ];
+            if (count($matches) >= $limit) {
+              return $matches;
+            }
           }
         }
       }
@@ -1132,10 +1214,11 @@ function ai_alt_tools_extract_inline_images($html) {
   foreach ($images as $img) {
     $src = trim((string) $img->getAttribute('src'));
     $alt = trim((string) $img->getAttribute('alt'));
+    $data_fid = (int) $img->getAttribute('data-file-id');
     $results[] = [
       'src' => $src,
       'alt' => $alt,
-      'fid' => ai_alt_tools_resolve_fid_from_src($src),
+      'fid' => $data_fid > 0 ? $data_fid : ai_alt_tools_resolve_fid_from_src($src),
     ];
   }
 

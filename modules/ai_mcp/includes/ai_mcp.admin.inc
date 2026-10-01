@@ -81,6 +81,7 @@ function ai_mcp_admin_page() {
  *   Form render array.
  */
 function ai_mcp_server_form(array $form, array &$form_state, $server = NULL) {
+  module_load_include('inc', 'ai_mcp', 'includes/ai_mcp.tools');
   $is_new = empty($server);
 
   $form['#server'] = $server;
@@ -131,6 +132,7 @@ function ai_mcp_server_form(array $form, array &$form_state, $server = NULL) {
     $name = isset($fn['name']) ? $fn['name'] : $key;
     $desc = isset($fn['description']) ? $fn['description'] : '';
     $tool_options[$key] = '<strong>' . check_plain($name) . '</strong>'
+      . (ai_mcp_tool_is_write($tool) ? ' <em>(' . t('writes') . ')</em>' : '')
       . (empty($desc) ? '' : ' — ' . check_plain(truncate_utf8($desc, 80, TRUE, TRUE)));
   }
 
@@ -142,6 +144,13 @@ function ai_mcp_server_form(array $form, array &$form_state, $server = NULL) {
     '#options'       => $tool_options,
     '#default_value' => array_keys(array_filter($current_tools, function($v) { return (bool) $v; })),
     '#description'   => t('Leave all unchecked to allow every tool in the registry. Check specific tools to restrict this server to that subset.'),
+  ];
+
+  $form['allow_write_tools'] = [
+    '#type'          => 'checkbox',
+    '#title'         => t('Allow write tools'),
+    '#default_value' => !$is_new && !empty($server['allow_write_tools']),
+    '#description'   => t('MCP has no approval step on this site: when a client calls a tool, it runs immediately, and any confirmation is up to the client. Leave this off to expose only read-only tools, so a client that has been misled (for example by instructions hidden in content it read) cannot change the site. Tools marked <em>(writes)</em> are only available when this is on.'),
   ];
 
   $form['actions'] = ['#type' => 'actions'];
@@ -210,6 +219,7 @@ function ai_mcp_server_form_submit(array $form, array &$form_state) {
     'auth_key'     => trim($values['auth_key']),
     'uid'          => $uid_raw === '' ? 0 : (int) $uid_raw,
     'tools'        => $tools_clean,
+    'allow_write_tools' => !empty($values['allow_write_tools']),
     'oauth_enabled'=> FALSE,
   ];
 

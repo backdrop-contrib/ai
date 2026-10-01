@@ -8,9 +8,13 @@
         "javascript_protocol": { "enabled": 1 },
         "css_expression":      { "enabled": 1 },
         "dangerous_html":      { "enabled": 1 },
+        "security_api_keys":   { "enabled": 1, "phase": "both" },
+        "security_prompt_injection": { "enabled": 1, "phase": "pre" },
         "pii_email":           { "enabled": 1, "phase": "both" },
         "pii_credit_card":     { "enabled": 1, "phase": "both" },
         "pii_iban":            { "enabled": 0, "phase": "both" },
-        "pii_phone":           { "enabled": 0, "phase": "both" }
-    }
+        "pii_phone":           { "enabled": 0, "phase": "both" },
+        "pii_ssn":             { "enabled": 1, "phase": "both" }
+    },
+    "custom_patterns": {}
 }

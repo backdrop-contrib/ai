@@ -38,6 +38,7 @@ function ai_autoload_info() {
     'AIStreamingResponse' => 'includes/AIStreamingResponse.php',
     'AIStringHelper' => 'includes/AIStringHelper.php',
     'AIImageHelper' => 'includes/AIImageHelper.php',
+    'AIDecisionHelper' => 'includes/AIDecisionHelper.php',
   ];
 }
 

@@ -87,10 +87,7 @@ function _ai_moderation_evaluate($text, array $options = []) {
   // Fast path: use native decision evaluation when a decision-capable model
   // is available.
   $is_decision_model = FALSE;
-  if (strpos($model, 'jev') !== FALSE || strpos($model, 'typesafe') !== FALSE) {
-    $is_decision_model = TRUE;
-  }
-  elseif (method_exists($api, 'getDecisionModels')) {
+  if (method_exists($api, 'getDecisionModels')) {
     $decision_models = $api->getDecisionModels();
     if (isset($decision_models[$stripped_model]) || isset($decision_models[$model])) {
       $is_decision_model = TRUE;

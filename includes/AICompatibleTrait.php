@@ -38,12 +38,18 @@ trait AICompatibleTrait {
       ];
     }
 
-    return [
+    $normalized = [
       'finish_reason' => $finish_reason,
       'content' => $content,
       'tool_calls' => $tool_calls,
       'raw' => $result,
     ];
+    // Thinking models (DeepSeek, Kimi) require reasoning_content to be sent
+    // back with the assistant turn on the next tool-loop request.
+    if (!empty($message['reasoning_content'])) {
+      $normalized['reasoning_content'] = $message['reasoning_content'];
+    }
+    return $normalized;
   }
 
 }

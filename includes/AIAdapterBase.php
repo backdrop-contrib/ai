@@ -27,7 +27,7 @@ abstract class AIAdapterBase implements AIProviderClient {
    * into watchdog and sometimes the UI, so strip markup and cap the length.
    */
   protected function formatErrorBody($response): string {
-    $body = isset($response->data) ? trim(strip_tags((string) $response->data)) : '';
+    $body = trim(strip_tags($this->responseBody($response)));
     if ($body === '') {
       // Transport failures (timeout, DNS, TLS) come back as code -1 with an
       // empty body; backdrop_http_request() puts the cURL/socket message in
@@ -38,6 +38,44 @@ abstract class AIAdapterBase implements AIProviderClient {
       return 'Unknown error';
     }
     return strlen($body) > 600 ? substr($body, 0, 600) . '…' : $body;
+  }
+
+  /**
+   * Return a response body, decoding chunked transfer encoding.
+   *
+   * backdrop_http_request() sends HTTP/1.0 and leaves the body as received,
+   * but some providers' load balancers (DeepL's, for one) still answer with
+   * Transfer-Encoding: chunked. Undecoded, the chunk-size lines break
+   * json_decode() and a successful response reads as empty.
+   */
+  protected function responseBody($response): string {
+    $body = (string) ($response->data ?? '');
+    $encoding = strtolower((string) ($response->headers['transfer-encoding'] ?? ''));
+    if ($body === '' || strpos($encoding, 'chunked') === FALSE) {
+      return $body;
+    }
+
+    $decoded = '';
+    $offset = 0;
+    $length = strlen($body);
+    while ($offset < $length) {
+      $line_end = strpos($body, "\r\n", $offset);
+      if ($line_end === FALSE) {
+        return $body;
+      }
+      $size_hex = trim(explode(';', substr($body, $offset, $line_end - $offset), 2)[0]);
+      if ($size_hex === '' || !ctype_xdigit($size_hex)) {
+        // Not actually chunked; leave it alone.
+        return $body;
+      }
+      $size = hexdec($size_hex);
+      if ($size === 0) {
+        break;
+      }
+      $decoded .= substr($body, $line_end + 2, $size);
+      $offset = $line_end + 2 + $size + 2;
+    }
+    return $decoded;
   }
 
   public function getModelsByCapability($capability): array {
@@ -343,7 +381,7 @@ abstract class AIAdapterBase implements AIProviderClient {
       throw new \Exception('API error (' . ($response->code ?? 'unknown') . '): ' . $this->formatErrorBody($response));
     }
 
-    $data = json_decode((string) ($response->data ?? ''), TRUE);
+    $data = json_decode($this->responseBody($response), TRUE);
     return is_array($data) ? $this->captureProviderUsage($data) : [];
   }
 
@@ -367,7 +405,7 @@ abstract class AIAdapterBase implements AIProviderClient {
       throw new \Exception('API error (' . ($response->code ?? 'unknown') . '): ' . $this->formatErrorBody($response));
     }
 
-    return (string) ($response->data ?? '');
+    return $this->responseBody($response);
   }
 
   protected function makeMultipartRequest(string $url, array $fields, int $timeout = 30): array {
@@ -416,7 +454,7 @@ abstract class AIAdapterBase implements AIProviderClient {
       throw new \Exception('API error (' . ($response->code ?? 'unknown') . '): ' . $this->formatErrorBody($response));
     }
 
-    $data = json_decode((string) ($response->data ?? ''), TRUE);
+    $data = json_decode($this->responseBody($response), TRUE);
     return is_array($data) ? $this->captureProviderUsage($data) : [];
   }
 

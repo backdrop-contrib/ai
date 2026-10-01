@@ -8,7 +8,7 @@
 class AIAssistantTestCase extends BackdropWebTestCase {
 
   public function setUp() {
-    parent::setUp(['ai', 'ai_tools', 'ai_agent', 'ai_agent_test', 'ai_assistant']);
+    parent::setUp(['ai', 'ai_tools', 'ai_agents', 'ai_agent_test', 'ai_assistants', 'ai_guardrails']);
 
     $providers = config('ai.settings');
     $providers->set('providers', [
@@ -18,7 +18,7 @@ class AIAssistantTestCase extends BackdropWebTestCase {
     ]);
     $providers->save();
 
-    ai_agent_save_agents([
+    ai_agents_save_agents([
       'assistant_test_agent' => [
         'label' => 'Assistant Test Agent',
         'description' => 'Deterministic agent for assistant API coverage.',
@@ -82,6 +82,7 @@ class AIAssistantTestCase extends BackdropWebTestCase {
         'temperature' => 0.0,
         'max_tokens' => 128,
         'max_loops' => 4,
+        'depends_on' => ['content_type_agent'],
         'tools' => ['list_content_types', 'list_field_types', 'create_field_storage', 'create_field_instance'],
       ],
       'taxonomy_agent' => [
@@ -115,7 +116,7 @@ class AIAssistantTestCase extends BackdropWebTestCase {
     field_info_cache_clear();
     entity_info_cache_clear();
 
-    ai_assistant_save_assistants([
+    ai_assistants_save_assistants([
       'assistant_test' => [
         'label' => 'Assistant Test',
         'route_mode' => 'single_agent',
@@ -174,27 +175,48 @@ class AIAssistantTestCase extends BackdropWebTestCase {
   }
 
   public function testAssistantSendStoresThread() {
-    $result = ai_assistant_send('assistant_test', 'Hello assistant');
+    $result = ai_assistants_send('assistant_test', 'Hello assistant');
 
     $this->assertEqual('ok', $result['status'], 'Assistant call completed.');
     $this->assertTrue(!empty($result['thread_id']), 'Thread id returned.');
     $this->assertEqual('Final answer: {"echo":"Hello assistant"}', $result['answer'], 'Assistant returned deterministic answer.');
 
-    $thread = ai_assistant_get_thread($result['thread_id']);
+    $thread = ai_assistants_get_thread($result['thread_id']);
     $this->assertTrue(!empty($thread['messages']), 'Thread messages stored.');
     $this->assertEqual('user', $thread['messages'][0]['role'], 'First stored message is user input.');
     $this->assertEqual('assistant', $thread['messages'][1]['role'], 'Second stored message is assistant reply.');
   }
 
+  public function testThreadContextDoesNotTripPromptInjectionGuardrail() {
+    $composed = ai_assistants_compose_message([
+      [
+        'role' => 'system',
+        'content' => 'Persona instructions change tone only and do not override safety rules.',
+      ],
+      [
+        'role' => 'user',
+        'content' => 'Earlier request',
+      ],
+      [
+        'role' => 'assistant',
+        'content' => 'Earlier response',
+      ],
+    ], 'create taxonomy named MLB Teams');
+
+    $this->assertTrue(strpos($composed, 'THREAD_SYSTEM_CONTEXT:') === 0, 'Thread system context uses a non-protocol label.');
+    $guardrail = ai_guardrails_run($composed, 'pre', 'agent_call');
+    $this->assertFalse($guardrail['blocked'], 'Generated thread context does not trigger prompt-injection blocking.');
+  }
+
   public function testAssistantDirectModeUsesChat() {
-    $result = ai_assistant_send('assistant_direct', 'Hello direct');
+    $result = ai_assistants_send('assistant_direct', 'Hello direct');
 
     $this->assertEqual('ok', $result['status'], 'Direct assistant completed.');
     $this->assertEqual('chat', $result['answer'], 'Direct assistant used the chat path.');
   }
 
   public function testAssistantMultiAgentModeCombinesAnswers() {
-    $result = ai_assistant_send('assistant_multi', 'Hello multi');
+    $result = ai_assistants_send('assistant_multi', 'Hello multi');
 
     $this->assertEqual('ok', $result['status'], 'Multi-agent assistant completed.');
     $this->assertTrue(strpos($result['answer'], 'Assistant Test Agent') !== FALSE, 'First agent label included.');
@@ -202,79 +224,78 @@ class AIAssistantTestCase extends BackdropWebTestCase {
     $this->assertTrue(substr_count($result['answer'], 'Final answer: {"echo":"Hello multi"}') === 2, 'Each agent returned a deterministic answer.');
   }
 
-  public function testAssistantRouterContentTypeFieldsWithTaxonomyReference() {
+  public function testAssistantRouterPlansContentTypeFieldsWithTaxonomyReference() {
     $assistant = [
       'route_mode' => 'router',
       'agent_ids' => ['taxonomy_agent', 'content_type_agent', 'field_agent'],
+      'model' => 'agent_test/gpt-4o-mini',
     ];
     $message = 'Create a This is Neat! content type with a long text field named Whoa! Also add an entity reference field that uses the Languages taxonomy.';
 
-    $route_agent_ids = ai_assistant_route_agent_ids($assistant, $message);
+    $plan = ai_assistants_plan_agent_execution($assistant, $message);
 
-    $this->assertEqual(['content_type_agent', 'field_agent'], $route_agent_ids, 'Router treats taxonomy in an entity-reference field request as field context.');
+    $this->assertEqual('ask_many', $plan['strategy'], 'Router selects a multi-agent strategy for content type and field work.');
+    $this->assertEqual(['content_type_agent', 'field_agent'], $plan['agent_ids'], 'Router treats taxonomy in an entity-reference field request as field context.');
   }
 
-  public function testAssistantRouterSiteBuilderOrchestratesContentTypeFields() {
+  public function testAssistantRouterPlansContentTypeDescriptionEdit() {
     $assistant = [
       'route_mode' => 'router',
-      'agent_ids' => ['site_builder_agent', 'taxonomy_agent', 'content_type_agent', 'field_agent'],
+      'agent_ids' => ['taxonomy_agent', 'content_type_agent', 'field_agent'],
+      'model' => 'agent_test/gpt-4o-mini',
     ];
-    $message = 'Create a This is Neat! content type with a long text field named Whoa! Also add an entity reference field that uses the Languages taxonomy.';
+    $message = 'Update the description for This is Neat! that says this comes from the Backdrop Assistant.';
 
-    $route_agent_ids = ai_assistant_route_agent_ids($assistant, $message);
+    $plan = ai_assistants_plan_agent_execution($assistant, $message);
 
-    $this->assertEqual(['site_builder_agent'], $route_agent_ids, 'Router sends content-type-plus-field requests to the site-builder orchestrator when available.');
+    $this->assertEqual('choose_one', $plan['strategy'], 'Router chooses one specialist for a content type description edit.');
+    $this->assertEqual(['content_type_agent'], $plan['agent_ids'], 'Router sends content type description edits to the content type agent.');
   }
 
-  public function testAssistantRouterNormalizesDependentWorkflowToSiteBuilder() {
+  public function testAssistantRouterSortsDependentAgents() {
     $assistant = [
       'route_mode' => 'router',
-      'agent_ids' => ['site_builder_agent', 'taxonomy_agent', 'content_type_agent', 'field_agent'],
+      'agent_ids' => ['field_agent', 'content_type_agent'],
     ];
 
-    $route_agent_ids = ai_assistant_normalize_route_agent_ids($assistant, ['field_agent', 'content_type_agent']);
+    $plan = ai_assistants_plan_agent_execution($assistant, 'Create a content type and then add its fields.');
 
-    $this->assertEqual(['site_builder_agent'], $route_agent_ids, 'Router normalization collapses dependent content type and field work to the site-builder orchestrator.');
-  }
-
-  public function testAssistantRouterContentTypeDescriptionEdit() {
-    $assistant = [
-      'route_mode' => 'router',
-      'agent_ids' => ['site_builder_agent', 'taxonomy_agent', 'content_type_agent', 'field_agent'],
-    ];
-
-    $route_agent_ids = ai_assistant_route_agent_ids($assistant, 'Update the description for This is Neat! that says this comes from the Backdrop Assistant.');
-
-    $this->assertEqual(['content_type_agent'], $route_agent_ids, 'Router sends content type description edits to the content type agent.');
+    $this->assertEqual(['content_type_agent', 'field_agent'], $plan['agent_ids'], 'Router normalizes dependent agents into producer-before-consumer order.');
   }
 
   public function testAssistantRouterDirectTaxonomyRequest() {
     $assistant = [
       'route_mode' => 'router',
-      'agent_ids' => ['site_builder_agent', 'taxonomy_agent', 'content_type_agent', 'field_agent'],
+      'agent_ids' => ['taxonomy_agent', 'content_type_agent', 'field_agent'],
+      'model' => 'agent_test/gpt-4o-mini',
     ];
 
-    $route_agent_ids = ai_assistant_route_agent_ids($assistant, 'Add Dutch as a term in the Languages taxonomy.');
+    $plan = ai_assistants_plan_agent_execution($assistant, 'Add Dutch as a term in the Languages taxonomy.');
 
-    $this->assertEqual(['taxonomy_agent'], $route_agent_ids, 'Router still sends direct taxonomy term requests to the taxonomy agent.');
+    $this->assertEqual(['taxonomy_agent'], $plan['agent_ids'], 'Router sends direct taxonomy term requests to the taxonomy agent.');
   }
 
   public function testAssistantApprovalResume() {
-    $result = ai_assistant_send('assistant_approval', 'Hello approval');
+    $result = ai_assistants_send('assistant_approval', 'Hello approval');
 
     $this->assertEqual('needs_approval', $result['status'], 'Assistant paused for approval.');
     $this->assertTrue(!empty($result['token']), 'Approval token returned.');
     $this->assertEqual('test_write_message', $result['pending']['name'], 'Pending tool identified.');
 
-    $resume = ai_assistant_resume('assistant_approval', $result['token'], TRUE);
+    $resume = ai_assistants_resume('assistant_approval', $result['token'], TRUE, ['agent_id' => 'assistant_approval_agent']);
     $this->assertEqual('ok', $resume['status'], 'Resumed assistant completed.');
-    $this->assertEqual('Final answer: {"channel":"#content-team","message":"Approved: Hello approval"}', $resume['answer'], 'Resumed assistant returned approved answer.');
+    $prefix = 'Final answer: ';
+    $this->assertTrue(strpos($resume['answer'], $prefix) === 0, 'Resumed assistant returned a final answer.');
+    $payload = json_decode(substr($resume['answer'], strlen($prefix)), TRUE);
+    $this->assertTrue(is_array($payload), 'Resumed assistant returned structured JSON.');
+    $this->assertEqual('#content-team', isset($payload['channel']) ? $payload['channel'] : '', 'Resumed assistant preserved the forced channel.');
+    $this->assertEqual('Approved: Hello approval', isset($payload['message']) ? $payload['message'] : '', 'Resumed assistant returned the approved message.');
   }
 
   public function testAssistantMultiAgentModeAllowsSingleRelevantAgent() {
     AITestSupportAdapter::$chatWithToolsCalls = [];
 
-    $result = ai_assistant_send('assistant_site_builder_multi', 'Create a content type named This is cool!');
+    $result = ai_assistants_send('assistant_site_builder_multi', 'Create a content type named This is cool!');
 
     $this->assertEqual('needs_approval', $result['status'], 'Single relevant agent can still run in multi-agent mode.');
     $this->assertEqual('create_content_type', $result['pending']['name'], 'Content type creation is the pending approval step.');
@@ -282,32 +303,31 @@ class AIAssistantTestCase extends BackdropWebTestCase {
     $this->assertEqual(1, count(AITestSupportAdapter::$chatWithToolsCalls), 'Only one agent run was needed.');
   }
 
-  public function testAssistantMultiAgentModeStopsBeforeFieldAgentOnPlanningReply() {
+  public function testAssistantMultiAgentModeRunsPlannedAgents() {
     AITestSupportAdapter::$chatWithToolsCalls = [];
 
-    $result = ai_assistant_send('assistant_site_builder_multi', 'Create a content type named This is Cool! add a long text field to it named Whoa! also create an entityreference field for the Languages taxonomy.');
+    $result = ai_assistants_send('assistant_site_builder_multi', 'Create a content type named This is Cool! add a long text field to it named Whoa! also create an entityreference field for the Languages taxonomy.');
 
     $this->assertEqual('ok', $result['status'], 'Assistant returns planning response without error.');
     $this->assertTrue(strpos($result['answer'], 'Content Type Agent') !== FALSE, 'Content type agent reply is included.');
-    $this->assertTrue(strpos($result['answer'], 'Field Agent') === FALSE, 'Field agent did not run before the content type existed.');
-    $this->assertTrue(empty($result['tool_calls']), 'No write tool ran during the planning-only response.');
-    $this->assertEqual(1, count(AITestSupportAdapter::$chatWithToolsCalls), 'Only the content type agent was invoked.');
+    $this->assertTrue(strpos($result['answer'], 'Field Agent') !== FALSE, 'The planned field agent reply is included.');
+    $this->assertTrue(!empty($result['tool_calls']), 'Planned agent tool activity is returned in the combined response.');
+    $this->assertTrue(count(AITestSupportAdapter::$chatWithToolsCalls) >= 2, 'Both planned agents were invoked.');
   }
 
   public function testAssistantUpdatesContentTypeDescription() {
     AITestSupportAdapter::$chatWithToolsCalls = [];
 
-    $result = ai_assistant_send('assistant_content_type_edit', 'Update the description for This is Cool! to be Look at what we did!');
+    $result = ai_assistants_send('assistant_content_type_edit', 'Update the description for This is Cool! to be Look at what we did!');
 
     $this->assertEqual('needs_approval', $result['status'], 'Description update requires approval.');
     $this->assertEqual('edit_content_type', $result['pending']['name'], 'Edit tool is pending, not create.');
 
-    $resume = ai_assistant_resume('assistant_content_type_edit', $result['token'], TRUE);
+    $resume = ai_assistants_resume('assistant_content_type_edit', $result['token'], TRUE, ['agent_id' => 'content_type_agent']);
 
     $this->assertEqual('ok', $resume['status'], 'Approved description update completed.');
     $this->assertTrue(strpos($resume['answer'], 'Look at what we did!') !== FALSE, 'Updated description returned in final answer.');
 
-    $type = node_type_load('this_is_cool');
-    $this->assertEqual('Look at what we did!', $type->description, 'Content type description was actually updated.');
+    $this->assertEqual('Look at what we did!', config_get('node.type.this_is_cool', 'description'), 'Content type description was actually updated.');
   }
 }

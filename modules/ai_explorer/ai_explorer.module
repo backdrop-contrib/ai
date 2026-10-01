@@ -1,5 +1,10 @@
 <?php
 
+define('AI_EXPLORER_MAX_AUDIO_BYTES', 26214400);
+define('AI_EXPLORER_MAX_CHAT_INPUT', 8000);
+define('AI_EXPLORER_MAX_CHAT_HISTORY', 12);
+define('AI_EXPLORER_MAX_CHAT_TOKENS', 4096);
+
 /**
  * @file
  * Combined AI explorer for speech-to-text and text-to-speech tools.
@@ -95,6 +100,48 @@ function &_ai_explorer_get_storage(array &$form_state) {
 }
 
 /**
+ * Flatten and validate a provider-qualified model selection.
+ */
+function ai_explorer_model_is_available($model, array $grouped_models) {
+  $models = function_exists('ai_flatten_models') ? ai_flatten_models($grouped_models) : [];
+  return !empty($model) && isset($models[$model]);
+}
+
+/**
+ * Extract text from common provider response shapes.
+ */
+function ai_explorer_text_from_response($response) {
+  if (is_string($response) || is_numeric($response)) {
+    return trim((string) $response);
+  }
+  if (!is_array($response)) {
+    return '';
+  }
+  foreach (['output_text', 'text', 'content'] as $key) {
+    if (isset($response[$key]) && (is_string($response[$key]) || is_numeric($response[$key]))) {
+      return trim((string) $response[$key]);
+    }
+  }
+  if (isset($response['choices'][0])) {
+    return ai_explorer_text_from_response($response['choices'][0]);
+  }
+  if (isset($response['message']['content'])) {
+    return ai_explorer_text_from_response($response['message']['content']);
+  }
+  return '';
+}
+
+/**
+ * Convert an arbitrary filename label into a safe basename.
+ */
+function ai_explorer_safe_filename($filename) {
+  $filename = backdrop_basename((string) $filename, '.');
+  $filename = preg_replace('/[^A-Za-z0-9_-]+/', '_', $filename);
+  $filename = trim($filename, '._-');
+  return $filename !== '' ? substr($filename, 0, 64) : 'ai_image';
+}
+
+/**
  * Landing page for the explorer.
  */
 function ai_explorer_overview_page() {
@@ -163,12 +210,16 @@ function ai_explorer_audio_form($form, &$form_state) {
   $default_model = ai_default_model($models, config_get('ai.settings', 'default_stt_model'), ['whisper-1']);
 
   $form['audio'] = [
-    '#type' => 'textarea',
+    '#type' => 'file',
     '#title' => t('Audio file path'),
-    '#rows' => 1,
-    '#description' => t('The absolute path to the audio file. Maximum file size 25 MB. Allowed file types: mp3, mp4, mpeg, mpga, m4a, wav, and webm.'),
+    '#description' => t('Upload an audio file. Maximum file size 25 MB. Allowed file types: mp3, mp4, mpeg, mpga, m4a, wav, and webm.'),
+    '#upload_validators' => [
+      'file_validate_extensions' => ['mp3 mp4 mpeg mpga m4a wav webm'],
+      'file_validate_size' => [AI_EXPLORER_MAX_AUDIO_BYTES],
+    ],
     '#required' => TRUE,
   ];
+  $form['#attributes']['enctype'] = 'multipart/form-data';
 
   $form['task'] = [
     '#type' => 'select',
@@ -236,6 +287,7 @@ function ai_explorer_chat_form($form, &$form_state) {
     '#title' => t('Ask the AI Assistant'),
     '#rows' => 5,
     '#description' => t('Enter your question or prompt below. Response times vary by provider and model.'),
+    '#maxlength' => AI_EXPLORER_MAX_CHAT_INPUT,
     '#required' => TRUE,
   ];
 
@@ -270,7 +322,8 @@ function ai_explorer_chat_form($form, &$form_state) {
   $form['options']['max_tokens'] = [
     '#type' => 'number',
     '#title' => t('Max tokens'),
-    '#min' => 1000,
+    '#min' => 1,
+    '#max' => AI_EXPLORER_MAX_CHAT_TOKENS,
     '#step' => 1,
     '#default_value' => '1000',
     '#description' => t('Maximum tokens to generate.'),
@@ -281,6 +334,7 @@ function ai_explorer_chat_form($form, &$form_state) {
     '#title' => t('System / Profile'),
     '#default_value' => 'You are a helpful assistant integrated into a Backdrop website. Be clear, concise, and polite. Ask follow-up questions when appropriate.',
     '#description' => t('Sets the assistant behavior or personality.'),
+    '#maxlength' => 4000,
     '#required' => TRUE,
   ];
 
@@ -318,32 +372,16 @@ function ai_explorer_chat_form($form, &$form_state) {
  * Chat form validation.
  */
 function ai_explorer_chat_form_validate($form, &$form_state) {
-  $model = !empty($form_state['values']['model']) ? $form_state['values']['model'] : '';
-  if (!empty($model)) {
-    list(, $model) = ai_parse_model_id($model);
+  $selected_model = !empty($form_state['values']['model']) ? $form_state['values']['model'] : '';
+  if (!ai_explorer_model_is_available($selected_model, ai_get_all_chat_models())) {
+    form_set_error('options][model', t('The selected chat model is not available.'));
   }
   $max_tokens = (int) $form_state['values']['max_tokens'];
-
-  switch ($model) {
-    case 'gpt-4':
-    case 'gpt-4-0314':
-      if ($max_tokens > 8192) {
-        form_set_error('options][max_tokens', t('The model you selected only supports up to 8192 tokens.'));
-      }
-      break;
-
-    case 'gpt-3.5-turbo':
-    case 'gpt-3.5-turbo-0301':
-      if ($max_tokens > 4096) {
-        form_set_error('options][max_tokens', t('The model you selected only supports up to 4096 tokens.'));
-      }
-      break;
-
-    case 'gpt-3.5-turbo-16k':
-      if ($max_tokens > 16384) {
-        form_set_error('options][max_tokens', t('The model you selected only supports up to 16384 tokens.'));
-      }
-      break;
+  if ($max_tokens < 1 || $max_tokens > AI_EXPLORER_MAX_CHAT_TOKENS) {
+    form_set_error('options][max_tokens', t('Maximum tokens must be between 1 and @max.', ['@max' => AI_EXPLORER_MAX_CHAT_TOKENS]));
+  }
+  if (mb_strlen($form_state['values']['text']) > AI_EXPLORER_MAX_CHAT_INPUT) {
+    form_set_error('text', t('The prompt cannot exceed @max characters.', ['@max' => AI_EXPLORER_MAX_CHAT_INPUT]));
   }
 }
 
@@ -355,7 +393,8 @@ function ai_explorer_chat_get_response($form, &$form_state) {
   if (empty($errors)) {
     $storage = !empty($form_state['storage']) && is_array($form_state['storage']) ? $form_state['storage'] : [];
     $last_response = !empty($storage['messages']) ? end($storage['messages']) : [];
-    $form['response']['#value'] = !empty($last_response['content']) ? trim($last_response['content']) : t('No answer was provided.');
+    $response_text = !empty($last_response['content']) ? ai_explorer_text_from_response($last_response['content']) : '';
+    $form['response']['#value'] = $response_text !== '' ? $response_text : t('No answer was provided.');
   }
   return $form['response'];
 }
@@ -369,6 +408,11 @@ function ai_explorer_chat_form_submit($form, &$form_state) {
   $model = $form_state['values']['model'];
   $temperature = $form_state['values']['temperature'];
   $max_tokens = $form_state['values']['max_tokens'];
+
+  if (!ai_explorer_model_is_available($model, ai_get_all_chat_models()) || mb_strlen($text) > AI_EXPLORER_MAX_CHAT_INPUT || (int) $max_tokens < 1 || (int) $max_tokens > AI_EXPLORER_MAX_CHAT_TOKENS) {
+    form_set_error('', t('The chat request exceeds the available model or input limits.'));
+    return;
+  }
 
   $stripped_model = '';
   $api = ai_get_api_for_model($model, $stripped_model);
@@ -394,11 +438,19 @@ function ai_explorer_chat_form_submit($form, &$form_state) {
 
   try {
     $result = $api->chat($stripped_model, $messages, $temperature, $max_tokens, FALSE, ['operation' => 'chat_explorer']);
-    $messages[] = ['role' => 'assistant', 'content' => $result];
+    $result_text = ai_explorer_text_from_response($result);
+    if ($result_text === '') {
+      throw new Exception(t('The chat provider returned no usable text.'));
+    }
+    $messages[] = ['role' => 'assistant', 'content' => $result_text];
+    if (count($messages) > AI_EXPLORER_MAX_CHAT_HISTORY + 1) {
+      $system_message = array_shift($messages);
+      $messages = array_merge([$system_message], array_slice($messages, -AI_EXPLORER_MAX_CHAT_HISTORY));
+    }
     $form_state['storage']['messages'] = $messages;
     $form_state['rebuild'] = TRUE;
   }
-  catch (\Exception $e) {
+  catch (\Throwable $e) {
     watchdog('ai_explorer', 'Chat explorer request failed: @message <pre>@context</pre>', [
       '@message' => $e->getMessage(),
       '@context' => check_plain(json_encode(function_exists('ai_exception_context') ? ai_exception_context($e) : ['type' => get_class($e), 'message' => $e->getMessage()], JSON_PRETTY_PRINT)),
@@ -417,6 +469,7 @@ function ai_explorer_image_form($form, &$form_state) {
     '#type' => 'textarea',
     '#title' => t('Prompt'),
     '#description' => t('Describe the image you want to generate.'),
+    '#maxlength' => 4000,
     '#required' => TRUE,
   ];
 
@@ -440,6 +493,7 @@ function ai_explorer_image_form($form, &$form_state) {
     '#title' => t('Filename'),
     '#default_value' => 'dalle_image',
     '#required' => TRUE,
+    '#maxlength' => 64,
   ];
 
   $form['response'] = [
@@ -478,6 +532,10 @@ function ai_explorer_image_form_validate($form, &$form_state) {
   $model = !empty($form_state['values']['model']) ? $form_state['values']['model'] : '';
 
   list(, $model) = ai_parse_model_id($model);
+
+  if (!ai_explorer_model_is_available($form_state['values']['model'], ai_get_all_image_models())) {
+    form_set_error('model', t('The selected image model is not available.'));
+  }
 
   if ($model === 'dall-e-2' && mb_strlen($prompt) > 1000) {
     form_set_error('prompt', t('The input cannot exceed 1000 characters for the dall-e-2 model.'));
@@ -537,6 +595,10 @@ function ai_explorer_image_form_submit($form, &$form_state) {
     form_set_error('', t('Unable to find provider for the selected model.'));
     return;
   }
+  if (!ai_explorer_model_is_available($model_with_prefix, ai_get_all_image_models())) {
+    form_set_error('', t('The selected image model is not available.'));
+    return;
+  }
 
   list($provider_prefix) = ai_parse_model_id($model_with_prefix);
   $storage['provider'] = $provider_prefix ?: ai_default_provider_id();
@@ -544,7 +606,7 @@ function ai_explorer_image_form_submit($form, &$form_state) {
   $model = $stripped_model;
   $prompt = !empty($form_state['values']['prompt']) ? $form_state['values']['prompt'] : '';
   $storage['prompt'] = $prompt;
-  $filename_base = !empty($form_state['values']['filename']) ? $form_state['values']['filename'] : 'dalle_image';
+  $filename_base = ai_explorer_safe_filename(!empty($form_state['values']['filename']) ? $form_state['values']['filename'] : 'dalle_image');
   $file_scheme = file_default_scheme();
   $timestamp = defined('REQUEST_TIME') ? REQUEST_TIME : time();
 
@@ -553,104 +615,20 @@ function ai_explorer_image_form_submit($form, &$form_state) {
     $preferred_response_format = $is_gpt_image ? 'b64_json' : 'url';
     $result = $api->images($model, $prompt, '1024x1024', $preferred_response_format);
 
-    if (!is_array($result) || empty($result['data']) || !isset($result['data'][0])) {
-      watchdog('ai_explorer', 'Image API returned unexpected response for provider @provider (shape: @shape).', ['@provider' => $storage['provider'], '@shape' => ai_explorer_image_response_shape($result)], WATCHDOG_ERROR);
-      form_set_error('', t('Unexpected response from image API. No image data returned.'));
+    try {
+      $validated_image = AIImageHelper::extract($result);
+    }
+    catch (\RuntimeException $e) {
+      watchdog('ai_explorer', 'Unusable image response for provider @provider (shape: @shape): @message', [
+        '@provider' => $storage['provider'],
+        '@shape' => AIImageHelper::describe($result),
+        '@message' => $e->getMessage(),
+      ], WATCHDOG_ERROR);
+      form_set_error('', t('@message', ['@message' => $e->getMessage()]));
       return;
     }
-
-    $data_item = $result['data'][0];
-    $ext = 'png';
-
-    if (!empty($data_item['url'])) {
-      $url = $data_item['url'];
-      if (is_string($url) && strpos($url, 'data:image/') === 0) {
-        $parsed = ai_explorer_parse_data_url($url);
-        if (!$parsed) {
-          form_set_error('', t('Could not parse the image data URL returned by the provider.'));
-          return;
-        }
-        $image_contents = $parsed['data'];
-        $ext = $parsed['ext'];
-      }
-      else {
-        $image_contents = @file_get_contents($url);
-        if ($image_contents === FALSE || $image_contents === NULL) {
-          watchdog('ai_explorer', 'Failed to download image from URL: @url (response shape: @shape).', ['@url' => $url, '@shape' => ai_explorer_image_response_shape($result)], WATCHDOG_ERROR);
-          form_set_error('', t('Failed to download the generated image from the returned URL.'));
-          return;
-        }
-        $finfo = new finfo(FILEINFO_MIME_TYPE);
-        $mime_type = $finfo->buffer($image_contents);
-        if ($mime_type === 'image/jpeg') {
-          $ext = 'jpg';
-        }
-        elseif ($mime_type === 'image/png') {
-          $ext = 'png';
-        }
-        elseif ($mime_type === 'image/webp') {
-          $ext = 'webp';
-        }
-      }
-    }
-    elseif (!empty($data_item['b64_json'])) {
-      $image_contents = base64_decode($data_item['b64_json']);
-      if ($image_contents === FALSE) {
-        watchdog('ai_explorer', 'Failed to decode base64 image payload for model @model (data shape: @shape).', ['@model' => $model, '@shape' => ai_explorer_image_response_shape($data_item)], WATCHDOG_ERROR);
-        form_set_error('', t('Failed to decode the Base64 image data returned by the model.'));
-        return;
-      }
-      $finfo = new finfo(FILEINFO_MIME_TYPE);
-      $mime_type = $finfo->buffer($image_contents);
-      if ($mime_type === 'image/jpeg') {
-        $ext = 'jpg';
-      }
-      elseif ($mime_type === 'image/png') {
-        $ext = 'png';
-      }
-      elseif ($mime_type === 'image/webp') {
-        $ext = 'webp';
-      }
-    }
-    else {
-      $url = ai_explorer_find_url_in_response($result);
-      if (!empty($url)) {
-        if (strpos($url, 'data:image/') === 0) {
-          $parsed = ai_explorer_parse_data_url($url);
-          if (!$parsed) {
-            form_set_error('', t('Could not parse the image data URL returned by the provider.'));
-            return;
-          }
-          $image_contents = $parsed['data'];
-          $ext = $parsed['ext'];
-        }
-        else {
-          $image_contents = @file_get_contents($url);
-          if ($image_contents === FALSE || $image_contents === NULL) {
-            watchdog('ai_explorer', 'Failed to download image from discovered URL: @url (response shape: @shape).', ['@url' => $url, '@shape' => ai_explorer_image_response_shape($result)], WATCHDOG_ERROR);
-            form_set_error('', t('Failed to download the generated image from the returned URL.'));
-            return;
-          }
-          $finfo = new finfo(FILEINFO_MIME_TYPE);
-          $mime_type = $finfo->buffer($image_contents);
-          if ($mime_type === 'image/jpeg') {
-            $ext = 'jpg';
-          }
-          elseif ($mime_type === 'image/png') {
-            $ext = 'png';
-          }
-          elseif ($mime_type === 'image/webp') {
-            $ext = 'webp';
-          }
-        }
-      }
-      else {
-        watchdog('ai_explorer', 'Image API returned no URL and no supported base64 payload (shape: @shape).', ['@shape' => ai_explorer_image_response_shape($result)], WATCHDOG_ERROR);
-        form_set_error('', t('Unexpected response from image API. The provider did not return an image.'));
-        return;
-      }
-    }
-
+    $image_contents = $validated_image['data'];
+    $ext = $validated_image['ext'];
     $unique_filename = $filename_base . '-' . $timestamp . '.' . $ext;
     $destination = $file_scheme . '://ai_explorer/' . $unique_filename;
 
@@ -670,7 +648,7 @@ function ai_explorer_image_form_submit($form, &$form_state) {
       form_set_error('', t('Failed to save the image to the file system.'));
     }
   }
-  catch (\Exception $e) {
+  catch (\Throwable $e) {
     watchdog('ai_explorer', 'Image generation exception: @msg <pre>@context</pre>', [
       '@msg' => $e->getMessage(),
       '@context' => check_plain(json_encode(function_exists('ai_exception_context') ? ai_exception_context($e) : ['type' => get_class($e), 'message' => $e->getMessage()], JSON_PRETTY_PRINT)),
@@ -679,86 +657,6 @@ function ai_explorer_image_form_submit($form, &$form_state) {
   }
 
   $form_state['rebuild'] = TRUE;
-}
-
-/**
- * Summarize image provider response shape.
- */
-function ai_explorer_image_response_shape($data) {
-  if (is_array($data)) {
-    $keys = array_slice(array_keys($data), 0, 8);
-    return 'array keys=' . implode(',', $keys) . '; count=' . count($data);
-  }
-  if (is_object($data)) {
-    return 'object class=' . get_class($data);
-  }
-  if (is_string($data)) {
-    return 'string length=' . strlen($data);
-  }
-  return gettype($data);
-}
-
-/**
- * Search a response for the first image URL.
- */
-function ai_explorer_find_url_in_response($data) {
-  if (is_string($data)) {
-    if (filter_var(trim($data), FILTER_VALIDATE_URL)) {
-      return trim($data);
-    }
-    if (preg_match('/https?:\/\/[^\s\]\"]+\.(png|jpg|jpeg|webp|gif)/i', $data, $m)) {
-      return $m[0];
-    }
-    if (strpos($data, 'data:image/') === 0) {
-      return $data;
-    }
-    return NULL;
-  }
-
-  if (is_array($data)) {
-    foreach ($data as $item) {
-      $found = ai_explorer_find_url_in_response($item);
-      if (!empty($found)) {
-        return $found;
-      }
-    }
-  }
-
-  return NULL;
-}
-
-/**
- * Parse a data URL into binary image data.
- */
-function ai_explorer_parse_data_url($data_url) {
-  if (!is_string($data_url) || strpos($data_url, 'data:image/') !== 0) {
-    return NULL;
-  }
-  $semi = strpos($data_url, ';');
-  $comma = strpos($data_url, ',');
-  if ($semi === FALSE || $comma === FALSE || $comma <= $semi) {
-    return NULL;
-  }
-  $mime = substr($data_url, 5, $semi - 5);
-  $b64 = substr($data_url, $comma + 1);
-
-  $binary = base64_decode($b64);
-  if ($binary === FALSE) {
-    return NULL;
-  }
-
-  $ext = 'png';
-  if ($mime === 'image/jpeg' || $mime === 'image/jpg') {
-    $ext = 'jpg';
-  }
-  elseif ($mime === 'image/png') {
-    $ext = 'png';
-  }
-  elseif ($mime === 'image/webp') {
-    $ext = 'webp';
-  }
-
-  return ['ext' => $ext, 'data' => $binary];
 }
 
 /**
@@ -772,7 +670,7 @@ function ai_explorer_audio_get_response($form, &$form_state) {
     $response_text = t('No response was provided.');
   }
 
-  $form['response']['#value'] = filter_xss($response_text);
+  $form['response']['#value'] = check_plain(ai_explorer_text_from_response($response_text));
   return $form['response'];
 }
 
@@ -788,24 +686,42 @@ function ai_explorer_audio_form_submit($form, &$form_state) {
     return $form;
   }
 
-  $audio = $form_state['values']['audio'];
   $task = $form_state['values']['task'];
+
+  if (!ai_explorer_model_is_available($selected_model, ai_get_all_stt_models())) {
+    form_set_error('model', t('The selected speech-to-text model is not available.'));
+    return;
+  }
+
+  $audio_file = file_save_upload('audio', [
+    'file_validate_extensions' => ['mp3 mp4 mpeg mpga m4a wav webm'],
+    'file_validate_size' => [AI_EXPLORER_MAX_AUDIO_BYTES],
+  ]);
+  if (!$audio_file || !is_object($audio_file) || empty($audio_file->uri)) {
+    form_set_error('audio', t('Please upload a valid audio file.'));
+    return;
+  }
 
   watchdog('ai_explorer', 'Attempting speech-to-text conversion for audio file.', [], WATCHDOG_INFO);
 
   try {
     $model_to_use = !empty($stripped_model) ? $stripped_model : $selected_model;
-    $result = $api->speechToText($model_to_use, $audio, $task);
+    $result = $api->speechToText($model_to_use, $audio_file->uri, $task);
     $form_state['storage']['text'] = $result;
 
     watchdog('ai_explorer', 'Speech-to-text conversion completed.', [], WATCHDOG_INFO);
   }
-  catch (\Exception $e) {
+  catch (\Throwable $e) {
     watchdog('ai_explorer', 'Error in processing audio: @message <pre>@context</pre>', [
       '@message' => $e->getMessage(),
       '@context' => check_plain(json_encode(function_exists('ai_exception_context') ? ai_exception_context($e) : ['type' => get_class($e), 'message' => $e->getMessage()], JSON_PRETTY_PRINT)),
     ], WATCHDOG_ERROR);
     form_set_error('', t('@message', ['@message' => function_exists('ai_exception_user_message') ? ai_exception_user_message($e, $e->getMessage()) : $e->getMessage()]));
+  }
+
+  // The upload remains temporary and will be cleaned up by Backdrop cron.
+  if (!empty($audio_file->fid)) {
+    file_delete($audio_file);
   }
 
   $form_state['rebuild'] = TRUE;
@@ -827,6 +743,7 @@ function ai_explorer_tts_form($form, &$form_state) {
     '#type' => 'textarea',
     '#title' => t('Text to convert'),
     '#description' => t('The text to turn into speech.'),
+    '#maxlength' => 4096,
     '#required' => TRUE,
   ];
 
@@ -936,7 +853,7 @@ function ai_explorer_tts_build_voice_selector($selected_model, array &$form_stat
           $custom_description = t('Optional override. Paste any ElevenLabs voice ID here to bypass the dropdown.');
         }
       }
-      catch (\Exception $e) {
+      catch (\Throwable $e) {
         watchdog('ai_explorer', 'Failed to fetch ElevenLabs voices for model @model: @message', [
           '@model' => $selected_model,
           '@message' => $e->getMessage(),
@@ -985,6 +902,10 @@ function ai_explorer_tts_voice_selector_callback($form, &$form_state) {
 function ai_explorer_tts_form_validate($form, &$form_state) {
   $text = $form_state['values']['text'];
 
+  if (!ai_explorer_model_is_available($form_state['values']['model'], ai_get_all_tts_models())) {
+    form_set_error('model', t('The selected text-to-speech model is not available.'));
+  }
+
   if (mb_strlen($text) > 4096) {
     form_set_error('text', t('The input cannot exceed 4096 characters.'));
   }
@@ -1027,11 +948,19 @@ function ai_explorer_tts_form_submit($form, &$form_state) {
   $voice = !empty($form_state['values']['custom_voice']) ? trim($form_state['values']['custom_voice']) : $form_state['values']['voice'];
   $format = $form_state['values']['response_format'];
 
+  if (mb_strlen($text) > 4096 || !in_array($format, ['mp3', 'opus', 'aac', 'flac'], TRUE) || !ai_explorer_model_is_available($model, ai_get_all_tts_models())) {
+    form_set_error('', t('The selected text-to-speech options are not available.'));
+    return;
+  }
+
   global $user;
 
   try {
     $model_to_use = !empty($stripped_model) ? $stripped_model : $model;
     $response = $api->textToSpeech($model_to_use, $text, $voice, $format);
+    if (!is_string($response) || $response === '' || strlen($response) > AI_EXPLORER_MAX_AUDIO_BYTES) {
+      throw new Exception(t('The text-to-speech provider returned an invalid audio response.'));
+    }
     $filename = 'tts_result-' . $timestamp . '.' . $format;
     $file_uri = file_unmanaged_save_data($response, $file_system . '://' . $filename, FILE_EXISTS_REPLACE);
 
@@ -1046,6 +975,7 @@ function ai_explorer_tts_form_submit($form, &$form_state) {
       ]);
 
       file_save($file);
+      file_usage_add($file, 'ai_explorer', 'module', $file->fid);
 
       $form_state['storage'] = [
         'filepath' => $file->uri,
@@ -1057,7 +987,7 @@ function ai_explorer_tts_form_submit($form, &$form_state) {
       form_set_error('', t('Failed to save the audio data to a file.'));
     }
   }
-  catch (\Exception $e) {
+  catch (\Throwable $e) {
     watchdog('ai_explorer', 'Text-to-speech processing failed: @message <pre>@context</pre>', [
       '@message' => $e->getMessage(),
       '@context' => check_plain(json_encode(function_exists('ai_exception_context') ? ai_exception_context($e) : ['type' => get_class($e), 'message' => $e->getMessage()], JSON_PRETTY_PRINT)),
@@ -1087,6 +1017,7 @@ function ai_explorer_moderation_form($form, &$form_state) {
     '#description' => t('This sends text directly to the selected provider moderation endpoint.'),
     '#required' => TRUE,
     '#rows' => 5,
+    '#maxlength' => 10000,
   ];
   $form['model'] = [
     '#type' => 'select',
@@ -1117,7 +1048,14 @@ function ai_explorer_moderation_form($form, &$form_state) {
  */
 function ai_explorer_moderation_form_submit($form, &$form_state) {
   try {
+    if (mb_strlen($form_state['values']['text']) > 10000) {
+      throw new Exception(t('Moderation input exceeds the allowed length.'));
+    }
+    if (!ai_explorer_model_is_available($form_state['values']['model'], ai_get_all_moderation_models())) {
+      throw new Exception(t('The selected moderation model is not available.'));
+    }
     $form_state['storage']['moderation_result'] = ai_moderation($form_state['values']['text'], $form_state['values']['model']);
+    $form_state['rebuild'] = TRUE;
   }
   catch (\Throwable $e) {
     watchdog('ai_explorer', 'Moderation explorer request failed: @message', ['@message' => $e->getMessage()], WATCHDOG_ERROR);
@@ -1125,7 +1063,6 @@ function ai_explorer_moderation_form_submit($form, &$form_state) {
     $message = function_exists('ai_exception_user_message') ? ai_exception_user_message($e, $generic_message) : $generic_message;
     form_set_error('', t('Moderation request failed: @message', ['@message' => $message]));
   }
-  $form_state['rebuild'] = TRUE;
 }
 
 /**

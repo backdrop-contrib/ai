@@ -1,0 +1,14 @@
+{
+  "_config_name": "ai_usage.settings",
+  "enabled": true,
+  "retention_days": 0,
+  "pricing": {},
+  "budget_enabled": false,
+  "budget_action": "report",
+  "user_token_limit": 0,
+  "user_cost_limit_usd": 0,
+  "anonymous_token_limit": 0,
+  "anonymous_cost_limit_usd": 0,
+  "alert_threshold_percent": 80,
+  "admin_bypass": true
+}

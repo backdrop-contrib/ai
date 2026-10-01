@@ -10,6 +10,7 @@ class AIApi {
   protected $client;
   protected $provider;
   protected $callerModule;
+  protected $providerUsage = [];
 
   public function __construct($api_key, $provider = NULL) {
     $this->provider = $provider ?: (function_exists('ai_default_provider_id') ? ai_default_provider_id() : '');
@@ -103,19 +104,41 @@ class AIApi {
     }
   }
 
-  public function checkRateLimit($operation) {
-    if (!module_exists('ai_rate_limit') || !function_exists('ai_rate_limit_check')) {
-      return;
+  public function checkRateLimit($operation, $model = '') {
+    if (module_exists('ai_rate_limit') && function_exists('ai_rate_limit_check')) {
+      if (!ai_rate_limit_check($this->provider, $operation)) {
+        $violation = function_exists('ai_rate_limit_get_last_violation') ? ai_rate_limit_get_last_violation() : [];
+        $message = 'Rate limit exceeded for provider ' . $this->provider . ' and operation ' . $operation . '.';
+        if (!empty($violation['retry_after'])) {
+          $message .= ' Try again in ' . $violation['retry_after'] . 's.';
+        }
+        throw new AIRateLimitException(
+          $message,
+          0,
+          NULL,
+          $this->provider,
+          $operation,
+          $violation
+        );
+      }
     }
 
-    if (!ai_rate_limit_check($this->provider, $operation)) {
-      throw new AIRateLimitException(
-        'Rate limit exceeded for provider ' . $this->provider . ' and operation ' . $operation . '.',
-        0,
-        NULL,
-        $this->provider,
-        $operation
-      );
+    // Usage budgets are intentionally a separate opt-in policy from request
+    // frequency limits. The optional submodule returns a status object so the
+    // core API can expose a useful typed exception without depending on the
+    // submodule's storage implementation.
+    if (function_exists('ai_usage_budget_check')) {
+      $budget = ai_usage_budget_check($this->provider, $operation, $model);
+      if (empty($budget['allowed'])) {
+        throw new AIUsageLimitException(
+          $budget['message'] ?? 'AI usage budget reached.',
+          0,
+          NULL,
+          $this->provider,
+          $operation,
+          $budget
+        );
+      }
     }
   }
 
@@ -138,6 +161,92 @@ class AIApi {
   }
 
   /**
+   * Capture a provider usage envelope without coupling the parent API to the
+   * optional ai_usage submodule.
+   */
+  public function setProviderUsage(array $usage): void {
+    $input = $this->firstUsageNumber($usage, ['input_tokens', 'prompt_tokens', 'inputTokenCount', 'promptTokenCount']);
+    $output = $this->firstUsageNumber($usage, ['output_tokens', 'completion_tokens', 'candidatesTokenCount']);
+    $cached = $this->firstUsageNumber($usage, ['cached_tokens', 'cache_read_input_tokens', 'cachedContentTokenCount']);
+    if ($cached <= 0) {
+      $cached = $this->firstUsageNumber($usage['prompt_tokens_details'] ?? [], ['cached_tokens'])
+        ?: $this->firstUsageNumber($usage['input_tokens_details'] ?? [], ['cached_tokens']);
+    }
+    $reasoning = $this->firstUsageNumber($usage, ['reasoning_tokens', 'thoughtsTokenCount']);
+    if ($reasoning <= 0) {
+      $reasoning = $this->firstUsageNumber($usage['completion_tokens_details'] ?? [], ['reasoning_tokens'])
+        ?: $this->firstUsageNumber($usage['output_tokens_details'] ?? [], ['reasoning_tokens']);
+    }
+    $total = $this->firstUsageNumber($usage, ['total_tokens', 'totalTokenCount']);
+    if ($total <= 0) {
+      $total = $input + $output;
+    }
+
+    $this->providerUsage = [
+      'input_tokens' => $input,
+      'output_tokens' => $output,
+      'cached_tokens' => $cached,
+      'reasoning_tokens' => $reasoning,
+      'total_tokens' => $total,
+    ];
+  }
+
+  /**
+   * Return usage metadata captured by the current provider adapter call.
+   */
+  public function getProviderUsage(): array {
+    return $this->providerUsage;
+  }
+
+  /**
+   * Start a provider operation and clear usage left by the previous call.
+   */
+  protected function beginUsageOperation(string $operation, string $model, array $context_extra = []): array {
+    $this->providerUsage = [];
+    return $this->buildContext($operation, $model, $context_extra);
+  }
+
+  /**
+   * Record a completed operation through the optional usage submodule.
+   */
+  protected function recordUsageOperation(string $operation, string $model, array &$context, $request, $response, bool $status, $error_message = NULL): void {
+    if (!function_exists('ai_usage_record_operation')) {
+      return;
+    }
+
+    $this->finalizeContext($context);
+    $record_operation = !empty($context['operation']) ? $context['operation'] : $operation;
+    $record = [
+      'uid' => !empty($GLOBALS['user']->uid) ? (int) $GLOBALS['user']->uid : 0,
+      'module' => $this->detectCallerModule(),
+      'operation' => $record_operation,
+      'provider' => $this->provider,
+      'model' => $model,
+      'request_id' => $context['request_id'] ?? '',
+      'context_group' => $context['usage_group'] ?? '',
+      'status' => $status,
+      'duration_ms' => $context['duration_ms'] ?? 0,
+      'usage' => $this->providerUsage,
+      'request' => $request,
+      'response' => $response,
+      'error_message' => $error_message,
+    ];
+    ai_usage_record_operation($record);
+  }
+
+  /**
+   * Read the first non-negative numeric value from a provider usage array.
+   */
+  protected function firstUsageNumber(array $usage, array $keys): int {
+    foreach ($keys as $key) {
+      if (isset($usage[$key]) && is_numeric($usage[$key])) {
+        return max(0, (int) $usage[$key]);
+      }
+    }
+    return 0;
+  }
+
+  /**
    * Run pre-request message alters once from the core wrapper.
    */
   protected function applyChatMessageAlter(array &$messages, array &$context): void {
@@ -152,6 +261,25 @@ class AIApi {
   protected function applyChatResponseAlter(&$response, array &$context): void {
     if (function_exists('backdrop_alter')) {
       backdrop_alter('ai_chat_response', $response, $context);
+    }
+  }
+
+  /**
+   * Give other modules a chance to supply a fallback response for a failed
+   * provider call, instead of the exception always propagating to the
+   * caller (mirrors Drupal AI's AiExceptionEvent-driven failover).
+   *
+   * A subscriber (e.g. a secondary-provider module) can implement
+   * hook_ai_provider_failure_alter(&$context, $exception, $operation) and
+   * set $context['failover_response'] (a string, for chat()) or
+   * $context['failover_result'] (an array shaped like chatWithTools()'s
+   * normal return: 'finish_reason', 'content', 'tool_calls', 'raw') to have
+   * that value used instead of the exception being thrown. Leaving both
+   * unset preserves today's behavior of the original exception propagating.
+   */
+  protected function applyProviderFailureAlter(\Throwable $exception, string $operation, array &$context): void {
+    if (function_exists('backdrop_alter')) {
+      backdrop_alter('ai_provider_failure', $context, $exception, $operation);
     }
   }
 
@@ -220,40 +348,137 @@ class AIApi {
     return $this->client->getModels();
   }
 
-  public function getModelsByCapability($capability): array {
-    if (method_exists($this->client, 'getModelsByCapability')) {
-      return $this->client->getModelsByCapability($capability);
+  /**
+   * Apply the site's manual capability overrides for this provider.
+   *
+   * Provider APIs disagree about how (or whether) they advertise capabilities,
+   * so the override configured at admin/config/ai/settings/capabilities is enforced here
+   * for every provider rather than in each adapter.
+   */
+  protected function applyCapabilityOverride(array $models, $capability): array {
+    if (!function_exists('ai_filter_models_by_manual_capability') || empty($this->provider)) {
+      return $models;
     }
-    return $this->getModels();
+    if (ai_manual_capability_bypass()) {
+      return $models;
+    }
+    $manual = ai_get_provider_manual_capability_models($this->provider);
+    $canonical = ai_normalize_capability_name($capability);
+    if (!array_key_exists($canonical, $manual)) {
+      return $models;
+    }
+    // An explicit empty list disables the capability without fetching models.
+    if (!$manual[$canonical]) {
+      return [];
+    }
+    return ai_filter_models_by_manual_capability($this->getModels(), $this->provider, $canonical);
+  }
+
+  public function getModelsByCapability($capability): array {
+    $capability = ai_normalize_capability_name($capability);
+    if (!ai_manual_capability_bypass() && array_key_exists($capability, ai_get_provider_manual_capability_models($this->provider))) {
+      return $this->applyCapabilityOverride([], $capability);
+    }
+    $models = method_exists($this->client, 'getModelsByCapability')
+      ? $this->client->getModelsByCapability($capability)
+      : [];
+    return $this->applyCapabilityOverride($models, $capability);
   }
 
   public function getChatModels(): array {
-    return method_exists($this->client, 'getChatModels') ? $this->client->getChatModels() : $this->getModelsByCapability('text');
+    if (!ai_manual_capability_bypass() && array_key_exists('text', ai_get_provider_manual_capability_models($this->provider))) {
+      return $this->applyCapabilityOverride([], 'text');
+    }
+    if (!method_exists($this->client, 'getChatModels')) {
+      return $this->getModelsByCapability('text');
+    }
+    return $this->applyCapabilityOverride($this->client->getChatModels(), 'text');
   }
 
   public function getImageModels(): array {
-    return method_exists($this->client, 'getImageModels') ? $this->client->getImageModels() : $this->getModelsByCapability('image');
+    if (!ai_manual_capability_bypass() && array_key_exists('image', ai_get_provider_manual_capability_models($this->provider))) {
+      return $this->applyCapabilityOverride([], 'image');
+    }
+    if (!method_exists($this->client, 'getImageModels')) {
+      return $this->getModelsByCapability('image');
+    }
+    return $this->applyCapabilityOverride($this->client->getImageModels(), 'image');
   }
 
   public function getVisionModels(): array {
-    return method_exists($this->client, 'getVisionModels') ? $this->client->getVisionModels() : $this->getModelsByCapability('vision');
+    if (!ai_manual_capability_bypass() && array_key_exists('vision', ai_get_provider_manual_capability_models($this->provider))) {
+      return $this->applyCapabilityOverride([], 'vision');
+    }
+    if (!method_exists($this->client, 'getVisionModels')) {
+      return $this->getModelsByCapability('vision');
+    }
+    return $this->applyCapabilityOverride($this->client->getVisionModels(), 'vision');
   }
 
   public function getEmbeddingModels(): array {
-    return method_exists($this->client, 'getEmbeddingModels') ? $this->client->getEmbeddingModels() : $this->getModelsByCapability('embeddings');
+    if (!ai_manual_capability_bypass() && array_key_exists('embeddings', ai_get_provider_manual_capability_models($this->provider))) {
+      return $this->applyCapabilityOverride([], 'embeddings');
+    }
+    if (!method_exists($this->client, 'getEmbeddingModels')) {
+      return $this->getModelsByCapability('embeddings');
+    }
+    return $this->applyCapabilityOverride($this->client->getEmbeddingModels(), 'embeddings');
   }
 
   public function getModerationModels(): array {
-    return method_exists($this->client, 'getModerationModels') ? $this->client->getModerationModels() : $this->getModelsByCapability('moderation');
+    if (!ai_manual_capability_bypass() && array_key_exists('moderation', ai_get_provider_manual_capability_models($this->provider))) {
+      return $this->applyCapabilityOverride([], 'moderation');
+    }
+    if (!method_exists($this->client, 'getModerationModels')) {
+      return $this->getModelsByCapability('moderation');
+    }
+    return $this->applyCapabilityOverride($this->client->getModerationModels(), 'moderation');
   }
 
   public function getSpeechToTextModels(): array {
-    return method_exists($this->client, 'getSpeechToTextModels') ? $this->client->getSpeechToTextModels() : $this->getModelsByCapability('stt');
+    if (!ai_manual_capability_bypass() && array_key_exists('stt', ai_get_provider_manual_capability_models($this->provider))) {
+      return $this->applyCapabilityOverride([], 'stt');
+    }
+    if (!method_exists($this->client, 'getSpeechToTextModels')) {
+      return $this->getModelsByCapability('stt');
+    }
+    return $this->applyCapabilityOverride($this->client->getSpeechToTextModels(), 'stt');
+  }
+
+  public function getToolCallingModels(): array {
+    if (!ai_manual_capability_bypass() && array_key_exists('tool_calling', ai_get_provider_manual_capability_models($this->provider))) {
+      return $this->applyCapabilityOverride([], 'tool_calling');
+    }
+    if (!method_exists($this->client, 'getToolCallingModels')) {
+      return $this->getModelsByCapability('tool_calling');
+    }
+    return $this->applyCapabilityOverride($this->client->getToolCallingModels(), 'tool_calling');
+  }
+
+  public function getThinkingModels(): array {
+    if (!ai_manual_capability_bypass() && array_key_exists('thinking', ai_get_provider_manual_capability_models($this->provider))) {
+      return $this->applyCapabilityOverride([], 'thinking');
+    }
+    if (!method_exists($this->client, 'getThinkingModels')) {
+      return $this->getModelsByCapability('thinking');
+    }
+    return $this->applyCapabilityOverride($this->client->getThinkingModels(), 'thinking');
+  }
+
+  public function getDecisionModels(): array {
+    if (!ai_manual_capability_bypass() && array_key_exists('decision', ai_get_provider_manual_capability_models($this->provider))) {
+      return $this->applyCapabilityOverride([], 'decision');
+    }
+    if (!method_exists($this->client, 'getDecisionModels')) {
+      return $this->getModelsByCapability('decision');
+    }
+    return $this->applyCapabilityOverride($this->client->getDecisionModels(), 'decision');
   }
 
   public function completions(string $model, string $prompt, $temperature, $max_tokens = 512, bool $stream_response = FALSE, array $context_extra = []) {
-    $this->checkRateLimit('completions');
+    $this->checkRateLimit('completions', $model);
     $start_time = microtime(TRUE);
+    $context = $this->beginUsageOperation('completions', $model, $context_extra);
     $request = [
       'model' => $model,
       'prompt' => $prompt,
@@ -264,24 +489,27 @@ class AIApi {
 
     try {
       $response = $this->client->completions($model, $prompt, $temperature, $max_tokens, $stream_response);
+      $this->recordUsageOperation('completions', $model, $context, $request, $stream_response ? NULL : $response, TRUE);
       $this->log('completions', $model, $request, $stream_response ? '[stream]' : $response, TRUE, microtime(TRUE) - $start_time, NULL, $stream_response);
       return $response;
     }
     catch (\Throwable $e) {
+      $this->recordUsageOperation('completions', $model, $context, $request, NULL, FALSE, $e->getMessage());
       $this->log('completions', $model, $request, NULL, FALSE, microtime(TRUE) - $start_time, $e->getMessage());
       throw $e;
     }
   }
 
   public function chat(string $model, array $messages, $temperature, $max_tokens = 1024, bool $stream_response = FALSE, array $context_extra = []) {
-    $this->checkRateLimit('chat');
+    $this->checkRateLimit('chat', $model);
     $start_time = microtime(TRUE);
     $log_messages = (isset($context_extra['log_messages']) && is_array($context_extra['log_messages'])) ? $context_extra['log_messages'] : $messages;
     unset($context_extra['log_messages']);
-    $context = $this->buildContext('chat', $model, $context_extra);
+    $context = $this->beginUsageOperation('chat', $model, $context_extra);
     $this->applyChatMessageAlter($messages, $context);
     if (!empty($context['guardrail_blocked'])) {
       // Blocked requests are the ones an auditor most needs to see.
+      $this->recordUsageOperation('chat', $model, $context, $log_messages, (string) ($context['guardrail_message'] ?? ''), FALSE, 'Blocked by guardrails before the provider call.');
       $this->log('chat', $model, $log_messages, (string) ($context['guardrail_message'] ?? ''), FALSE, microtime(TRUE) - $start_time, 'Blocked by guardrails before the provider call.');
       return (string) ($context['guardrail_message'] ?? '');
     }
@@ -290,6 +518,13 @@ class AIApi {
       $response = $this->client->chat($model, $messages, $temperature, $max_tokens, $stream_response, $context);
     }
     catch (\Throwable $e) {
+      $this->applyProviderFailureAlter($e, 'chat', $context);
+      if (array_key_exists('failover_response', $context)) {
+        $this->recordUsageOperation('chat', $model, $context, $log_messages, (string) $context['failover_response'], FALSE, 'Provider call failed; served a failover response instead: ' . $e->getMessage());
+        $this->log('chat', $model, $log_messages, (string) $context['failover_response'], TRUE, microtime(TRUE) - $start_time, 'Provider call failed; served a failover response instead: ' . $e->getMessage());
+        return (string) $context['failover_response'];
+      }
+      $this->recordUsageOperation('chat', $model, $context, $log_messages, NULL, FALSE, $e->getMessage());
       $this->log('chat', $model, $log_messages, NULL, FALSE, microtime(TRUE) - $start_time, $e->getMessage());
       throw $this->normalizeException($e, 'chat', $context);
     }
@@ -298,74 +533,97 @@ class AIApi {
     if (!$stream_response) {
       $this->applyChatResponseAlter($response, $context);
       if (!empty($context['guardrail_blocked'])) {
+        $this->recordUsageOperation('chat', $model, $context, $log_messages, $response, FALSE, 'Response blocked by guardrails.');
         $this->log('chat', $model, $log_messages, $response, FALSE, microtime(TRUE) - $start_time, 'Response blocked by guardrails.');
         return (string) ($context['guardrail_message'] ?? '');
       }
     }
 
+    $this->recordUsageOperation('chat', $model, $context, $log_messages, $stream_response ? NULL : $response, TRUE);
     $this->log('chat', $model, $log_messages, $stream_response ? '[stream]' : $response, TRUE, microtime(TRUE) - $start_time, NULL, $stream_response);
 
     return $response;
   }
 
   public function images(string $model, string $prompt, string $size = '1024x1024', string $response_format = 'url', string $quality = 'standard', string $style = 'natural', ?string $output_format = NULL) {
-    $this->checkRateLimit('images');
+    $this->checkRateLimit('images', $model);
+    $context = $this->beginUsageOperation('images', $model);
     try {
-      return $this->client->images($model, $prompt, $size, $response_format, $quality, $style, $output_format);
+      $response = $this->client->images($model, $prompt, $size, $response_format, $quality, $style, $output_format);
+      $this->recordUsageOperation('images', $model, $context, ['prompt' => $prompt, 'size' => $size], NULL, TRUE);
+      return $response;
     }
     catch (\Throwable $e) {
+      $this->recordUsageOperation('images', $model, $context, ['prompt' => $prompt, 'size' => $size], NULL, FALSE, $e->getMessage());
       throw $this->normalizeException($e, 'images', ['model' => $model]);
     }
   }
 
   public function textToSpeech(string $model, string $input, string $voice, string $response_format) {
-    $this->checkRateLimit('text_to_speech');
+    $this->checkRateLimit('text_to_speech', $model);
+    $context = $this->beginUsageOperation('text_to_speech', $model);
     try {
-      return $this->client->textToSpeech($model, $input, $voice, $response_format);
+      $response = $this->client->textToSpeech($model, $input, $voice, $response_format);
+      $this->recordUsageOperation('text_to_speech', $model, $context, ['input' => $input], NULL, TRUE);
+      return $response;
     }
     catch (\Throwable $e) {
+      $this->recordUsageOperation('text_to_speech', $model, $context, ['input' => $input], NULL, FALSE, $e->getMessage());
       throw $this->normalizeException($e, 'text_to_speech', ['model' => $model]);
     }
   }
 
   public function speechToText(string $model, string $file, string $task = 'transcribe', $temperature = 0.4, string $response_format = 'verbose_json') {
-    $this->checkRateLimit('speech_to_text');
+    $this->checkRateLimit('speech_to_text', $model);
+    $context = $this->beginUsageOperation('speech_to_text', $model);
     try {
-      return $this->client->speechToText($model, $file, $task, $temperature, $response_format);
+      $response = $this->client->speechToText($model, $file, $task, $temperature, $response_format);
+      $this->recordUsageOperation('speech_to_text', $model, $context, ['task' => $task], $response, TRUE);
+      return $response;
     }
     catch (\Throwable $e) {
+      $this->recordUsageOperation('speech_to_text', $model, $context, ['task' => $task], NULL, FALSE, $e->getMessage());
       throw $this->normalizeException($e, 'speech_to_text', ['model' => $model, 'task' => $task]);
     }
   }
 
   public function moderation(string $input, string $model = 'omni-moderation-latest'): array {
-    $this->checkRateLimit('moderation');
+    $this->checkRateLimit('moderation', $model);
+    $context = $this->beginUsageOperation('moderation', $model);
     try {
-      return $this->client->moderation($input, $model);
+      $response = $this->client->moderation($input, $model);
+      $this->recordUsageOperation('moderation', $model, $context, ['input' => $input], NULL, TRUE);
+      return $response;
     }
     catch (\Throwable $e) {
+      $this->recordUsageOperation('moderation', $model, $context, ['input' => $input], NULL, FALSE, $e->getMessage());
       throw $this->normalizeException($e, 'moderation', ['model' => $model]);
     }
   }
 
   public function embedding(string $input, string $model, bool $log = TRUE): array {
-    $this->checkRateLimit('embedding');
+    $this->checkRateLimit('embedding', $model);
+    $context = $this->beginUsageOperation('embedding', $model);
     try {
-      return $this->client->embedding($input, $model, $log);
+      $response = $this->client->embedding($input, $model, $log);
+      $this->recordUsageOperation('embedding', $model, $context, ['input' => $input], NULL, TRUE);
+      return $response;
     }
     catch (\Throwable $e) {
+      $this->recordUsageOperation('embedding', $model, $context, ['input' => $input], NULL, FALSE, $e->getMessage());
       throw $this->normalizeException($e, 'embedding', ['model' => $model]);
     }
   }
 
   public function chatWithTools(string $model, array $messages, array $tools, $temperature, $max_tokens = 1024, string $tool_choice = 'auto', array $context_extra = []): array {
-    $this->checkRateLimit('chat');
+    $this->checkRateLimit('chat', $model);
     $start_time = microtime(TRUE);
-    $context = $this->buildContext('chat', $model, $context_extra);
+    $context = $this->beginUsageOperation('chat', $model, $context_extra);
     $context['tool_count'] = count($tools);
     $this->applyChatMessageAlter($messages, $context);
     if (!empty($context['guardrail_blocked'])) {
       // Blocked requests are the ones an auditor most needs to see.
+      $this->recordUsageOperation('chat', $model, $context, $messages, $context['guardrail_message'] ?? '', FALSE, 'Blocked by guardrails before the provider call.');
       $this->log('chat', $model, $messages, (string) ($context['guardrail_message'] ?? ''), FALSE, microtime(TRUE) - $start_time, 'Blocked by guardrails before the provider call.');
       return [
         'finish_reason' => 'guardrail_blocked',
@@ -379,29 +637,45 @@ class AIApi {
       $response = $this->client->chatWithTools($model, $messages, $tools, $temperature, $max_tokens, $tool_choice, $context);
     }
     catch (\Throwable $e) {
-      $this->log('chat', $model, [
+      $log_request = [
         'messages' => $messages,
         'tools' => $tools,
         'temperature' => $temperature,
         'max_tokens' => $max_tokens,
         'tool_choice' => $tool_choice,
         'context' => $context,
-      ], NULL, FALSE, microtime(TRUE) - $start_time, $e->getMessage());
+      ];
+
+      $this->applyProviderFailureAlter($e, 'chat', $context);
+      if (array_key_exists('failover_result', $context)) {
+        $result = $context['failover_result'];
+        $this->recordUsageOperation('chat', $model, $context, ['messages' => $messages, 'tools' => $tools], $result, FALSE, 'Provider call failed; served a failover response instead: ' . $e->getMessage());
+        $this->log('chat', $model, $log_request, $result, TRUE, microtime(TRUE) - $start_time, 'Provider call failed; served a failover response instead: ' . $e->getMessage());
+        return $result;
+      }
+
+      $this->recordUsageOperation('chat', $model, $context, ['messages' => $messages, 'tools' => $tools], NULL, FALSE, $e->getMessage());
+      $this->log('chat', $model, $log_request, NULL, FALSE, microtime(TRUE) - $start_time, $e->getMessage());
       throw $this->normalizeException($e, 'chat', $context);
     }
     $this->finalizeContext($context);
 
+    $usage_status = TRUE;
+    $usage_error = NULL;
     if (isset($response['content']) && is_string($response['content'])) {
       $content = $response['content'];
       $this->applyChatResponseAlter($content, $context);
       $response['content'] = $content;
       if (!empty($context['guardrail_blocked'])) {
+        $usage_status = FALSE;
+        $usage_error = 'Response blocked by guardrails.';
         $response['finish_reason'] = 'guardrail_blocked';
         $response['content'] = (string) ($context['guardrail_message'] ?? '');
         $response['tool_calls'] = [];
       }
     }
 
+    $this->recordUsageOperation('chat', $model, $context, ['messages' => $messages, 'tools' => $tools], $response, $usage_status, $usage_error);
     $this->log('chat', $model, [
       'messages' => $messages,
       'tools' => $tools,
@@ -414,10 +688,88 @@ class AIApi {
     return $response;
   }
 
-  public function describeImage(string $imageUrl, bool $sendImageData = TRUE): string {
+  /**
+   * Evaluate structured questions against an input text.
+   *
+   * @param string $input
+   *   The input context to evaluate.
+   * @param array $questions
+   *   Array of question definitions.
+   * @param string $model
+   *   Model ID, or empty string to use provider default.
+   * @param array $context_extra
+   *   Optional extra execution context.
+   *
+   * @return array
+   *   Array of evaluated outcome arrays.
+   *
+   * @throws AIInvalidArgumentException
+   * @throws AIException
+   */
+  public function decide(string $input, array $questions, string $model = '', array $context_extra = []): array {
+    if (empty($questions)) {
+      return [];
+    }
+
+    // Pre-flight validation of questions.
+    foreach ($questions as $idx => $question) {
+      if (!is_array($question)) {
+        throw new AIInvalidArgumentException('Each question must be an array.', 0, NULL, $this->provider, 'decision', ['index' => $idx]);
+      }
+      $type = $question['type'] ?? 'boolean';
+      if (!in_array($type, ['boolean', 'choice', 'score'], TRUE)) {
+        throw new AIInvalidArgumentException('Unsupported question type: ' . $type, 0, NULL, $this->provider, 'decision', ['question' => $question]);
+      }
+      if ($type === 'choice') {
+        if (empty($question['options']) || !is_array($question['options'])) {
+          throw new AIInvalidArgumentException('Choice questions must include a non-empty options array.', 0, NULL, $this->provider, 'decision', ['question' => $question]);
+        }
+      }
+      if (empty($question['prompt']) && empty($question['question'])) {
+        throw new AIInvalidArgumentException('Question must include a prompt.', 0, NULL, $this->provider, 'decision', ['question' => $question]);
+      }
+    }
+
+    $this->checkRateLimit('decision', $model);
+    $start_time = microtime(TRUE);
+    $context = $this->beginUsageOperation('decision', $model, $context_extra);
+    $context['question_count'] = count($questions);
+
+    $log_request = [
+      'input' => $input,
+      'questions' => $questions,
+      'model' => $model,
+      'context' => $context,
+    ];
+
+    try {
+      $response = $this->client->decide($input, $questions, $model, $context);
+    }
+    catch (\Throwable $e) {
+      $this->applyProviderFailureAlter($e, 'decision', $context);
+      if (array_key_exists('failover_result', $context) && is_array($context['failover_result'])) {
+        $result = $context['failover_result'];
+        $this->recordUsageOperation('decision', $model, $context, ['input' => $input, 'questions' => $questions], $result, FALSE, 'Provider call failed; served a failover response instead: ' . $e->getMessage());
+        $this->log('decision', $model, $log_request, $result, TRUE, microtime(TRUE) - $start_time, 'Provider call failed; served a failover response instead: ' . $e->getMessage());
+        return $result;
+      }
+
+      $this->recordUsageOperation('decision', $model, $context, ['input' => $input, 'questions' => $questions], NULL, FALSE, $e->getMessage());
+      $this->log('decision', $model, $log_request, NULL, FALSE, microtime(TRUE) - $start_time, $e->getMessage());
+      throw $this->normalizeException($e, 'decision', $context);
+    }
+
+    $this->finalizeContext($context);
+    $this->recordUsageOperation('decision', $model, $context, ['input' => $input, 'questions' => $questions], $response, TRUE);
+    $this->log('decision', $model, $log_request, $response, TRUE, microtime(TRUE) - $start_time);
+
+    return $response;
+  }
+
+  public function describeImage(string $imageUrl, bool $sendImageData = TRUE, ?string $modelOverride = NULL): string {
     $config = config('ai_alt.settings');
     $describePrompt = $config->get('prompt');
-    $model = $config->get('model');
+    $model = $modelOverride ?: $config->get('model');
 
     if (empty($describePrompt) || empty($model)) {
       watchdog('ai_alt', 'AI alt text prompt or model configuration missing.', [], WATCHDOG_ERROR);

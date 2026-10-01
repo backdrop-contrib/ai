@@ -43,7 +43,8 @@ function _ai_alt_generate_short_filename_for_file($file) {
     return FALSE;
   }
 
-  $model = config_get('ai_alt.settings', 'model');
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.generate');
+  $model = _ai_alt_resolve_model();
   if (empty($model)) {
     return FALSE;
   }
@@ -67,9 +68,9 @@ function _ai_alt_generate_short_filename_for_file($file) {
       'fid' => $file->fid,
     ]);
   }
-  catch (\Exception $e) {
+  catch (\Throwable $e) {
     watchdog('ai_alt', 'Failed to generate filename for file @fid: @error', [
-      '@fid' => $file->fid,
+      '@fid' => isset($file->fid) ? $file->fid : 'new',
       '@error' => $e->getMessage(),
     ], WATCHDOG_ERROR);
     return FALSE;

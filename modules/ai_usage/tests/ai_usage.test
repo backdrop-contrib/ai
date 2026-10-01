@@ -1,0 +1,145 @@
+<?php
+
+/**
+ * @file
+ * Tests for the AI Usage submodule.
+ */
+
+class AIUsageTestCase extends BackdropWebTestCase {
+
+  public function setUp() {
+    parent::setUp(['ai', 'ai_usage', 'ai_agent_test']);
+    $providers = config('ai.settings');
+    $providers->set('providers', [
+      'agent_test' => [
+        'enabled' => 1,
+      ],
+    ]);
+    $providers->save();
+  }
+
+  public function testProviderUsageNormalization() {
+    $usage = ai_usage_normalize_usage([
+      'prompt_tokens' => 12,
+      'completion_tokens' => 8,
+      'prompt_tokens_details' => ['cached_tokens' => 2],
+      'completion_tokens_details' => ['reasoning_tokens' => 3],
+    ]);
+    $this->assertEqual(12, $usage['input_tokens'], 'Prompt tokens normalize to input tokens.');
+    $this->assertEqual(8, $usage['output_tokens'], 'Completion tokens normalize to output tokens.');
+    $this->assertEqual(2, $usage['cached_tokens'], 'Nested cached-token details normalize correctly.');
+    $this->assertEqual(3, $usage['reasoning_tokens'], 'Nested reasoning-token details normalize correctly.');
+    $this->assertEqual(20, $usage['total_tokens'], 'Total tokens are derived when the provider omits them.');
+  }
+
+  public function testEstimatedOperationRecord() {
+    $record_id = ai_usage_record_operation([
+      'uid' => 0,
+      'module' => 'ai_usage_test',
+      'operation' => 'chat',
+      'provider' => 'test',
+      'model' => 'test-model',
+      'request_id' => 'usage-test-1',
+      'status' => TRUE,
+      'duration_ms' => 42,
+      'request' => ['messages' => [['role' => 'user', 'content' => 'hello world']]],
+      'response' => 'hello back',
+    ]);
+    $this->assertTrue((bool) $record_id, 'An estimated usage record is inserted.');
+    $row = db_query('SELECT * FROM {ai_usage_records} WHERE id = :id', [':id' => $record_id])->fetchObject();
+    $this->assertEqual('estimated', $row->usage_source, 'Missing provider metadata is marked as estimated.');
+    $this->assertTrue((int) $row->total_tokens > 0, 'Text operations receive a conservative token estimate.');
+    $this->assertEqual(42, (int) $row->duration_ms, 'Operation duration is retained.');
+  }
+
+  public function testProviderRecordDoesNotEstimate() {
+    $config = config('ai_usage.settings');
+    $config->set('pricing', [
+      'test/test-model' => ['input' => 0.001, 'output' => 0.002],
+    ]);
+    $config->save();
+    $record_id = ai_usage_record_operation([
+      'module' => 'ai_usage_test',
+      'operation' => 'chat',
+      'provider' => 'test',
+      'model' => 'test-model',
+      'request' => ['messages' => [['content' => str_repeat('a', 400)]]],
+      'response' => str_repeat('b', 400),
+      'usage' => ['input_tokens' => 3, 'output_tokens' => 4, 'total_tokens' => 7],
+      'status' => TRUE,
+    ]);
+    $row = db_query('SELECT * FROM {ai_usage_records} WHERE id = :id', [':id' => $record_id])->fetchObject();
+    $this->assertEqual('provider', $row->usage_source, 'Provider metadata is marked authoritative.');
+    $this->assertEqual(7, (int) $row->total_tokens, 'Provider totals are preserved without estimation.');
+    $this->assertEqual(0.011, round((float) $row->cost_usd, 3), 'Manual model pricing is applied to normalized usage.');
+    $this->assertEqual('manual', $row->cost_source, 'Manual pricing is labeled separately from provider usage quality.');
+  }
+
+  public function testCoreApiRecordsAnOperation() {
+    $api = ai_get_api('agent_test');
+    $api->setCallerModule('ai_usage_test');
+    $response = $api->chat('gpt-4o-mini', [
+      ['role' => 'user', 'content' => 'hello from the core wrapper'],
+    ], 0.2, 64);
+    $this->assertEqual('chat', $response, 'The deterministic provider response is returned.');
+    $row = db_query('SELECT * FROM {ai_usage_records} WHERE request_id <> :empty ORDER BY id DESC', [':empty' => ''])->fetchObject();
+    $this->assertEqual('ai_usage_test', $row->module, 'The explicit caller module is attributed.');
+    $this->assertEqual('agent_test', $row->provider, 'The provider is attributed by the core wrapper.');
+    $this->assertEqual('estimated', $row->usage_source, 'The wrapper falls back to an estimate when the adapter has no usage envelope.');
+  }
+
+  public function testMonthlyBudgetStatusAndReportMode() {
+    $config = config('ai_usage.settings');
+    $config->set('budget_enabled', TRUE);
+    $config->set('budget_action', 'report');
+    $config->set('anonymous_token_limit', 5);
+    $config->set('alert_threshold_percent', 80);
+    $config->save();
+
+    ai_usage_record_operation([
+      'uid' => 0,
+      'module' => 'ai_usage_test',
+      'operation' => 'chat',
+      'provider' => 'test',
+      'model' => 'test-model',
+      'usage' => ['input_tokens' => 5, 'output_tokens' => 0, 'total_tokens' => 5],
+      'status' => TRUE,
+    ]);
+    $status = ai_usage_get_budget_status(0);
+    $this->assertEqual(5, $status['current']['tokens'], 'The current monthly token total is reported.');
+    $this->assertTrue($status['exceeded'], 'The budget status reports an exceeded limit.');
+    $check = ai_usage_budget_check('test', 'chat', 'test-model');
+    $this->assertTrue($check['allowed'], 'Report-only budgets do not block calls.');
+  }
+
+  public function testMonthlyBudgetBlocksCoreApi() {
+    global $user;
+    $uid = !empty($user->uid) ? (int) $user->uid : 0;
+    $config = config('ai_usage.settings');
+    $config->set('budget_enabled', TRUE);
+    $config->set('budget_action', 'block');
+    $config->set('user_token_limit', 1);
+    $config->set('anonymous_token_limit', 1);
+    $config->set('admin_bypass', FALSE);
+    $config->save();
+    ai_usage_record_operation([
+      'uid' => $uid,
+      'module' => 'ai_usage_test',
+      'operation' => 'chat',
+      'provider' => 'test',
+      'model' => 'test-model',
+      'usage' => ['input_tokens' => 1, 'output_tokens' => 0, 'total_tokens' => 1],
+      'status' => TRUE,
+    ]);
+
+    $api = ai_get_api('agent_test');
+    try {
+      $api->chat('gpt-4o-mini', [['role' => 'user', 'content' => 'should be blocked']], 0.2, 64);
+      $this->fail('A hard monthly usage budget should block the next API call.');
+    }
+    catch (AIUsageLimitException $e) {
+      $this->assertEqual('usage_limit', $e->getCategory(), 'The core wrapper exposes a typed usage-limit exception.');
+      $this->assertEqual('agent_test', $e->getProvider(), 'The exception identifies the provider.');
+    }
+  }
+}

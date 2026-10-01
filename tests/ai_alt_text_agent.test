@@ -8,11 +8,11 @@
 class AIAltTextAgentTestCase extends BackdropWebTestCase {
 
   public function setUp() {
-    parent::setUp(['ai', 'ai_tools', 'ai_agent', 'ai_alt_tools', 'image_entity_alt']);
+    parent::setUp(['ai', 'ai_tools', 'ai_agents', 'ai_alt_tools', 'image_entity_alt']);
   }
 
   public function testAltTextAgentConfigIsSeeded() {
-    $agents = ai_agent_get_agents();
+    $agents = ai_agents_get_agents();
     $this->assertTrue(isset($agents['alt_text_agent']), 'Alt text agent is seeded in config.');
 
     $agent = $agents['alt_text_agent'];
@@ -22,10 +22,7 @@ class AIAltTextAgentTestCase extends BackdropWebTestCase {
     $expected_tools = [
       'find_images_missing_alt',
       'get_image_details',
-      'copy_usage_alt_to_global',
-      'seed_alt_for_image_from_usage',
       'generate_alt_for_image',
-      'rename_file_for_image',
       'set_alt_for_image',
     ];
     foreach ($expected_tools as $tool_name) {

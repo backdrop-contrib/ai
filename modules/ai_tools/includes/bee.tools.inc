@@ -25,6 +25,7 @@ function ai_tools_bee_definitions() {
         ],
       ],
       'execute' => 'ai_tools_execute_get_bee_commands',
+      'operation' => 'read',
       'module' => 'ai_tools',
       'category' => 'bee',
       'permission' => 'administer site configuration',
@@ -49,6 +50,7 @@ function ai_tools_bee_definitions() {
         ],
       ],
       'execute' => 'ai_tools_execute_get_bee_command_help',
+      'operation' => 'read',
       'module' => 'ai_tools',
       'category' => 'bee',
       'permission' => 'administer site configuration',
@@ -87,6 +89,15 @@ function ai_tools_load_bee_runtime() {
   require_once $bee_root . '/includes/dependencies.inc';
   require_once $bee_root . '/includes/command.inc';
   require_once $bee_root . '/commands/help.bee.inc';
+
+  // Bee normally fills these globals during its CLI bootstrap. AI tools use
+  // the command registry from a normal Backdrop web request, so initialize
+  // the two values that command discovery needs before it scans enabled
+  // module directories. Without this, Bee only sees its bundled commands and
+  // emits a PHP warning while trying to resolve the project root.
+  global $_bee_backdrop_installed, $_bee_backdrop_root;
+  $_bee_backdrop_installed = TRUE;
+  $_bee_backdrop_root = defined('BACKDROP_ROOT') ? BACKDROP_ROOT : getcwd();
 
   return function_exists('bee_all_commands');
 }

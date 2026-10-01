@@ -64,6 +64,14 @@ class AIContentExtractor {
       return '';
     }
 
+    // Automatically inherit field exclusions from ai_privacy when not explicitly specified.
+    if (!isset($options['exclude_fields']) && function_exists('ai_privacy_get_excluded_fields') && function_exists('entity_extract_ids')) {
+      [, , $bundle] = entity_extract_ids($entity_type, $entity);
+      if (!empty($bundle)) {
+        $options['exclude_fields'] = ai_privacy_get_excluded_fields($entity_type, $bundle);
+      }
+    }
+
     $view_mode = isset($options['view_mode']) ? $options['view_mode'] : 'full';
     $include_label = array_key_exists('include_label', $options) ? (bool) $options['include_label'] : TRUE;
 
@@ -77,7 +85,7 @@ class AIContentExtractor {
 
     $entity_id = function_exists('entity_id') ? entity_id($entity_type, $entity) : NULL;
     if ($entity_id) {
-      $text = self::renderEntityToMarkdown($entity_type, $entity, $view_mode);
+      $text = self::renderEntityToMarkdown($entity_type, $entity, $view_mode, $options);
       if ($text !== '') {
         return self::limitText($text, $options);
       }
@@ -99,7 +107,7 @@ class AIContentExtractor {
     return self::limitText(self::joinChunks($chunks), $options);
   }
 
-  public static function renderEntityToMarkdown($entity_type, $entity, $view_mode = 'full') {
+  public static function renderEntityToMarkdown($entity_type, $entity, $view_mode = 'full', array $options = []) {
     if (!function_exists('entity_view') || !function_exists('backdrop_render')) {
       return '';
     }
@@ -117,6 +125,16 @@ class AIContentExtractor {
       $entity_id = function_exists('entity_id') ? entity_id($entity_type, $entity) : NULL;
       $entities = $entity_id ? [$entity_id => $entity] : [$entity];
       $build = entity_view_multiple($entity_type, $entities, $view_mode);
+      if (!empty($options['exclude_fields']) && is_array($options['exclude_fields'])) {
+        foreach ($options['exclude_fields'] as $ex_field) {
+          if ($entity_id && isset($build[$entity_type][$entity_id][$ex_field])) {
+            unset($build[$entity_type][$entity_id][$ex_field]);
+          }
+          if (isset($build[$ex_field])) {
+            unset($build[$ex_field]);
+          }
+        }
+      }
       self::stripRenderNoise($build);
       $html = backdrop_render($build);
     }
@@ -210,6 +228,11 @@ class AIContentExtractor {
       return '';
     }
 
+    // Automatically inherit field exclusions from ai_privacy when not explicitly specified.
+    if (!isset($options['exclude_fields']) && function_exists('ai_privacy_get_excluded_fields')) {
+      $options['exclude_fields'] = ai_privacy_get_excluded_fields('node', $bundle);
+    }
+
     $chunks = [];
     $include_title = array_key_exists('include_title', $options) ? (bool) $options['include_title'] : TRUE;
     if ($include_title && !empty($values['title']) && is_scalar($values['title'])) {
@@ -256,6 +279,11 @@ class AIContentExtractor {
     [, , $bundle] = entity_extract_ids($entity_type, $entity);
     if (empty($bundle)) {
       return;
+    }
+
+    // Automatically inherit field exclusions from ai_privacy when not explicitly specified.
+    if (!isset($options['exclude_fields']) && function_exists('ai_privacy_get_excluded_fields')) {
+      $options['exclude_fields'] = ai_privacy_get_excluded_fields($entity_type, $bundle);
     }
 
     $instances = field_info_instances($entity_type, $bundle);

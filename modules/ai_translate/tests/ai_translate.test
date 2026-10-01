@@ -1,0 +1,82 @@
+<?php
+
+/**
+ * @file
+ * Unit tests for deterministic AI Translate helpers.
+ */
+
+require_once dirname(__FILE__) . '/../includes/ai_translate.translate.inc';
+require_once dirname(__FILE__) . '/../includes/ai_translate.batch.inc';
+require_once dirname(__FILE__) . '/../includes/translate.tools.inc';
+require_once dirname(__FILE__) . '/../ai_translate.module';
+
+class AITranslateUnitTestCase extends BackdropUnitTestCase {
+
+  /**
+   * Verify that Paragraphs is a first-class translatable field type.
+   */
+  public function testSupportedFieldTypesIncludeParagraphs() {
+    $this->assertTrue(in_array('paragraphs', _ai_translate_supported_field_types(), TRUE));
+  }
+
+  /**
+   * Verify unsupported field values are preserved byte-for-byte.
+   */
+  public function testUnsupportedFieldValuesArePreserved() {
+    $item = [
+      'value' => 'https://example.com/video.mp4',
+      'provider' => 'youtube',
+    ];
+    $context = ['errors' => []];
+    $result = _ai_translate_field_delta($item, 'youtube', [], 'und', 'de', $context);
+    $this->assertEqual($item, $result);
+  }
+
+  /**
+   * Verify batch definitions preserve the source node and target language.
+   */
+  public function testSingleNodeBatchDefinition() {
+    $batch = ai_translate_batch_for_node(34808, 'de');
+    $this->assertEqual('_ai_translate_batch_operation', $batch['operations'][0][0]);
+    $this->assertEqual([34808, 'de'], $batch['operations'][0][1]);
+    $this->assertEqual('_ai_translate_batch_finished', $batch['finished']);
+  }
+
+  /**
+   * Verify bulk batches create one operation per source node.
+   */
+  public function testMultipleNodeBatchDefinition() {
+    $batch = ai_translate_batch_for_nodes([34808, 34809], 'de');
+    $this->assertEqual(2, count($batch['operations']));
+    $this->assertEqual([34809, 'de'], $batch['operations'][1][1]);
+  }
+
+  /**
+   * Verify agent tools are properly defined with schemas and permissions.
+   */
+  public function testToolsDefinitions() {
+    $tools = ai_translate_tools_definitions();
+    $this->assertTrue(isset($tools['translate_node']));
+    $this->assertTrue(isset($tools['list_supported_languages']));
+    $this->assertTrue(isset($tools['list_untranslated_nodes']));
+
+    $this->assertEqual('use ai translate', $tools['translate_node']['permission']);
+    $this->assertEqual('access content', $tools['list_supported_languages']['permission']);
+    $this->assertEqual('access content', $tools['list_untranslated_nodes']['permission']);
+
+    $this->assertEqual(['nid', 'target_langcode'], $tools['translate_node']['definition']['function']['parameters']['required']);
+  }
+
+  /**
+   * Verify async callbacks and parameter validation.
+   */
+  public function testAsyncCallbackRegistrationAndValidation() {
+    $callbacks = ai_translate_ai_async_callbacks();
+    $this->assertTrue(isset($callbacks['ai_translate_async_node']));
+
+    // Empty parameters should return status FALSE.
+    $res = ai_translate_async_node([]);
+    $this->assertFalse($res['status']);
+    $this->assertTrue(strpos($res['message'], 'Missing') !== FALSE);
+  }
+}

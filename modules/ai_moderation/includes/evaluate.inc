@@ -84,6 +84,65 @@ function _ai_moderation_evaluate($text, array $options = []) {
     $context['disable_site_context'] = TRUE;
   }
 
+  // Fast path: use native decision evaluation when a decision-capable model
+  // is available.
+  $is_decision_model = FALSE;
+  if (strpos($model, 'jev') !== FALSE || strpos($model, 'typesafe') !== FALSE) {
+    $is_decision_model = TRUE;
+  }
+  elseif (method_exists($api, 'getDecisionModels')) {
+    $decision_models = $api->getDecisionModels();
+    if (isset($decision_models[$stripped_model]) || isset($decision_models[$model])) {
+      $is_decision_model = TRUE;
+    }
+  }
+
+  if ($is_decision_model && method_exists($api, 'decide')) {
+    $policy = trim((string) $profile['prompt']) ?: 'Evaluate if the text contains prohibited, toxic, abusive, threatening, or harmful content.';
+    $questions = [
+      [
+        'id' => 'is_violation',
+        'type' => 'boolean',
+        'prompt' => 'Does this text violate the moderation policy? Policy: ' . $policy,
+      ],
+      [
+        'id' => 'severity_score',
+        'type' => 'score',
+        'prompt' => 'Rate the severity of policy violation from 0 (completely safe) to 100 (severe violation).',
+      ],
+    ];
+
+    try {
+      $decisions = $api->decide($text, $questions, $stripped_model, $context);
+      $indexed = [];
+      foreach ((array) $decisions as $d) {
+        if (is_array($d) && isset($d['id'])) {
+          $indexed[$d['id']] = $d;
+        }
+      }
+      $violation = !empty($indexed['is_violation']['answer']);
+      $probability = isset($indexed['is_violation']['probability']) ? (float) $indexed['is_violation']['probability'] : 0.0;
+      $score = isset($indexed['severity_score']['answer']) && is_numeric($indexed['severity_score']['answer'])
+        ? (float) $indexed['severity_score']['answer']
+        : ($violation ? round($probability * 100) : round((1.0 - $probability) * 20));
+
+      // Verdict, category and reason values must use the approved codes;
+      // _ai_moderation_finalize_verdict() re-derives the verdict from the
+      // score bands and rejects non-finite scores.
+      $parsed = [
+        'score' => $score,
+        'verdict' => $score > $profile['band_review_max'] ? 'block' : ($score > $profile['band_allow_max'] ? 'review' : 'allow'),
+        'categories' => $violation ? ['other'] : [],
+        'reason' => $violation ? 'other' : 'none',
+      ];
+
+      return _ai_moderation_finalize_verdict($parsed, $profile, $prefilter, $profile_id, $model, 'decision');
+    }
+    catch (\Throwable $e) {
+      watchdog('ai_moderation', 'Decision moderation request failed [@code] (@type; @identifier); falling back to chat.', _ai_moderation_exception_log_context($e, $model), WATCHDOG_WARNING);
+    }
+  }
+
   $fallback_allowed = TRUE;
   try {
     $response = $api->chatWithTools($stripped_model, $messages, [$tool], 0, 400, 'required', $context);
@@ -471,7 +530,7 @@ function _ai_moderation_store_verdict(array $verdict, array $context, $config = 
   if ($config === NULL) {
     $config = config('ai_moderation.settings');
   }
-  if (in_array($verdict['source'] ?? '', ['tool', 'json', 'prefilter'], TRUE)) {
+  if (in_array($verdict['source'] ?? '', ['tool', 'json', 'decision', 'prefilter'], TRUE)) {
     $verdict['reason'] = _ai_moderation_reason_code($verdict['reason'] ?? '');
     $verdict['categories'] = _ai_moderation_category_codes($verdict['categories'] ?? []);
   }

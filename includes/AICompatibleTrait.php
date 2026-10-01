@@ -11,7 +11,9 @@ trait AICompatibleTrait {
    * Default capability filter for adapters using common chat-completions formats.
    */
   public function getModelsByCapability($capability): array {
-    return $this->getModels();
+    $models = [];
+    backdrop_alter('ai_model_capabilities', $models, $capability, $this);
+    return $models;
   }
 
   /**

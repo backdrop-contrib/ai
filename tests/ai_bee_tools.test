@@ -8,7 +8,7 @@
 class AIBeeToolsTestCase extends BackdropWebTestCase {
 
   public function setUp() {
-    parent::setUp(['ai', 'ai_tools', 'ai_agent']);
+    parent::setUp(['ai', 'ai_tools', 'ai_agents']);
   }
 
   public function testBeeToolsRegistry() {

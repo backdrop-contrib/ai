@@ -1,5 +1,11 @@
 <?php
 
+define('AI_DEVEL_MAX_NODES_PER_TYPE', 100);
+define('AI_DEVEL_MAX_TOTAL_NODES', 500);
+define('AI_DEVEL_MAX_COMMENTS_PER_NODE', 20);
+define('AI_DEVEL_MAX_TOKENS', 4096);
+define('AI_DEVEL_MAX_SYSTEM_LENGTH', 4000);
+
 /**
  * Implements hook_menu().
  */
@@ -31,15 +37,8 @@ function ai_devel_generate_content_form($form, &$form_state) {
   // Get all chat models from all enabled providers
   $models_grouped = ai_get_all_chat_models();
 
-  // Flatten grouped models since labels already include provider prefix
-  $models = [];
-  foreach ($models_grouped as $group_label => $group_items) {
-    if (is_array($group_items)) {
-      foreach ($group_items as $k => $v) {
-        $models[$k] = $v;
-      }
-    }
-  }
+  // Flatten grouped models since labels already include provider prefix.
+  $models = function_exists('ai_flatten_models') ? ai_flatten_models($models_grouped) : [];
 
   if (empty($models)) {
     form_set_error('', t('No chat models available. Please configure at least one provider in AI settings.'));
@@ -51,7 +50,7 @@ function ai_devel_generate_content_form($form, &$form_state) {
     '#type' => 'select',
     '#title' => t('Model'),
     '#options' => $models,
-    '#default_value' => config_get('ai.settings', 'default_text_model') ?: '',
+    '#default_value' => ai_devel_resolve_model(config_get('ai.settings', 'default_text_model')),
     '#description' => t('Select which model to use to generate text from any enabled provider.'),
     '#required' => TRUE,
   ];
@@ -61,6 +60,7 @@ function ai_devel_generate_content_form($form, &$form_state) {
     '#default_value' => 'Your task is to generate content. I would like you to generate content about various topics.',
     '#description' => t('The "system profile" helps set the behavior of the ChatGPT response.'),
     '#required' => TRUE,
+    '#maxlength' => AI_DEVEL_MAX_SYSTEM_LENGTH,
   ];
 
   $form['ai_temperature'] = [
@@ -77,6 +77,7 @@ function ai_devel_generate_content_form($form, &$form_state) {
     '#type' => 'number',
     '#title' => t('Max tokens'),
     '#min' => 1,
+    '#max' => AI_DEVEL_MAX_TOKENS,
     '#default_value' => '512',
     '#description' => t("The maximum number of tokens to generate in the response."),
   ];
@@ -102,7 +103,7 @@ function ai_devel_generate_content_form($form, &$form_state) {
   }
 
   if (empty($options)) {
-    backdrop_set_message(t('You do not have any content types that can be generated. <a href="@create-type">Go create a new content type</a> already!</a>', ['@create-type' => url('admin/structure/types/add')]), 'error', FALSE);
+    backdrop_set_message(t('You do not have any content types that can be generated. <a href="@create-type">Go create a new content type</a> first.', ['@create-type' => url('admin/structure/types/add')]), 'error', FALSE);
     return $form;
   }
 
@@ -120,12 +121,20 @@ function ai_devel_generate_content_form($form, &$form_state) {
     '#default_value' => FALSE,
   ];
 
+  $form['kill_content_confirm'] = [
+    '#type' => 'textfield',
+    '#title' => t('Deletion confirmation'),
+    '#description' => t('If deleting existing content, type DELETE to confirm.'),
+    '#default_value' => '',
+    '#maxlength' => 6,
+  ];
   $form['num_nodes'] = [
     '#type' => 'number',
     '#title' => t('How many nodes would you like to generate?'),
+    '#description' => t('Generated nodes are saved unpublished for review.'),
     '#default_value' => 15,
     '#min' => 1,
-    '#max' => 999999,
+    '#max' => AI_DEVEL_MAX_NODES_PER_TYPE,
   ];
 
   $options = [1 => t('Now')];
@@ -146,7 +155,7 @@ function ai_devel_generate_content_form($form, &$form_state) {
     '#description' => t('Only content types that have comments enabled will receive comments. Note that some nodes will randomly receive zero comments. Some will receive the max.'),
     '#default_value' => 0,
     '#min' => 0,
-    '#max' => 99999,
+    '#max' => AI_DEVEL_MAX_COMMENTS_PER_NODE,
     '#access' => module_exists('comment'),
   ];
 
@@ -190,14 +199,43 @@ function ai_devel_generate_content_form($form, &$form_state) {
     '#value' => t('Generate'),
   ];
   $form['#redirect'] = FALSE;
+  $form['#validate'][] = 'ai_devel_generate_content_form_validate';
 
   return $form;
+}
+
+/**
+ * Validate form values before any destructive or billable operation.
+ */
+function ai_devel_generate_content_form_validate($form, &$form_state) {
+  $options = ai_devel_normalize_options([
+    'node_types' => array_filter($form_state['values']['node_types']),
+    'num_nodes' => $form_state['values']['num_nodes'],
+    'system' => $form_state['values']['ai_system'],
+    'model' => $form_state['values']['ai_model'],
+    'temperature' => $form_state['values']['ai_temperature'],
+    'max_tokens' => $form_state['values']['ai_max_tokens'],
+    'max_comments' => $form_state['values']['max_comments'],
+    'time_range' => $form_state['values']['time_range'],
+    'languages' => array_filter($form_state['values']['add_language']),
+    'title_length' => $form_state['values']['title_length'],
+  ], $error);
+  if (!$options) {
+    form_set_error('', $error);
+  }
+  if (!empty($form_state['values']['kill_content']) && strtoupper(trim($form_state['values']['kill_content_confirm'])) !== 'DELETE') {
+    form_set_error('kill_content_confirm', t('Type DELETE to confirm removing existing content.'));
+  }
 }
 
 /**
  * Form submission handler.
  */
 function ai_devel_generate_content_form_submit($form, &$form_state) {
+  if (!empty($form_state['values']['kill_content']) && strtoupper(trim($form_state['values']['kill_content_confirm'])) !== 'DELETE') {
+    form_set_error('kill_content_confirm', t('Type DELETE to confirm removing existing content.'));
+    return;
+  }
   $options = [
     'node_types' => array_filter($form_state['values']['node_types']),
     'num_nodes' => $form_state['values']['num_nodes'],
@@ -210,6 +248,7 @@ function ai_devel_generate_content_form_submit($form, &$form_state) {
     'time_range' => $form_state['values']['time_range'],
     'languages' => array_filter($form_state['values']['add_language']),
     'title_length' => $form_state['values']['title_length'],
+    'html' => !empty($form_state['values']['ai_html']),
   ];
 
   // Handle content deletion if selected.
@@ -231,17 +270,23 @@ function ai_devel_generate_content_form_submit($form, &$form_state) {
  * Generates content using AI.
  */
 function ai_devel_generate_content($options) {
-  $node_types = $options['node_types'] ?? [];
-  $system = $options['system'] ?? '';
-  $model = $options['model'] ?? (config_get('ai.settings', 'default_text_model') ?: '');
-  $temperature = $options['temperature'] ?? 0.7;
-  $max_tokens = $options['max_tokens'] ?? 512;
-  $add_alias = $options['add_alias'] ?? FALSE;
-  $num_nodes = $options['num_nodes'] ?? 1;
-  $max_comments = $options['max_comments'] ?? 0;
-  $time_range = $options['time_range'] ?? 0;
-  $languages = $options['languages'] ?? [];
-  $title_length = $options['title_length'] ?? 4;
+  $options = ai_devel_normalize_options($options, $error);
+  if (!$options) {
+    watchdog('ai_devel', 'Generation rejected: @message', ['@message' => $error], WATCHDOG_WARNING);
+    return 0;
+  }
+  $node_types = $options['node_types'];
+  $system = $options['system'];
+  $model = $options['model'];
+  $temperature = $options['temperature'];
+  $max_tokens = $options['max_tokens'];
+  $add_alias = $options['add_alias'];
+  $num_nodes = $options['num_nodes'];
+  $max_comments = $options['max_comments'];
+  $time_range = $options['time_range'];
+  $languages = $options['languages'];
+  $title_length = $options['title_length'];
+  $html = $options['html'];
 
   $total_created = 0;
 
@@ -266,6 +311,13 @@ function ai_devel_generate_content($options) {
         );
 
         list($title, $body) = ai_devel_extract_title_and_body($response);
+        if (!$html) {
+          $title = trim(strip_tags($title));
+          $body_format = 'plain_text';
+        }
+        else {
+          $body_format = 'full_html';
+        }
 
 
         // Set language for the node.
@@ -282,12 +334,12 @@ function ai_devel_generate_content($options) {
             $langcode => [
               [
                 'value' => $body,
-                'format' => 'full_html',
+                'format' => $body_format,
               ],
             ],
           ],
-          'uid' => 1,
-          'status' => 1,
+          'uid' => !empty($GLOBALS['user']->uid) ? $GLOBALS['user']->uid : 1,
+          'status' => 0,
           'created' => REQUEST_TIME - mt_rand(0, $time_range),
         ]);
 
@@ -327,7 +379,7 @@ function ai_devel_generate_content($options) {
 
         $total_created++;
       }
-      catch (\Exception $e) {
+      catch (\Throwable $e) {
         watchdog('ai_devel', 'Error: @message', ['@message' => $e->getMessage()], WATCHDOG_ERROR);
       }
     }
@@ -340,6 +392,7 @@ function ai_devel_generate_content($options) {
  * Clean the body text by removing unnecessary artifacts.
  */
 function ai_devel_extract_title_and_body($response) {
+  $response = ai_devel_response_text($response);
   // Split the response into lines.
   $lines = explode("\n", $response);
 
@@ -361,4 +414,99 @@ function ai_devel_extract_title_and_body($response) {
   $body = implode("\n", array_slice($lines, 1));
 
   return [trim($title), trim($body)];
+}
+
+/**
+ * Resolve an enabled provider-qualified chat model.
+ */
+function ai_devel_resolve_model($requested = '') {
+  $grouped = ai_get_all_chat_models();
+  $models = function_exists('ai_flatten_models') ? ai_flatten_models($grouped) : [];
+  if (empty($models)) {
+    return '';
+  }
+  if ($requested && isset($models[$requested])) {
+    return $requested;
+  }
+  if ($requested) {
+    list($provider, $bare) = ai_parse_model_id($requested);
+    foreach (array_keys($models) as $model_id) {
+      list($model_provider, $model_name) = ai_parse_model_id($model_id);
+      if ($model_name === $bare && (!$provider || $provider === $model_provider)) {
+        return $model_id;
+      }
+    }
+  }
+  return ai_default_model($grouped, config_get('ai.settings', 'default_text_model'), ['gpt-4o-mini', 'gpt-3.5-turbo']) ?: '';
+}
+
+/**
+ * Normalize and validate options shared by the form and Bee command.
+ */
+function ai_devel_normalize_options(array $options, &$error = '') {
+  $types = node_type_get_types();
+  $node_types = array_values(array_filter(array_map('trim', (array) ($options['node_types'] ?? []))));
+  $node_types = array_values(array_intersect($node_types, array_keys($types)));
+  if (empty($node_types)) {
+    $error = t('Select at least one valid content type.');
+    return FALSE;
+  }
+
+  $model = ai_devel_resolve_model($options['model'] ?? '');
+  if (!$model) {
+    $error = t('Select an enabled chat model.');
+    return FALSE;
+  }
+  $num_nodes = (int) ($options['num_nodes'] ?? 1);
+  $max_comments = (int) ($options['max_comments'] ?? 0);
+  $max_tokens = (int) ($options['max_tokens'] ?? 512);
+  $temperature = (float) ($options['temperature'] ?? 0.7);
+  $system = trim((string) ($options['system'] ?? ''));
+  if ($num_nodes < 1 || $num_nodes > AI_DEVEL_MAX_NODES_PER_TYPE || $max_comments < 0 || $max_comments > AI_DEVEL_MAX_COMMENTS_PER_NODE || $max_tokens < 1 || $max_tokens > AI_DEVEL_MAX_TOKENS || $temperature < 0 || $temperature > 2 || $system === '' || strlen($system) > AI_DEVEL_MAX_SYSTEM_LENGTH) {
+    $error = t('Generation settings are outside the allowed limits.');
+    return FALSE;
+  }
+  if (count($node_types) * $num_nodes > AI_DEVEL_MAX_TOTAL_NODES) {
+    $error = t('The requested generation batch exceeds the maximum of @max nodes.', ['@max' => AI_DEVEL_MAX_TOTAL_NODES]);
+    return FALSE;
+  }
+
+  return [
+    'node_types' => $node_types,
+    'system' => $system,
+    'model' => $model,
+    'temperature' => $temperature,
+    'max_tokens' => $max_tokens,
+    'add_alias' => !empty($options['add_alias']),
+    'num_nodes' => $num_nodes,
+    'max_comments' => $max_comments,
+    'time_range' => max(0, (int) ($options['time_range'] ?? 0)),
+    'languages' => array_filter((array) ($options['languages'] ?? [])),
+    'title_length' => max(1, min(100, (int) ($options['title_length'] ?? 4))),
+    'html' => !empty($options['html']),
+  ];
+}
+
+/**
+ * Extract text from common provider response shapes.
+ */
+function ai_devel_response_text($response) {
+  if (is_string($response) || is_numeric($response)) {
+    return (string) $response;
+  }
+  if (!is_array($response)) {
+    return '';
+  }
+  foreach (['output_text', 'text', 'content'] as $key) {
+    if (isset($response[$key]) && (is_string($response[$key]) || is_numeric($response[$key]))) {
+      return (string) $response[$key];
+    }
+  }
+  if (isset($response['choices'][0])) {
+    return ai_devel_response_text($response['choices'][0]);
+  }
+  if (isset($response['message']['content'])) {
+    return ai_devel_response_text($response['message']['content']);
+  }
+  return '';
 }

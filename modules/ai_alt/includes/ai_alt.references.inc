@@ -192,7 +192,7 @@ function ai_alt_create_file_redirect($old_uri, $new_uri) {
   try {
     redirect_save($redirect);
   }
-  catch (\Exception $e) {
+  catch (\Throwable $e) {
     watchdog('ai_alt', 'Failed to create redirect from @old to @new: @error', [
       '@old' => $old_parsed['url'],
       '@new' => $new_parsed['url'],

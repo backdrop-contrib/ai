@@ -5,9 +5,10 @@
 }
 
 .ai-admin-overview-section {
-  border: 1px solid #d9dde3;
+  border: 1px solid var(--gin-border-color, #d9dde3);
   border-radius: 6px;
-  background: #fff;
+  background: var(--gin-bg-layer, #fff);
+  color: var(--gin-color-text, inherit);
   padding: 1rem;
   margin-bottom: 1rem;
   break-inside: avoid;
@@ -27,10 +28,10 @@
 }
 
 .ai-admin-overview-card {
-  border: 1px solid #e6e9ee;
+  border: 1px solid var(--gin-border-color, #e6e9ee);
   border-radius: 4px;
   padding: 0.75rem;
-  background: #fafbfc;
+  background: var(--gin-bg-layer2, #fafbfc);
 }
 
 .ai-admin-overview-card h3 {
@@ -40,7 +41,7 @@
 
 .ai-admin-overview-card p {
   margin: 0;
-  color: #4e5b69;
+  color: var(--gin-color-text-light, #4e5b69);
 }
 
 /* Two-column masonry layout for the main overview page. */
@@ -92,7 +93,7 @@
 .ai-provider-card .form-type-checkbox > label.option {
   font-size: 1em;
   font-weight: bold;
-  color: #000;
+  color: var(--gin-color-text, #000);
   display: inline;
 }
 
@@ -103,9 +104,9 @@
 
 /* Provider cards — same style as overview cards for visual consistency. */
 .ai-provider-card {
-  border: 1px solid #e6e9ee;
+  border: 1px solid var(--gin-border-color, #e6e9ee);
   border-radius: 4px;
-  background: #fafbfc;
+  background: var(--gin-bg-layer2, #fafbfc);
   padding: 0.75rem;
   margin-bottom: 0.75rem;
   box-sizing: border-box;
@@ -119,47 +120,174 @@
 .ai-provider-card-settings {
   margin-top: 0.5rem;
   padding-top: 0.5rem;
-  border-top: 1px solid #e6e9ee;
+  border-top: 1px solid var(--gin-border-color, #e6e9ee);
 }
 
 /* Description spans full width above the card columns. */
-.ai-providers-section .fieldset-wrapper > .fieldset-description,
-.ai-providers-section .fieldset-wrapper > .description,
-.ai-providers-section .fieldset-wrapper > .form-item.description {
+.ai-providers-section > .fieldset-wrapper > .fieldset-description,
+.ai-providers-section > .fieldset-wrapper > .description,
+.ai-providers-section > .fieldset-wrapper > .form-item.description {
   width: 100%;
   margin: 0 0 0.75rem;
   box-sizing: border-box;
   text-align: left;
 }
 
-/* Two-column masonry for provider cards on wide screens. */
+/* Two columns of provider cards on wide screens.
+ *
+ * The .ai-provider-columns / .ai-provider-column wrappers are emitted by
+ * ai_providers_form() — see the comment there for why neither column-count nor
+ * grid works. Each column is an ordinary block, so cards stack tightly with no
+ * row alignment and therefore no gaps.
+ *
+ * min-width: 0 is the load-bearing declaration: without it a flex item refuses
+ * to shrink below its content's intrinsic width, and the key select — as wide
+ * as its longest option — would push the column past its half and bleed into
+ * the neighbouring one. That is the original Anthropic overflow.
+ */
+.ai-provider-columns {
+  display: block;
+}
+
 @media (min-width: 1100px) {
-  .ai-providers-section .fieldset-wrapper {
-    display: block;
-    column-count: 2;
-    column-gap: 1.25rem;
-    width: 100%;
-    box-sizing: border-box;
+  .ai-provider-columns {
+    display: flex;
+    align-items: flex-start;
+    gap: 1.25rem;
   }
 
-  .ai-providers-section .fieldset-wrapper > .fieldset-description,
-  .ai-providers-section .fieldset-wrapper > .description,
-  .ai-providers-section .fieldset-wrapper > .form-item.description {
-    display: block;
-    width: 100%;
-    margin: 0 0 0.75rem;
-    column-span: all;
+  .ai-provider-column {
+    flex: 1 1 0;
+    min-width: 0;
   }
+}
 
-  .ai-providers-section .ai-provider-card {
-    display: block;
-    margin: 0 0 1rem;
-    break-inside: avoid;
-    -webkit-column-break-inside: avoid;
-    page-break-inside: avoid;
-  }
+/* Nothing inside a card may exceed it — long option text in the key select and
+ * long URLs in descriptions are both wider than a column on their own. */
+.ai-provider-card .form-item {
+  min-width: 0;
+}
 
-  .ai-providers-section .ai-provider-card:last-child {
-    margin-bottom: 0;
-  }
+.ai-provider-card select,
+.ai-provider-card input[type="text"],
+.ai-provider-card input[type="password"],
+.ai-provider-card input[type="url"],
+.ai-provider-card textarea {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.ai-provider-card .description,
+.ai-provider-card .ai-capability-link {
+  overflow-wrap: break-word;
+}
+
+/* Model x capability matrix and overview (admin/config/ai/capabilities). */
+.ai-capability-matrix-wrapper {
+  max-height: 60vh;
+  overflow: auto;
+}
+.ai-capability-matrix,
+.ai-capability-overview {
+  width: 100%;
+  margin: 0;
+}
+.ai-capability-matrix th.ai-capability-col,
+.ai-capability-matrix td.ai-capability-cell,
+.ai-capability-overview th.ai-capability-col,
+.ai-capability-overview td.ai-capability-cell {
+  text-align: center;
+  white-space: nowrap;
+}
+.ai-capability-matrix td.ai-capability-cell .form-item,
+.ai-capability-matrix th .form-item {
+  margin: 0;
+}
+.ai-capability-matrix td.ai-capability-model,
+.ai-capability-overview td.ai-capability-provider {
+  font-family: monospace;
+}
+.ai-capability-matrix th.ai-capability-col .ai-capability-name {
+  display: block;
+  font-weight: bold;
+}
+.ai-capability-override {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25em;
+  font-weight: normal;
+  font-size: 0.85em;
+}
+.ai-capability-status {
+  display: inline-block;
+  margin: 0.15em 0;
+  padding: 0 0.4em;
+  border-radius: 3px;
+  font-size: 0.8em;
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.ai-capability-status--auto {
+  background: var(--gin-status-bg, #e8e8e8);
+  color: var(--gin-status-text, #555);
+}
+.ai-capability-status--overridden {
+  background: var(--gin-status-warning-bg, #fdf3d8);
+  color: var(--gin-status-warning-text, #7a5c00);
+}
+/* Per-column All / None. Buttons rather than links so they are reachable by
+ * keyboard and carry a real disabled state while the column is on auto. */
+.ai-capability-bulk {
+  display: block;
+  margin-top: 0.15em;
+  font-size: 0.8em;
+  font-weight: normal;
+  white-space: nowrap;
+}
+
+/* Row control sits beside the model name, which is monospaced; the control
+ * itself should not be. */
+.ai-capability-bulk--row {
+  display: inline;
+  margin-left: 0.6em;
+  font-family: sans-serif;
+}
+
+.ai-capability-bulk__button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--gin-color-primary, #0074bd);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ai-capability-bulk__button:hover,
+.ai-capability-bulk__button:focus {
+  text-decoration: none;
+}
+
+.ai-capability-bulk__sep {
+  margin: 0 0.3em;
+  color: var(--gin-color-text-light, #767676);
+}
+
+.ai-capability-bulk.is-disabled {
+  opacity: 0.45;
+}
+
+.ai-capability-bulk.is-disabled .ai-capability-bulk__button {
+  color: inherit;
+  text-decoration: none;
+  cursor: default;
+}
+
+.ai-capability-notice {
+  margin: 0.5em 0;
+}
+.ai-capability-matrix input[disabled] + label,
+.ai-capability-matrix td.ai-capability-cell input[disabled] {
+  opacity: 0.45;
 }

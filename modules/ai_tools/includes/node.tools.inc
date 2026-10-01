@@ -30,6 +30,7 @@ function ai_tools_node_definitions() {
         ],
       ],
       'execute'  => 'ai_tools_execute_get_node_info',
+      'operation' => 'read',
       'module'   => 'ai_tools',
       'category' => 'node',
     ],
@@ -60,6 +61,7 @@ function ai_tools_node_definitions() {
         ],
       ],
       'execute'  => 'ai_tools_execute_search_nodes',
+      'operation' => 'read',
       'module'   => 'ai_tools',
       'category' => 'node',
     ],
@@ -86,6 +88,7 @@ function ai_tools_node_definitions() {
         ],
       ],
       'execute'  => 'ai_tools_execute_get_nodes_by_type',
+      'operation' => 'read',
       'module'   => 'ai_tools',
       'category' => 'node',
     ],
@@ -112,6 +115,7 @@ function ai_tools_node_definitions() {
         ],
       ],
       'execute'  => 'ai_tools_execute_get_recent_nodes',
+      'operation' => 'read',
       'module'   => 'ai_tools',
       'category' => 'node',
     ],
@@ -151,11 +155,21 @@ function ai_tools_execute_search_nodes(array $args) {
 
   $q = db_select('node', 'n')
     ->fields('n', ['nid', 'title', 'type', 'status'])
+    ->distinct()
     ->addTag('node_access')
     ->condition('n.status', 1)
-    ->condition('n.title', '%' . db_like($query_text) . '%', 'LIKE')
     ->orderBy('n.changed', 'DESC')
     ->range(0, $limit);
+
+  $search_or = db_or()
+    ->condition('n.title', '%' . db_like($query_text) . '%', 'LIKE');
+
+  if (db_table_exists('field_data_body')) {
+    $q->leftJoin('field_data_body', 'b', 'b.entity_type = :node_type AND b.entity_id = n.nid', [':node_type' => 'node']);
+    $search_or->condition('b.body_value', '%' . db_like($query_text) . '%', 'LIKE');
+  }
+
+  $q->condition($search_or);
 
   if (!empty($args['content_type'])) {
     $q->condition('n.type', $args['content_type']);

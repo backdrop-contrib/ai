@@ -1,0 +1,10 @@
+name = AI Translate
+description = Translates node content into other site languages using AI, following Backdrop's node translation sets.
+backdrop = 1.x
+type = module
+package = AI
+dependencies[] = ai
+dependencies[] = locale
+dependencies[] = translation
+configure = admin/config/ai/ai-translate
+files[] = tests/ai_translate.test

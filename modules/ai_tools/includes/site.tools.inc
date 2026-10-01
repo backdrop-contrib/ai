@@ -22,6 +22,7 @@ function ai_tools_site_definitions() {
         ],
       ],
       'execute'  => 'ai_tools_execute_get_site_info',
+      'operation' => 'read',
       'module'   => 'ai_tools',
       'category' => 'site',
       'permission' => 'access content overview',
@@ -40,6 +41,7 @@ function ai_tools_site_definitions() {
         ],
       ],
       'execute'  => 'ai_tools_execute_get_content_types',
+      'operation' => 'read',
       'module'   => 'ai_tools',
       'category' => 'site',
       'permission' => 'access content overview',
@@ -58,9 +60,10 @@ function ai_tools_site_definitions() {
         ],
       ],
       'execute'  => 'ai_tools_execute_get_site_context',
+      'operation' => 'read',
       'module'   => 'ai_tools',
       'category' => 'site',
-      'permission' => 'administer site configuration',
+      'permission' => 'access content overview',
     ],
   ];
 }

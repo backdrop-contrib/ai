@@ -3,5 +3,6 @@
   "global_enabled": true,
   "denied_entity_bundles": {},
   "denied_roles": [],
+  "excluded_fields": {},
   "log_redact_content": false
 }

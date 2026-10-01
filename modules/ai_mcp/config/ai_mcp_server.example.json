@@ -4,5 +4,6 @@
   "label": "Example MCP Server",
   "auth_key": "",
   "tools": [],
+  "allow_write_tools": false,
   "oauth_enabled": false
 }

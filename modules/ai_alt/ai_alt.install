@@ -7,11 +7,6 @@ function ai_alt_install() {
   module_load_install('ai_upgrade');
   ai_upgrade_module_install('ai_alt');
 
-  // Ensure the required module is enabled.
-  if (!module_exists('image_effects_coloractions')) {
-    module_enable(['image_effects_coloractions']);
-  }
-
   // Check if the image style already exists.
   if (!image_style_load('ai_image_alt_text')) {
     // Define the image style.
@@ -46,6 +41,10 @@ function ai_alt_install() {
 
     // Save the image style.
     image_style_save($style);
+    state_set('ai_alt_owns_image_style', TRUE);
+  }
+  else {
+    state_set('ai_alt_owns_image_style', FALSE);
   }
 }
 
@@ -53,10 +52,11 @@ function ai_alt_install() {
  * Implements hook_uninstall().
  */
 function ai_alt_uninstall() {
-  // Delete the image style on module uninstall.
-  if ($style = image_style_load('ai_image_alt_text')) {
+  // Delete only the image style created by this module.
+  if (state_get('ai_alt_owns_image_style', FALSE) && ($style = image_style_load('ai_image_alt_text'))) {
     image_style_delete($style);
   }
+  state_del('ai_alt_owns_image_style');
 }
 
 /**

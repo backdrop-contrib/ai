@@ -34,6 +34,13 @@ function ai_dblog_menu() {
     'access arguments' => ['administer site configuration'],
     'weight' => -5,
   ];
+  $items['admin/reports/event/%/ai-explain'] = [
+    'title' => 'Analyze log message',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_dblog_explain_form', 3],
+    'access arguments' => ['access site reports'],
+    'type' => MENU_CALLBACK,
+  ];
 
   return $items;
 }
@@ -49,14 +56,18 @@ function ai_dblog_settings_form($form, &$form_state) {
   $levels = watchdog_severity_levels();
   $options = [];
   foreach ($levels as $key => $label) {
-    $options[$label] = $label; // Use the name of the level as both key and label.
+    $options[$key] = $label;
   }
 
   // Prepare default values for the levels.
   $selected_levels = $config['levels'] ?? [];
   $default_levels = [];
   foreach ($options as $key => $label) {
-    $default_levels[$key] = in_array($key, $selected_levels) ? $key : 0;
+    $selected = in_array((string) $key, array_map('strval', $selected_levels), TRUE);
+    if (!$selected && in_array($label, $selected_levels, TRUE)) {
+      $selected = TRUE;
+    }
+    $default_levels[$key] = $selected ? $key : 0;
   }
 
   $form['levels'] = [
@@ -110,8 +121,14 @@ function ai_dblog_settings_form_submit($form, &$form_state) {
   // Get the selected levels by filtering the form values.
   $selected_levels = array_filter($form_state['values']['levels']);
 
-  // Save the selected levels as names.
-  config_set('ai_dblog.settings', 'levels', array_keys($selected_levels));
+  // Persist stable severity integers rather than translated labels.
+  $levels = [];
+  foreach (array_keys($selected_levels) as $level) {
+    if (is_numeric($level)) {
+      $levels[] = (int) $level;
+    }
+  }
+  config_set('ai_dblog.settings', 'levels', $levels);
 
   // Save the selected model.
   config_set('ai_dblog.settings', 'model', $form_state['values']['model']);
@@ -130,6 +147,63 @@ function ai_dblog_menu_alter(&$items) {
 }
 
 /**
+ * Return whether the configured severity should be sent to an AI provider.
+ */
+function ai_dblog_should_analyze($severity) {
+  $config = config_get('ai_dblog.settings');
+  $selected = isset($config['levels']) && is_array($config['levels']) ? $config['levels'] : [];
+  $severity = (int) $severity;
+  $numeric_levels = array_filter($selected, 'is_numeric');
+  if (in_array($severity, array_map('intval', $numeric_levels), TRUE)) {
+    return TRUE;
+  }
+
+  // Support the original label-based configuration until it is saved again.
+  $labels = watchdog_severity_levels();
+  return isset($labels[$severity]) && in_array($labels[$severity], $selected, TRUE);
+}
+
+/**
+ * Form for explicitly requesting an AI explanation of one log entry.
+ */
+function ai_dblog_explain_form($form, &$form_state, $id) {
+  $dblog = db_query('SELECT w.*, u.name, w.uid FROM {watchdog} w LEFT JOIN {users} u ON w.uid = u.uid WHERE w.wid = :id', [':id' => $id])->fetchObject();
+  if (!$dblog) {
+    backdrop_not_found();
+  }
+  if (!ai_dblog_should_analyze($dblog->severity)) {
+    backdrop_set_message(t('AI analysis is not enabled for this log severity.'), 'warning');
+    backdrop_goto('admin/reports/event/' . (int) $id);
+  }
+
+  $form['wid'] = ['#type' => 'value', '#value' => (int) $id];
+  return confirm_form(
+    $form,
+    t('Analyze log message with AI?'),
+    'admin/reports/event/' . (int) $id,
+    t('The formatted log message will be sent to the configured AI provider.'),
+    t('Analyze'),
+    t('Cancel')
+  );
+}
+
+/**
+ * Submit handler for the explicit AI analysis action.
+ */
+function ai_dblog_explain_form_submit($form, &$form_state) {
+  $id = (int) $form_state['values']['wid'];
+  $dblog = db_query('SELECT w.*, u.name, w.uid FROM {watchdog} w LEFT JOIN {users} u ON w.uid = u.uid WHERE w.wid = :id', [':id' => $id])->fetchObject();
+  if ($dblog && ai_dblog_should_analyze($dblog->severity)) {
+    (new AIDbLog())->processExplanation($dblog);
+    backdrop_set_message(t('AI explanation generated.'));
+  }
+  else {
+    backdrop_set_message(t('The log entry could not be analyzed.'), 'warning');
+  }
+  $form_state['redirect'] = 'admin/reports/event/' . $id;
+}
+
+/**
  * Backward-compatibility wrapper for stale menu router callbacks.
  *
  * During openai_dblog -> ai_dblog migration, a cached router entry can still
@@ -144,9 +218,6 @@ if (!module_exists('openai_dblog') && !function_exists('openai_dblog_event_detai
 }
 
 function ai_dblog_event_details($id) {
-  // No need for require_once if autoload is set up correctly
-  // require_once BACKDROP_ROOT . '/' . drupal_get_path('module', 'ai_dblog') . '/includes/AIDbLog.inc';
-
   $severity = watchdog_severity_levels();
   $result = db_query('SELECT w.*, u.name, w.uid FROM {watchdog} w LEFT JOIN {users} u ON w.uid = u.uid WHERE w.wid = :id', [':id' => $id])->fetchObject();
   if ($dblog = $result) {
@@ -198,17 +269,16 @@ function ai_dblog_event_details($id) {
       ],
     ];
 
-    // Instantiate the AIDbLog class
+    // AI analysis is cache-first and explicitly requested by the viewer.
     $ai_dblog = new AIDbLog();
-    $explanation = $ai_dblog->processExplanation($dblog);
-
-    // Add the AI explanation row
+    $explanation = $ai_dblog->getCachedExplanation($dblog);
+    $analysis = $explanation ?: t('No AI explanation has been generated for this log entry.');
+    if (!$explanation && ai_dblog_should_analyze($dblog->severity)) {
+      $analysis .= ' ' . l(t('Analyze with AI'), 'admin/reports/event/' . (int) $id . '/ai-explain');
+    }
     $rows[] = [
-      [
-        'data' => t('Explanation<br><span style="font-size: smaller;">powered by <a href="@link">AI</a></span>', ['@link' => 'https://ai.com']),
-        'header' => TRUE,
-      ],
-      ['data' => $explanation],
+      ['data' => t('Explanation'), 'header' => TRUE],
+      ['data' => $analysis],
     ];
 
     $build['dblog_table'] = [

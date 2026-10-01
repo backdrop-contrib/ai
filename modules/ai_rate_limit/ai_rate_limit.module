@@ -42,8 +42,21 @@ function ai_rate_limit_config_info() {
 }
 
 // ---------------------------------------------------------------------------
-// Menu / admin
+// Menu / admin / permissions
 // ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_permission().
+ */
+function ai_rate_limit_permission() {
+  return [
+    'bypass ai rate limit' => [
+      'title' => t('Bypass AI rate limits'),
+      'description' => t('Exempts the user from AI rate limits and quota restrictions.'),
+      'restrict access' => TRUE,
+    ],
+  ];
+}
 
 /**
  * Implements hook_menu().
@@ -80,6 +93,64 @@ function ai_rate_limit_settings_form($form, &$form_state) {
     '#default_value' => $config->get('enabled'),
   ];
 
+  // Current usage display when rate limiting is active.
+  if ($config->get('enabled') && db_table_exists('ai_rate_limit_events')) {
+    $status = ai_rate_limit_status(TRUE);
+    $rows = [];
+
+    if (isset($status['global']) && $status['global']['limit'] > 0) {
+      $g = $status['global'];
+      $pct = round(($g['count'] / max(1, $g['limit'])) * 100);
+      $rows[] = [
+        '<strong>' . t('Global (All Providers)') . '</strong>',
+        t('@count / @limit requests (@pct%)', ['@count' => $g['count'], '@limit' => $g['limit'], '@pct' => $pct]),
+        t('@window seconds', ['@window' => $g['window']]),
+      ];
+    }
+
+    if (isset($status['user']) && $status['user']['limit'] > 0) {
+      $u = $status['user'];
+      $pct = round(($u['count'] / max(1, $u['limit'])) * 100);
+      $rows[] = [
+        t('Current User (UID @uid)', ['@uid' => $GLOBALS['user']->uid ?? 0]),
+        t('@count / @limit requests (@pct%)', ['@count' => $u['count'], '@limit' => $u['limit'], '@pct' => $pct]),
+        t('@window seconds', ['@window' => $u['window']]),
+      ];
+    }
+
+    foreach ($status as $key => $info) {
+      if ($key === 'global' || $key === 'user') {
+        continue;
+      }
+      if (!empty($info['limit'])) {
+        $pct = round(($info['count'] / max(1, $info['limit'])) * 100);
+        $providers = _ai_rate_limit_get_providers();
+        $label = $providers[$key] ?? $key;
+        $rows[] = [
+          check_plain($label),
+          t('@count / @limit requests (@pct%)', ['@count' => $info['count'], '@limit' => $info['limit'], '@pct' => $pct]),
+          t('@window seconds', ['@window' => $info['window']]),
+        ];
+      }
+    }
+
+    if (!empty($rows)) {
+      $form['current_usage'] = [
+        '#type'        => 'fieldset',
+        '#title'       => t('Current usage (active sliding windows)'),
+        '#collapsible' => FALSE,
+        '#states'      => [
+          'visible' => [':input[name="enabled"]' => ['checked' => TRUE]],
+        ],
+      ];
+      $form['current_usage']['table'] = [
+        '#theme'  => 'table',
+        '#header' => [t('Scope'), t('Usage'), t('Window')],
+        '#rows'   => $rows,
+      ];
+    }
+  }
+
   $form['global'] = [
     '#type'  => 'fieldset',
     '#title' => t('Global limit'),
@@ -104,6 +175,36 @@ function ai_rate_limit_settings_form($form, &$form_state) {
     '#title'         => t('Window'),
     '#min'           => 1,
     '#default_value' => (int) ($config->get('global_window') ?: $default_window),
+    '#field_suffix'  => t('seconds'),
+    '#size'          => 6,
+    '#description'   => t('Default: @window seconds.', ['@window' => $default_window]),
+  ];
+
+  // Per-user limit.
+  $form['user'] = [
+    '#type'  => 'fieldset',
+    '#title' => t('Per-user limit'),
+    '#description' => t('Optional limit applied to individual users (and anonymous visitors) to prevent a single actor from exhausting the site quota. Set limit to 0 to disable.'),
+    '#states' => [
+      'visible' => [':input[name="enabled"]' => ['checked' => TRUE]],
+    ],
+  ];
+
+  $form['user']['user_limit'] = [
+    '#type'          => 'number',
+    '#title'         => t('Request limit'),
+    '#min'           => 0,
+    '#default_value' => (int) ($config->get('user_limit') ?: 0),
+    '#field_suffix'  => t('requests (0 = disabled)'),
+    '#size'          => 6,
+    '#description'   => t('Maximum requests allowed per individual user account within the window. Set to 0 to disable.'),
+  ];
+
+  $form['user']['user_window'] = [
+    '#type'          => 'number',
+    '#title'         => t('Window'),
+    '#min'           => 1,
+    '#default_value' => (int) ($config->get('user_window') ?: $default_window),
     '#field_suffix'  => t('seconds'),
     '#size'          => 6,
     '#description'   => t('Default: @window seconds.', ['@window' => $default_window]),
@@ -180,6 +281,8 @@ function ai_rate_limit_settings_form_submit($form, &$form_state) {
   $config->set('enabled', (bool) $form_state['values']['enabled']);
   $config->set('global_limit', max(1, (int) $form_state['values']['global_limit']));
   $config->set('global_window', max(1, (int) $form_state['values']['global_window']));
+  $config->set('user_limit', max(0, (int) $form_state['values']['user_limit']));
+  $config->set('user_window', max(1, (int) $form_state['values']['user_window']));
 
   $provider_limits = [];
   if (!empty($form_state['values']['providers']) && is_array($form_state['values']['providers'])) {
@@ -213,6 +316,7 @@ function ai_rate_limit_cron() {
   // Find the longest window across all configured limits.
   $max_window = max(
     (int) ($config->get('global_window') ?: 60),
+    (int) ($config->get('user_window') ?: 60),
     60
   );
   $provider_limits = $config->get('provider_limits') ?: [];
@@ -221,7 +325,7 @@ function ai_rate_limit_cron() {
   }
 
   // Keep a 2× safety margin so borderline rows are not deleted prematurely.
-  $cutoff = REQUEST_TIME - ($max_window * 2);
+  $cutoff = time() - ($max_window * 2);
   db_delete('ai_rate_limit_events')
     ->condition('timestamp', $cutoff, '<')
     ->execute();
@@ -248,6 +352,11 @@ function ai_rate_limit_cron() {
  *   FALSE if the rate limit is exceeded — the caller should throw or return.
  */
 function ai_rate_limit_check($provider, $operation) {
+  global $user;
+  if (!empty($user->uid) && user_access('bypass ai rate limit', $user)) {
+    return TRUE;
+  }
+
   $config = config('ai_rate_limit.settings');
 
   if (!$config->get('enabled')) {
@@ -255,11 +364,12 @@ function ai_rate_limit_check($provider, $operation) {
   }
 
   $global_limit = (int) $config->get('global_limit');
+  $user_limit = (int) $config->get('user_limit');
   $provider_limits = $config->get('provider_limits') ?: [];
   $provider_limit_configured = !empty($provider_limits[$provider]) && !empty($provider_limits[$provider]['limit']);
 
-  // If no global or provider-specific limits apply, do not write tracking rows.
-  if ($global_limit <= 0 && !$provider_limit_configured) {
+  // If no global, user, or provider-specific limits apply, do not write tracking rows.
+  if ($global_limit <= 0 && $user_limit <= 0 && !$provider_limit_configured) {
     return TRUE;
   }
 
@@ -273,16 +383,25 @@ function ai_rate_limit_check($provider, $operation) {
   }
 
   try {
+    $now = time();
+
     // 1. Global limit (all providers combined).
     $global_window = (int) ($config->get('global_window') ?: 60);
     if ($global_limit > 0) {
-      $since = REQUEST_TIME - $global_window;
+      $since = $now - $global_window;
       $count = db_query(
         'SELECT COUNT(*) FROM {ai_rate_limit_events} WHERE timestamp > :since',
         [':since' => $since]
       )->fetchField();
 
       if ((int) $count >= $global_limit) {
+        $oldest = db_query(
+          'SELECT MIN(timestamp) FROM {ai_rate_limit_events} WHERE timestamp > :since',
+          [':since' => $since]
+        )->fetchField();
+        $retry_after = max(1, ($oldest ? (int) $oldest + $global_window : $now + $global_window) - $now);
+        _ai_rate_limit_record_violation('global', $count, $global_limit, $global_window, $retry_after, $provider, $operation);
+
         watchdog('ai_rate_limit', 'Global rate limit exceeded: @count/@limit calls in @window s. Provider: @provider, Operation: @op.', [
           '@count'    => $count,
           '@limit'    => $global_limit,
@@ -299,7 +418,7 @@ function ai_rate_limit_check($provider, $operation) {
       $pl     = $provider_limits[$provider];
       $limit  = (int) $pl['limit'];
       $window = (int) ($pl['window'] ?? 60);
-      $since  = REQUEST_TIME - $window;
+      $since  = $now - $window;
 
       $count = db_query(
         'SELECT COUNT(*) FROM {ai_rate_limit_events} WHERE provider = :provider AND timestamp > :since',
@@ -307,6 +426,13 @@ function ai_rate_limit_check($provider, $operation) {
       )->fetchField();
 
       if ((int) $count >= $limit) {
+        $oldest = db_query(
+          'SELECT MIN(timestamp) FROM {ai_rate_limit_events} WHERE provider = :provider AND timestamp > :since',
+          [':provider' => $provider, ':since' => $since]
+        )->fetchField();
+        $retry_after = max(1, ($oldest ? (int) $oldest + $window : $now + $window) - $now);
+        _ai_rate_limit_record_violation('provider', $count, $limit, $window, $retry_after, $provider, $operation);
+
         watchdog('ai_rate_limit', 'Provider rate limit exceeded for @provider: @count/@limit calls in @window s. Operation: @op.', [
           '@provider' => $provider,
           '@count'    => $count,
@@ -318,15 +444,45 @@ function ai_rate_limit_check($provider, $operation) {
       }
     }
 
+    // 3. Per-user limit.
+    if ($user_limit > 0) {
+      $user_window = (int) ($config->get('user_window') ?: 60);
+      $user_since  = $now - $user_window;
+      $uid         = isset($user->uid) ? (int) $user->uid : 0;
+
+      $count = db_query(
+        'SELECT COUNT(*) FROM {ai_rate_limit_events} WHERE uid = :uid AND timestamp > :since',
+        [':uid' => $uid, ':since' => $user_since]
+      )->fetchField();
+
+      if ((int) $count >= $user_limit) {
+        $oldest = db_query(
+          'SELECT MIN(timestamp) FROM {ai_rate_limit_events} WHERE uid = :uid AND timestamp > :since',
+          [':uid' => $uid, ':since' => $user_since]
+        )->fetchField();
+        $retry_after = max(1, ($oldest ? (int) $oldest + $user_window : $now + $user_window) - $now);
+        _ai_rate_limit_record_violation('user', $count, $user_limit, $user_window, $retry_after, $provider, $operation);
+
+        watchdog('ai_rate_limit', 'Per-user rate limit exceeded for UID @uid: @count/@limit calls in @window s. Provider: @provider, Operation: @op.', [
+          '@uid'      => $uid,
+          '@count'    => $count,
+          '@limit'    => $user_limit,
+          '@window'   => $user_window,
+          '@provider' => $provider,
+          '@op'       => $operation,
+        ], WATCHDOG_WARNING);
+        return FALSE;
+      }
+    }
+
     // Allowed — register the event while still holding the lock so
     // concurrent workers cannot overshoot the configured limit.
-    global $user;
     db_insert('ai_rate_limit_events')
       ->fields([
         'provider'  => $provider,
         'operation' => $operation,
         'uid'       => isset($user->uid) ? (int) $user->uid : 0,
-        'timestamp' => REQUEST_TIME,
+        'timestamp' => $now,
       ])
       ->execute();
   }
@@ -338,24 +494,89 @@ function ai_rate_limit_check($provider, $operation) {
 }
 
 /**
- * Returns current call counts for all configured providers within their windows.
+ * Records the most recent rate limit violation in static memory.
+ */
+function _ai_rate_limit_record_violation($type, $count, $limit, $window, $retry_after, $provider, $operation) {
+  $info = &backdrop_static('ai_rate_limit_last_violation', []);
+  $info = [
+    'type'        => $type,
+    'count'       => (int) $count,
+    'limit'       => (int) $limit,
+    'window'      => (int) $window,
+    'retry_after' => max(1, (int) $retry_after),
+    'provider'    => $provider,
+    'operation'   => $operation,
+  ];
+}
+
+/**
+ * Returns the most recent rate limit violation details, if any.
+ *
+ * @return array
+ *   Associative array with keys: type, count, limit, window, retry_after,
+ *   provider, operation. Empty array if no violation occurred.
+ */
+function ai_rate_limit_get_last_violation() {
+  return backdrop_static('ai_rate_limit_last_violation', []);
+}
+
+/**
+ * Returns current call counts for configured scopes within their active windows.
  *
  * Useful for status pages and admin dashboards.
  *
+ * @param bool $include_global
+ *   Whether to include global and per-user limits in the returned status.
+ *
  * @return array
- *   Keyed by provider, each value is an array with keys:
+ *   Keyed by scope ('global', 'user', or provider ID), each value is an array with keys:
  *   - count: calls in the current window
  *   - limit: configured limit (0 = none)
  *   - window: window in seconds
  */
-function ai_rate_limit_status() {
+function ai_rate_limit_status($include_global = TRUE) {
   $config = config('ai_rate_limit.settings');
-  $provider_limits = $config->get('provider_limits') ?: [];
+  $now = time();
   $status = [];
 
+  if ($include_global) {
+    $global_limit = (int) $config->get('global_limit');
+    $global_window = (int) ($config->get('global_window') ?: 60);
+    $since = $now - $global_window;
+    $count = db_query(
+      'SELECT COUNT(*) FROM {ai_rate_limit_events} WHERE timestamp > :since',
+      [':since' => $since]
+    )->fetchField();
+
+    $status['global'] = [
+      'count'  => (int) $count,
+      'limit'  => $global_limit,
+      'window' => $global_window,
+    ];
+
+    $user_limit = (int) $config->get('user_limit');
+    if ($user_limit > 0) {
+      $user_window = (int) ($config->get('user_window') ?: 60);
+      $user_since = $now - $user_window;
+      global $user;
+      $uid = isset($user->uid) ? (int) $user->uid : 0;
+      $count = db_query(
+        'SELECT COUNT(*) FROM {ai_rate_limit_events} WHERE uid = :uid AND timestamp > :since',
+        [':uid' => $uid, ':since' => $user_since]
+      )->fetchField();
+
+      $status['user'] = [
+        'count'  => (int) $count,
+        'limit'  => $user_limit,
+        'window' => $user_window,
+      ];
+    }
+  }
+
+  $provider_limits = $config->get('provider_limits') ?: [];
   foreach ($provider_limits as $provider => $pl) {
     $window = (int) ($pl['window'] ?? 60);
-    $since  = REQUEST_TIME - $window;
+    $since  = $now - $window;
     $count  = db_query(
       'SELECT COUNT(*) FROM {ai_rate_limit_events} WHERE provider = :provider AND timestamp > :since',
       [':provider' => $provider, ':since' => $since]

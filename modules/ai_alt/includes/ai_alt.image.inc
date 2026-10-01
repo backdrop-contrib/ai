@@ -9,14 +9,14 @@
  * Convert an SVG image to PNG for downstream processing.
  */
 function _ai_alt_convert_svg_to_png($svg_uri) {
-  if (file_stream_wrapper_valid_scheme(file_uri_scheme($svg_uri))) {
-    $svg_real_path = backdrop_realpath($svg_uri);
-  }
-  else {
-    $svg_real_path = $svg_uri;
+  $scheme = file_uri_scheme($svg_uri);
+  if (!$scheme || !file_stream_wrapper_valid_scheme($scheme) || !in_array($scheme, array_keys(file_get_stream_wrappers(STREAM_WRAPPERS_LOCAL)), TRUE)) {
+    watchdog('ai_alt', 'SVG conversion requires a local file URI: @uri', ['@uri' => $svg_uri]);
+    return FALSE;
   }
 
-  if (!$svg_real_path || (!file_exists($svg_real_path) && file_uri_scheme($svg_uri) !== 's3')) {
+  $svg_real_path = backdrop_realpath($svg_uri);
+  if (!$svg_real_path || !is_readable($svg_real_path)) {
     watchdog('ai_alt', 'Could not resolve real path or file does not exist: @uri', ['@uri' => $svg_uri]);
     return FALSE;
   }
@@ -24,12 +24,20 @@ function _ai_alt_convert_svg_to_png($svg_uri) {
   $output_uri = preg_replace('/\.svg$/i', '.png', $svg_uri);
   $output_real_path = preg_replace('/\.svg$/i', '.png', $svg_real_path);
 
-  if (!function_exists('shell_exec')) {
-    watchdog('ai_alt', 'shell_exec() is not available; cannot convert SVG to PNG.');
+  if (!function_exists('proc_open')) {
+    watchdog('ai_alt', 'proc_open() is not available; cannot convert SVG to PNG.');
     return FALSE;
   }
 
-  if (!shell_exec('which convert')) {
+  $convert_path = '';
+  foreach (explode(PATH_SEPARATOR, (string) getenv('PATH')) as $path) {
+    $candidate = rtrim($path, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'convert';
+    if (is_executable($candidate)) {
+      $convert_path = $candidate;
+      break;
+    }
+  }
+  if ($convert_path === '') {
     watchdog('ai_alt', 'ImageMagick `convert` command not found.');
     return FALSE;
   }
@@ -37,7 +45,21 @@ function _ai_alt_convert_svg_to_png($svg_uri) {
   // Refuse conversion if ImageMagick's policy does not restrict SVG delegates,
   // which could allow untrusted SVG content to fetch external resources or
   // invoke dangerous delegates (e.g. Ghostscript, HTTPS, MVG).
-  $policy_output = shell_exec('convert -list policy 2>/dev/null');
+  $policy_descriptors = [
+    0 => ['pipe', 'r'],
+    1 => ['pipe', 'w'],
+    2 => ['pipe', 'w'],
+  ];
+  $policy_process = proc_open([$convert_path, '-list', 'policy'], $policy_descriptors, $policy_pipes);
+  $policy_output = '';
+  if (is_resource($policy_process)) {
+    fclose($policy_pipes[0]);
+    $policy_output = stream_get_contents($policy_pipes[1]);
+    stream_get_contents($policy_pipes[2]);
+    fclose($policy_pipes[1]);
+    fclose($policy_pipes[2]);
+    proc_close($policy_process);
+  }
   $svg_blocked = $policy_output && (
     strpos($policy_output, 'pattern: SVG') !== FALSE ||
     strpos($policy_output, 'pattern: HTTPS') !== FALSE ||
@@ -56,20 +78,81 @@ function _ai_alt_convert_svg_to_png($svg_uri) {
     return FALSE;
   }
   $svg_content = preg_replace('/<script\b[^>]*>.*?<\/script>/is', '', $svg_content);
-  $svg_content = preg_replace('/\b(xlink:href|href)\s*=\s*(["\'])https?:\/\/[^\2]*?\2/i', '', $svg_content);
-  $sanitized_path = $svg_real_path . '.sanitized.svg';
+  $svg_content = preg_replace_callback('/\b(xlink:href|href)\s*=\s*(["\'])(.*?)\2/is', function ($matches) {
+    return preg_match('/^(?:https?|file|ftp|data):/i', trim($matches[3])) ? '' : $matches[0];
+  }, $svg_content);
+  $temporary_directory = dirname($svg_real_path);
+  $sanitized_path = tempnam($temporary_directory, 'ai-alt-svg-');
+  $temporary_output = tempnam($temporary_directory, 'ai-alt-png-');
+  if (!$sanitized_path || !$temporary_output) {
+    if ($sanitized_path) {
+      @unlink($sanitized_path);
+    }
+    if ($temporary_output) {
+      @unlink($temporary_output);
+    }
+    watchdog('ai_alt', 'Could not create temporary files for SVG conversion.');
+    return FALSE;
+  }
   if (file_put_contents($sanitized_path, $svg_content) === FALSE) {
     watchdog('ai_alt', 'Could not write sanitized SVG: @path', ['@path' => $sanitized_path]);
+    @unlink($sanitized_path);
+    @unlink($temporary_output);
     return FALSE;
   }
 
-  $command = 'convert ' . escapeshellarg($sanitized_path) . ' PNG32:' . escapeshellarg($output_real_path);
-  watchdog('ai_alt', 'Running command: @command', ['@command' => $command]);
-  shell_exec($command);
+  $descriptors = [
+    0 => ['pipe', 'r'],
+    1 => ['pipe', 'w'],
+    2 => ['pipe', 'w'],
+  ];
+  $process = proc_open([$convert_path, $sanitized_path, 'PNG32:' . $temporary_output], $descriptors, $pipes);
+  if (!is_resource($process)) {
+    @unlink($sanitized_path);
+    @unlink($temporary_output);
+    watchdog('ai_alt', 'Could not start ImageMagick for SVG conversion.');
+    return FALSE;
+  }
+
+  fclose($pipes[0]);
+  stream_set_blocking($pipes[1], FALSE);
+  stream_set_blocking($pipes[2], FALSE);
+  $started = microtime(TRUE);
+  $timed_out = FALSE;
+  do {
+    $status = proc_get_status($process);
+    if (!$status['running']) {
+      break;
+    }
+    if (microtime(TRUE) - $started > 30) {
+      $timed_out = TRUE;
+      proc_terminate($process, 9);
+      break;
+    }
+    usleep(100000);
+  } while (TRUE);
+
+  $stderr = stream_get_contents($pipes[2]);
+  fclose($pipes[1]);
+  fclose($pipes[2]);
+  $exit_code = proc_close($process);
+  if ($exit_code === -1 && isset($status['exitcode']) && $status['exitcode'] >= 0) {
+    $exit_code = $status['exitcode'];
+  }
   @unlink($sanitized_path);
 
-  if (!file_exists($output_real_path)) {
-    watchdog('ai_alt', 'Failed to convert SVG to PNG: @uri', ['@uri' => $output_uri]);
+  if ($timed_out || $exit_code !== 0 || !file_exists($temporary_output) || filesize($temporary_output) === 0 || !image_get_info($temporary_output)) {
+    @unlink($temporary_output);
+    watchdog('ai_alt', 'Failed to convert SVG to PNG: @uri (@error)', [
+      '@uri' => $output_uri,
+      '@error' => $timed_out ? 'conversion timed out' : trim($stderr),
+    ]);
+    return FALSE;
+  }
+
+  if (!rename($temporary_output, $output_real_path)) {
+    @unlink($temporary_output);
+    watchdog('ai_alt', 'Could not publish converted SVG PNG: @uri', ['@uri' => $output_uri]);
     return FALSE;
   }
 

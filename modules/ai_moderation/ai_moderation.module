@@ -558,6 +558,11 @@ function ai_moderation_is_text_field($entity_type, $bundle, $field_name) {
  * _ai_moderation_store_builtin_entity_verdict() after the save completes.
  */
 function ai_moderation_node_presave($node) {
+  // If a moderator is editing and publishing an existing node,
+  // auto-resolve any outstanding quarantined/blocked verdict for this node.
+  if (ai_moderation_user_can_bypass() && !empty($node->nid) && !empty($node->status) && (int) $node->status === NODE_PUBLISHED) {
+    _ai_moderation_resolve_quarantine('node', $node->nid);
+  }
   if (!empty($node->_ai_moderation_pending_verdict)) {
     if (!_ai_moderation_pending_verdict_matches_entity('node', $node)) {
       unset($node->_ai_moderation_pending_verdict);
@@ -671,6 +676,11 @@ function ai_moderation_node_update($node) {
  * _ai_moderation_store_builtin_entity_verdict() after the save completes.
  */
 function ai_moderation_comment_presave($comment) {
+  // If a moderator is editing and publishing an existing comment,
+  // auto-resolve any outstanding quarantined/blocked verdict for this comment.
+  if (ai_moderation_user_can_bypass() && !empty($comment->cid) && !empty($comment->status) && (int) $comment->status === COMMENT_PUBLISHED) {
+    _ai_moderation_resolve_quarantine('comment', $comment->cid);
+  }
   if (!empty($comment->_ai_moderation_pending_verdict)) {
     if (!_ai_moderation_pending_verdict_matches_entity('comment', $comment)) {
       unset($comment->_ai_moderation_pending_verdict);
@@ -708,7 +718,10 @@ function ai_moderation_comment_update($comment) {
  * form submit handler has started saving and cannot reliably stop that save.
  */
 function ai_moderation_form_alter(&$form, &$form_state, $form_id) {
-  if (!empty($form['#node']) && substr($form_id, -10) === '_node_form' && !empty($form['actions']['submit'])) {
+  // Only attach to actual node edit/add forms. Other forms, such as the
+  // AI Translate node tab, may expose a #node for context without placing
+  // the node in $form_state['node'].
+  if (!empty($form['#node']) && !empty($form_state['node']) && is_object($form_state['node']) && substr($form_id, -10) === '_node_form' && !empty($form['actions']['submit'])) {
     $form['actions']['submit']['#validate'] = array_merge(
       !empty($form['actions']['submit']['#validate']) ? $form['actions']['submit']['#validate'] : (!empty($form['#validate']) ? $form['#validate'] : []),
       ['ai_moderation_node_form_validate']
@@ -731,6 +744,9 @@ function ai_moderation_node_form_validate($form, &$form_state) {
     return;
   }
   if (form_get_errors()) {
+    return;
+  }
+  if (empty($form_state['node']) || !is_object($form_state['node'])) {
     return;
   }
   $bypass = ai_moderation_user_can_bypass();
@@ -941,6 +957,39 @@ function _ai_moderation_store_builtin_entity_verdict($entity, $entity_type, $ent
   unset($entity->_ai_moderation_pending_verdict);
   unset($entity->_ai_moderation_pending_context);
   return $verdict;
+}
+
+/**
+ * Auto-resolve outstanding verdicts for an entity a moderator publishes.
+ */
+function _ai_moderation_resolve_quarantine($entity_type, $entity_id) {
+  if (empty($entity_id) || !db_table_exists('ai_moderation_verdicts')) {
+    return;
+  }
+  $vids = db_select('ai_moderation_verdicts', 'v')
+    ->fields('v', ['vid'])
+    ->condition('entity_type', $entity_type)
+    ->condition('entity_id', (string) $entity_id)
+    ->condition('verdict', ['allow', 'resolved'], 'NOT IN')
+    ->execute()
+    ->fetchCol();
+
+  if (!empty($vids)) {
+    db_update('ai_moderation_verdicts')
+      ->fields([
+        'verdict' => 'allow',
+        'action' => 'resolved',
+        'changed' => REQUEST_TIME,
+      ])
+      ->condition('vid', $vids, 'IN')
+      ->execute();
+
+    watchdog('ai_moderation', 'Auto-resolved @count moderation verdict(s) for @type @id upon moderator publication.', [
+      '@count' => count($vids),
+      '@type' => $entity_type,
+      '@id' => $entity_id,
+    ], WATCHDOG_INFO);
+  }
 }
 
 /**

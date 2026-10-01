@@ -21,6 +21,15 @@ function ai_upgrade_menu() {
     'type' => MENU_NORMAL_ITEM,
   ];
 
+  $items['admin/config/ai/upgrade/install-missing'] = [
+    'title' => 'Install missing AI modules',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_upgrade_install_missing_form'],
+    'access arguments' => ['administer modules'],
+    'file' => 'ai_upgrade.pages.inc',
+    'type' => MENU_CALLBACK,
+  ];
+
   return $items;
 }
 
@@ -156,15 +165,26 @@ function ai_upgrade_find_enabled_dependents(array $legacy_modules, array $ignore
 function ai_upgrade_bundle_map() {
   return [
     'ai_alt' => 'ai',
+    'ai_alt_bulk' => 'ai',
+    'ai_alt_tools' => 'ai',
     'ai_ckeditor' => 'ai',
     'ai_content' => 'ai',
     'ai_dblog' => 'ai',
+    'ai_devel' => 'ai',
+    'ai_explorer' => 'ai',
     'ai_guardrails' => 'ai',
     'ai_mcp' => 'ai',
     'ai_moderation' => 'ai',
     'ai_privacy' => 'ai',
     'ai_rate_limit' => 'ai',
     'ai_site_context' => 'ai',
+    'ai_tools' => 'ai',
+    'ai_webform_tools' => 'ai',
+    'ai_search_explorer' => 'ai_search',
+    'ai_search_header' => 'ai_search',
+    'ai_search_search_block' => 'ai_search',
+    'ai_search_search_block_log' => 'ai_search',
+    'ai_search_simple_chatbot' => 'ai_search',
   ];
 }
 
@@ -195,6 +215,91 @@ function ai_upgrade_find_missing_modules(array $modules) {
   }
 
   return $missing;
+}
+
+/**
+ * Return the project name that provides a replacement module.
+ *
+ * Most standalone replacement modules use their machine name as their
+ * project name. Bundled modules must instead be installed with their parent
+ * project, such as the AI project itself.
+ */
+function ai_upgrade_project_name($module) {
+  $registry = ai_upgrade_registry();
+  if (empty($registry[$module])) {
+    return $module;
+  }
+
+  $info = $registry[$module];
+  $actual_module = !empty($info['module']) ? $info['module'] : $module;
+  $bundles = ai_upgrade_bundle_map();
+  if (!empty($bundles[$actual_module])) {
+    return $bundles[$actual_module];
+  }
+
+  return !empty($info['project']) ? $info['project'] : $actual_module;
+}
+
+/**
+ * Return missing replacement projects, keyed by project machine name.
+ */
+function ai_upgrade_get_missing_projects(array $modules) {
+  $missing_modules = ai_upgrade_find_missing_modules($modules);
+  $projects = [];
+  foreach ($missing_modules as $module => $actual_module) {
+    $projects[ai_upgrade_project_name($module)] = [
+      'module' => $actual_module,
+      'registry_key' => $module,
+    ];
+  }
+  return $projects;
+}
+
+/**
+ * Queue missing replacement projects in Backdrop's native installer.
+ *
+ * The installer owns release selection, archive verification, file transfer,
+ * authorization, dependency installation, and module enabling. This helper
+ * only resolves and queues projects; it never writes module files directly.
+ *
+ * @return array
+ *   Queue results with 'queued' and 'errors' lists.
+ */
+function ai_upgrade_queue_missing_projects(array $modules) {
+  $result = ['queued' => [], 'errors' => []];
+  $projects = ai_upgrade_get_missing_projects($modules);
+  if (empty($projects)) {
+    return $result;
+  }
+
+  if (!module_exists('installer')) {
+    $result['errors'][] = t('Backdrop Installer is not enabled. Install missing AI modules manually, then rerun the upgrade.');
+    return $result;
+  }
+
+  module_load_include('inc', 'installer', 'installer.browser');
+  $version = explode('.', BACKDROP_CORE_COMPATIBILITY);
+  $available = installer_browser_fetch_results([
+    'version' => $version[0],
+    'type' => 'module',
+    'page' => 0,
+    'items_per_page' => 999,
+  ]);
+  $available_projects = !empty($available['projects']) ? $available['projects'] : [];
+
+  foreach ($projects as $project_name => $project_info) {
+    if (empty($available_projects[$project_name])) {
+      $result['errors'][] = t('@project was not found in the Backdrop project installer.', [
+        '@project' => $project_name,
+      ]);
+      continue;
+    }
+
+    installer_browser_install_queue_add($available_projects[$project_name]);
+    $result['queued'][] = $project_name;
+  }
+
+  return $result;
 }
 
 /**
@@ -299,24 +404,24 @@ function ai_upgrade_execute(array $modules) {
 
       $actual_module = !empty($info['module']) ? $info['module'] : $module;
       $deprecated = !empty($info['deprecated']);
-      ai_upgrade_install_result($module, NULL, TRUE);
 
       if (!$deprecated && !module_exists($actual_module)) {
         module_enable([$actual_module]);
-        // Run migration/disable explicitly — modules without a .install hook
-        // (or whose actual_module differs from the registry key) won't have
-        // called ai_upgrade_module_install() themselves.
+      }
+
+      // Enabling a replacement can invoke its hook_install() and perform the
+      // migration while the runtime flag is active. Reuse that result rather
+      // than migrating the same config and tables a second time.
+      $result = ai_upgrade_install_result($module);
+      if ($result === NULL) {
         $result = ai_upgrade_module_install($module);
       }
-      else {
-        $result = ai_upgrade_module_install($module);
-        if ($deprecated && empty($result['disabled'])) {
-          $result['disabled'] = ai_upgrade_disable_legacy($info['legacy_modules'], FALSE);
-        }
+      if ($deprecated && empty($result['disabled'])) {
+        $result['disabled'] = ai_upgrade_disable_legacy($info['legacy_modules'], FALSE);
       }
 
       if (empty($result)) {
-        $result = ['migrated' => 0, 'disabled' => [], 'tables' => []];
+        $result = ['migrated' => 0, 'disabled' => [], 'tables' => [], 'permissions' => 0, 'blocks' => 0];
       }
 
       $results[$module] = [
@@ -326,6 +431,8 @@ function ai_upgrade_execute(array $modules) {
         'migrated' => $result['migrated'],
         'disabled' => $result['disabled'],
         'tables' => $result['tables'],
+        'permissions' => isset($result['permissions']) ? $result['permissions'] : 0,
+        'blocks' => isset($result['blocks']) ? $result['blocks'] : 0,
       ];
     }
   }
@@ -337,4 +444,3 @@ function ai_upgrade_execute(array $modules) {
   module_implements_reset();
   return $results;
 }
-

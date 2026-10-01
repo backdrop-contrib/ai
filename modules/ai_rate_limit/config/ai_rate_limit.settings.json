@@ -3,5 +3,7 @@
   "enabled": false,
   "global_limit": 60,
   "global_window": 60,
+  "user_limit": 0,
+  "user_window": 60,
   "provider_limits": {}
 }

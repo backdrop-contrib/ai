@@ -12,6 +12,123 @@ function _ai_content_safe_markup($text) {
 }
 
 /**
+ * Resolve a configured model to a provider-qualified ID.
+ *
+ * Unqualified legacy values are ignored so they cannot be sent to whichever
+ * provider happens to be first in the provider list.
+ */
+function _ai_content_resolve_model($config_key, $capability = 'chat') {
+  $preferred = config_get('ai_content.settings', $config_key);
+  $default_key = $capability === 'moderation' ? 'default_moderation_model' : 'default_text_model';
+  $default = config_get('ai.settings', $default_key);
+
+  if (!is_string($preferred) || empty($preferred) || strpos($preferred, '/') === FALSE) {
+    $preferred = $default;
+  }
+
+  $models = $capability === 'moderation'
+    ? ai_get_all_moderation_models()
+    : ai_get_all_chat_models();
+  $model = ai_default_model($models, $preferred);
+
+  return !empty($model) && strpos($model, '/') !== FALSE ? $model : '';
+}
+
+/**
+ * Extract chat text from the response shapes used by configured providers.
+ */
+function _ai_content_extract_chat_text($response, $fallback) {
+  if (is_string($response)) {
+    $text = trim($response);
+    $decoded = json_decode($text, TRUE);
+    if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+      return _ai_content_extract_chat_text($decoded, $fallback);
+    }
+    return $text;
+  }
+
+  if (is_array($response)) {
+    if (isset($response['content']) && is_scalar($response['content'])) {
+      return trim((string) $response['content']);
+    }
+    if (isset($response['choices'][0]['message']['content']) && is_scalar($response['choices'][0]['message']['content'])) {
+      return trim((string) $response['choices'][0]['message']['content']);
+    }
+    if (isset($response['choices'][0]['text']) && is_scalar($response['choices'][0]['text'])) {
+      return trim((string) $response['choices'][0]['text']);
+    }
+  }
+
+  return $fallback;
+}
+
+/**
+ * Get the language being edited in a node form.
+ */
+function _ai_content_get_form_language(array $form_state, $entity = NULL) {
+  foreach (['language', 'langcode'] as $key) {
+    if (!empty($form_state['values'][$key]) && is_string($form_state['values'][$key])) {
+      return $form_state['values'][$key];
+    }
+  }
+
+  if (is_object($entity)) {
+    foreach (['language', 'langcode'] as $key) {
+      if (!empty($entity->{$key}) && is_string($entity->{$key})) {
+        return $entity->{$key};
+      }
+    }
+  }
+
+  return LANGUAGE_NONE;
+}
+
+/**
+ * Keep only the active translation's values before extracting node text.
+ */
+function _ai_content_filter_form_values_language(array $values, $bundle, $langcode) {
+  if (empty($bundle) || !function_exists('field_info_instances')) {
+    return $values;
+  }
+
+  $languages = [LANGUAGE_NONE => TRUE];
+  if (function_exists('language_list')) {
+    foreach (array_keys(language_list()) as $language) {
+      $languages[$language] = TRUE;
+    }
+  }
+
+  foreach (field_info_instances('node', $bundle) as $field_name => $instance) {
+    if (!isset($values[$field_name]) || !is_array($values[$field_name])) {
+      continue;
+    }
+
+    $has_language_values = FALSE;
+    foreach (array_keys($values[$field_name]) as $key) {
+      if (isset($languages[$key])) {
+        $has_language_values = TRUE;
+        break;
+      }
+    }
+    if (!$has_language_values) {
+      continue;
+    }
+
+    if (array_key_exists($langcode, $values[$field_name])) {
+      $values[$field_name] = [$langcode => $values[$field_name][$langcode]];
+    }
+    elseif (array_key_exists(LANGUAGE_NONE, $values[$field_name])) {
+      $values[$field_name] = [LANGUAGE_NONE => $values[$field_name][LANGUAGE_NONE]];
+    }
+    else {
+      unset($values[$field_name]);
+    }
+  }
+
+  return $values;
+}
+
+/**
  * Implements hook_config_info().
  */
 function ai_content_config_info() {
@@ -72,35 +189,8 @@ function ai_content_settings_form($form, &$form_state) {
   // Get moderation models from all enabled providers
   $moderation_models = ai_get_all_moderation_models();
 
-  // Determine default chat model.
-  $default_chat_model = config_get('ai.settings', 'default_text_model') ?: '';
-  $flat_chat_models = [];
-  foreach ($chat_models as $g_label => $g_items) {
-    if (is_array($g_items)) {
-      foreach ($g_items as $k => $v) { $flat_chat_models[$k] = $v; }
-    } else {
-      $flat_chat_models[$g_label] = $g_items;
-    }
-  }
-  if (!empty($flat_chat_models) && !isset($flat_chat_models[$default_chat_model])) {
-    reset($flat_chat_models);
-    $default_chat_model = key($flat_chat_models);
-  }
-
-  // Determine default moderation model.
-  $default_mod_model = config_get('ai.settings', 'default_moderation_model') ?: '';
-  $flat_mod_models = [];
-  foreach ($moderation_models as $g_label => $g_items) {
-    if (is_array($g_items)) {
-      foreach ($g_items as $k => $v) { $flat_mod_models[$k] = $v; }
-    } else {
-      $flat_mod_models[$g_label] = $g_items;
-    }
-  }
-  if (!empty($flat_mod_models) && !isset($flat_mod_models[$default_mod_model])) {
-    reset($flat_mod_models);
-    $default_mod_model = key($flat_mod_models);
-  }
+  $default_chat_model = _ai_content_resolve_model('default_text_model');
+  $default_mod_model = _ai_content_resolve_model('text_analysis_model', 'moderation');
 
   $form = [];
   $form['#config'] = 'ai_content.settings';
@@ -135,7 +225,7 @@ function ai_content_settings_form($form, &$form_state) {
     '#type' => 'select',
     '#title' => t('Model for Text Analysis'),
     '#options' => $moderation_models,
-    '#default_value' => $config->get('text_analysis_model') ?? $default_mod_model,
+    '#default_value' => _ai_content_resolve_model('text_analysis_model', 'moderation') ?: $default_mod_model,
     '#description' => t('Select the moderation model to use for text analysis.'),
   ];
 
@@ -165,7 +255,7 @@ function ai_content_settings_form($form, &$form_state) {
     '#type' => 'select',
     '#title' => t('Model for Tone Adjustment'),
     '#options' => $chat_models,
-    '#default_value' => $config->get('tone_adjustment_model') ?? $default_chat_model,
+    '#default_value' => _ai_content_resolve_model('tone_adjustment_model') ?: $default_chat_model,
     '#description' => t('Select the model to use for tone adjustment.'),
   ];
 
@@ -213,7 +303,7 @@ function ai_content_settings_form($form, &$form_state) {
     '#type' => 'select',
     '#title' => t('Model for Summarization'),
     '#options' => $chat_models,
-    '#default_value' => $config->get('summarization_model') ?? $default_chat_model,
+    '#default_value' => _ai_content_resolve_model('summarization_model') ?: $default_chat_model,
     '#description' => t('Select the model to use for summarization.'),
   ];
 
@@ -260,7 +350,7 @@ function ai_content_settings_form($form, &$form_state) {
     '#type' => 'select',
     '#title' => t('Model for Title Suggestion'),
     '#options' => $chat_models,
-      '#default_value' => $config->get('title_model') ?? $default_chat_model,
+    '#default_value' => _ai_content_resolve_model('title_model') ?: $default_chat_model,
     '#description' => t('Select the model to use for title suggestions.'),
   ];
 
@@ -311,7 +401,7 @@ function ai_content_settings_form($form, &$form_state) {
     '#type' => 'select',
     '#title' => t('Model for Taxonomy Suggestion'),
     '#options' => $chat_models,
-      '#default_value' => $config->get('taxonomy_model') ?? $default_chat_model,
+    '#default_value' => _ai_content_resolve_model('taxonomy_model') ?: $default_chat_model,
     '#description' => t('Select the model to use for taxonomy suggestions.'),
   ];
 
@@ -357,11 +447,6 @@ function ai_content_form_node_form_alter(&$form, &$form_state, $form_id) {
   global $user;
 
   if (user_access('access ai content tools')) {
-    $form['ai_content_preview_text'] = [
-      '#type' => 'hidden',
-      '#default_value' => '',
-    ];
-    $form['#attached']['js'][] = backdrop_get_path('module', 'ai_content') . '/js/ai_content_preview_extract.js';
     $config = config('ai_content.settings');
 
     // Define the features and their configurations.
@@ -524,9 +609,6 @@ function _ai_content_get_all_text_with_summary_fields($entity) {
  */
 function _ai_content_get_selected_field_text(array $form_state, $target_field, $entity = NULL) {
   if ($target_field === '__full_node__') {
-    if (!empty($form_state['values']['ai_content_preview_text'])) {
-      return trim($form_state['values']['ai_content_preview_text']);
-    }
     return _ai_content_get_all_node_text_from_form_state($form_state, $entity);
   }
 
@@ -535,10 +617,15 @@ function _ai_content_get_selected_field_text(array $form_state, $target_field, $
   }
 
   $value = $form_state['values'][$target_field];
+  $langcode = _ai_content_get_form_language($form_state, $entity);
 
   // Fast-path for standard text fields.
-  if (isset($value[LANGUAGE_NONE][0]['value']) && is_string($value[LANGUAGE_NONE][0]['value'])) {
-    return trim($value[LANGUAGE_NONE][0]['value']);
+  if (is_array($value)) {
+    foreach ([$langcode, LANGUAGE_NONE] as $language) {
+      if (isset($value[$language][0]['value']) && is_string($value[$language][0]['value'])) {
+        return trim($value[$language][0]['value']);
+      }
+    }
   }
 
   $text = [];
@@ -567,8 +654,11 @@ function _ai_content_get_all_node_text_from_form_state(array $form_state, $entit
     return '';
   }
 
+  $langcode = _ai_content_get_form_language($form_state, $entity);
+  $values = _ai_content_filter_form_values_language($form_state['values'], $entity->type, $langcode);
+
   return AIContentExtractor::extractNodeFormValuesText(
-    $form_state['values'],
+    $values,
     $entity->type,
     [
       'include_title' => FALSE,
@@ -613,7 +703,7 @@ function ai_content_entity_adjust_tone($form, &$form_state) {
 
     if (!empty($target_field_value)) {
       // Fetch settings for tone adjustment.
-      $model = $content_config->get('tone_adjustment_model') ?? (config_get('ai.settings', 'default_text_model'));
+      $model = _ai_content_resolve_model('tone_adjustment_model');
       $temperature = $content_config->get('tone_adjustment_temperature') ?? 0.7;
       $max_tokens = $content_config->get('tone_adjustment_max_tokens') ?? 2048;
       $prompt = $content_config->get('tone_adjustment_prompt') ?? 'Change the tone of the following text to be {{ tone }} using the same language as the input text.';
@@ -633,15 +723,9 @@ function ai_content_entity_adjust_tone($form, &$form_state) {
           ['operation' => 'content_tools']
         );
 
-        // Check if the response is a string and handle accordingly
-        if (is_string($response)) {
-          $text = trim($response);
-        } else {
-          $result = json_decode($response, TRUE);
-          $text = isset($result["choices"][0]["message"]["content"]) ? trim($result["choices"][0]["message"]["content"]) : t('No result could be generated.');
-        }
+        $text = _ai_content_extract_chat_text($response, t('No result could be generated.'));
       }
-      catch (\Exception $e) {
+      catch (\Throwable $e) {
         backdrop_set_message('Error: ' . $e->getMessage(), 'error');
         $text = t('An error occurred while processing your request.');
       }
@@ -676,7 +760,7 @@ function ai_content_entity_field_summarize($form, &$form_state) {
 
     if (!empty($target_field_value)) {
       // Fetch settings for summarization.
-      $model = $content_config->get('summarization_model') ?? (config_get('ai.settings', 'default_text_model'));
+      $model = _ai_content_resolve_model('summarization_model');
       $temperature = $content_config->get('summarization_temperature') ?? 0.7;
       $max_tokens = $content_config->get('summarization_max_tokens') ?? 2048;
       $prompt = $content_config->get('summarization_prompt') ?? 'Create a detailed summary of the following text in less than 130 words.';
@@ -696,15 +780,9 @@ function ai_content_entity_field_summarize($form, &$form_state) {
           ['operation' => 'content_tools']
         );
 
-        // Check if the response is a string and handle accordingly
-        if (is_string($response)) {
-          $text = trim($response);
-        } else {
-          $result = json_decode($response, TRUE);
-          $text = isset($result["choices"][0]["message"]["content"]) ? trim($result["choices"][0]["message"]["content"]) : t('No result could be generated.');
-        }
+        $text = _ai_content_extract_chat_text($response, t('No result could be generated.'));
       }
-      catch (\Exception $e) {
+      catch (\Throwable $e) {
         backdrop_set_message('Error: ' . $e->getMessage(), 'error');
         $text = t('An error occurred while processing your request.');
       }
@@ -739,7 +817,7 @@ function ai_content_suggest_title($form, &$form_state) {
 
     if (!empty($target_field_value)) {
       // Fetch settings for title suggestion.
-      $model = $content_config->get('title_model') ?? (config_get('ai.settings', 'default_text_model'));
+      $model = _ai_content_resolve_model('title_model');
       $temperature = $content_config->get('title_temperature') ?? 0.4;
       $max_tokens = $content_config->get('title_max_tokens') ?? 2048;
       $prompt = $content_config->get('title_prompt') ?? 'Suggest an SEO-friendly title for the following content in 10 words or less.';
@@ -759,15 +837,9 @@ function ai_content_suggest_title($form, &$form_state) {
           ['operation' => 'content_tools']
         );
 
-        // Check if the response is a string and handle accordingly
-        if (is_string($response)) {
-          $text = trim($response);
-        } else {
-          $result = json_decode($response, TRUE);
-          $text = isset($result["choices"][0]["message"]["content"]) ? trim($result["choices"][0]["message"]["content"]) : t('No title could be generated from the provided input.');
-        }
+        $text = _ai_content_extract_chat_text($response, t('No title could be generated from the provided input.'));
       }
-      catch (\Exception $e) {
+      catch (\Throwable $e) {
         backdrop_set_message('Error: ' . $e->getMessage(), 'error');
         $text = t('An error occurred while processing your request.');
       }
@@ -805,7 +877,7 @@ function ai_content_entity_suggest_taxonomy($form, &$form_state) {
 
       // Get settings from the configuration.
       $prompt = $content_config->get('taxonomy_prompt') ?? 'Suggest five words to classify the following text.';
-      $model = $content_config->get('taxonomy_model') ?? (config_get('ai.settings', 'default_text_model'));
+      $model = _ai_content_resolve_model('taxonomy_model');
       $temperature = $content_config->get('taxonomy_temperature') ?? 0.4;
       $max_tokens = $content_config->get('taxonomy_max_tokens') ?? 2048;
 
@@ -821,15 +893,9 @@ function ai_content_entity_suggest_taxonomy($form, &$form_state) {
           ['operation' => 'content_tools']
         );
 
-        // Check if the response is a string and handle accordingly.
-        if (is_string($response)) {
-          $text = trim($response);
-        } else {
-          $result = json_decode($response, TRUE);
-          $text = isset($result["choices"][0]["message"]["content"]) ? trim($result["choices"][0]["message"]["content"]) : t('No terms could be generated from the provided input.');
-        }
+        $text = _ai_content_extract_chat_text($response, t('No terms could be generated from the provided input.'));
       }
-      catch (\Exception $e) {
+      catch (\Throwable $e) {
         $text = t('An error occurred while processing your request.');
       }
     } else {
@@ -859,7 +925,7 @@ function ai_content_entity_analyze_content($form, &$form_state) {
   $content_config = config('ai_content.settings');
 
   // Get the configured moderation model
-  $moderation_model = $content_config->get('text_analysis_model') ?? (config_get('ai.settings', 'default_moderation_model') ?: 'omni-moderation-latest');
+  $moderation_model = _ai_content_resolve_model('text_analysis_model', 'moderation');
 
   $target_field = !empty($form_state['values']['target_field']) ? $form_state['values']['target_field'] : '__full_node__';
   if (!empty($target_field)) {
@@ -871,9 +937,15 @@ function ai_content_entity_analyze_content($form, &$form_state) {
       try {
         // Use the moderation API with the configured model
         $result = ai_moderation($truncated_value, $moderation_model);
+        $moderation_result = !empty($result['results'][0]) && is_array($result['results'][0])
+          ? $result['results'][0]
+          : [];
+        if (empty($moderation_result)) {
+          throw new \RuntimeException('The moderation provider returned no result.');
+        }
 
         // Check if the response contains flagged content
-        $flagged = (bool) $result["results"][0]["flagged"];
+        $flagged = !empty($moderation_result['flagged']);
         $content = [];
 
         $content['results'] = [
@@ -888,7 +960,9 @@ function ai_content_entity_analyze_content($form, &$form_state) {
             '#markup' => '<p>' . t('Violation(s) found for these categories:') . '</p>',
           ];
 
-          $violated_categories = array_filter($result['results'][0]['categories']);
+          $violated_categories = !empty($moderation_result['categories']) && is_array($moderation_result['categories'])
+            ? array_filter($moderation_result['categories'])
+            : [];
 
           foreach ($violated_categories as $category => $did_violate) {
             if ($did_violate) {
@@ -905,7 +979,7 @@ function ai_content_entity_analyze_content($form, &$form_state) {
 
       }
 
-      catch (\Exception $e) {
+      catch (\Throwable $e) {
         backdrop_set_message('Error: ' . $e->getMessage(), 'error');
         $output = t('An error occurred while processing your request.');
       }
@@ -927,4 +1001,3 @@ if (!function_exists('mb_ucfirst')) {
     return mb_strtoupper($firstChar, $encoding) . $rest;
   }
 }
-

@@ -94,6 +94,37 @@ function ai_privacy_settings_form($form, &$form_state) {
     '#default_value' => $config->get('log_redact_content'),
   ];
 
+  // Excluded fields overview.
+  $excluded_fields = $config->get('excluded_fields') ?: [];
+  if (!empty($excluded_fields)) {
+    $rows = [];
+    foreach ($excluded_fields as $entity_type => $bundles) {
+      foreach ($bundles as $bundle_name => $fields) {
+        if (!empty($fields)) {
+          $rows[] = [
+            check_plain($entity_type),
+            check_plain($bundle_name),
+            check_plain(implode(', ', $fields)),
+          ];
+        }
+      }
+    }
+    if (!empty($rows)) {
+      $form['field_exclusions_overview'] = [
+        '#type'        => 'fieldset',
+        '#title'       => t('Field-level privacy exclusions'),
+        '#description' => t('The following fields are configured to be excluded from AI text extraction and processing. To modify these exclusions, visit the respective content type configuration page (Structure > Content types).'),
+        '#collapsible' => TRUE,
+        '#collapsed'   => FALSE,
+      ];
+      $form['field_exclusions_overview']['table'] = [
+        '#theme'  => 'table',
+        '#header' => [t('Entity type'), t('Content type / bundle'), t('Excluded fields')],
+        '#rows'   => $rows,
+      ];
+    }
+  }
+
   $form['actions'] = ['#type' => 'actions'];
   $form['actions']['submit'] = [
     '#type'  => 'submit',
@@ -155,11 +186,32 @@ function ai_privacy_form_node_type_form_alter(&$form, &$form_state) {
     '#default_value' => !$currently_denied,
   ];
 
+  $instances = function_exists('field_info_instances') ? field_info_instances('node', $bundle) : [];
+  if (!empty($instances)) {
+    $field_options = [];
+    foreach ($instances as $field_name => $instance) {
+      $field_options[$field_name] = check_plain($instance['label']) . ' (' . check_plain($field_name) . ')';
+    }
+    $excluded = config_get('ai_privacy.settings', 'excluded_fields') ?: [];
+    $excluded_bundle_fields = isset($excluded['node'][$bundle]) ? (array) $excluded['node'][$bundle] : [];
+
+    $form['ai_privacy']['ai_privacy_excluded_fields'] = [
+      '#type'          => 'checkboxes',
+      '#title'         => t('Excluded fields from AI extraction'),
+      '#description'   => t('Selected fields will never be extracted or sent to external AI providers for nodes of this type (e.g. private notes, internal donor IDs, contact numbers).'),
+      '#options'       => $field_options,
+      '#default_value' => $excluded_bundle_fields,
+      '#states'        => [
+        'visible' => [':input[name="ai_privacy_allowed"]' => ['checked' => TRUE]],
+      ],
+    ];
+  }
+
   $form['#submit'][] = 'ai_privacy_node_type_form_submit';
 }
 
 /**
- * Submit handler: saves per-bundle opt-out from the content type form.
+ * Submit handler: saves per-bundle opt-out and field exclusions from the content type form.
  */
 function ai_privacy_node_type_form_submit($form, &$form_state) {
   $bundle = isset($form['#node_type']->type) ? $form['#node_type']->type : NULL;
@@ -187,6 +239,25 @@ function ai_privacy_node_type_form_submit($form, &$form_state) {
   }
 
   config_set('ai_privacy.settings', 'denied_entity_bundles', $denied);
+
+  // Save excluded fields.
+  if (isset($form_state['values']['ai_privacy_excluded_fields'])) {
+    $excluded = config_get('ai_privacy.settings', 'excluded_fields');
+    if (!is_array($excluded)) {
+      $excluded = [];
+    }
+    if (!isset($excluded['node']) || !is_array($excluded['node'])) {
+      $excluded['node'] = [];
+    }
+    $selected_fields = array_values(array_filter($form_state['values']['ai_privacy_excluded_fields']));
+    if (!empty($selected_fields)) {
+      $excluded['node'][$bundle] = $selected_fields;
+    }
+    else {
+      unset($excluded['node'][$bundle]);
+    }
+    config_set('ai_privacy.settings', 'excluded_fields', $excluded);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -263,4 +334,25 @@ function ai_privacy_entity_allowed($entity_type, $bundle, $account = NULL) {
  */
 function ai_privacy_log_redact() {
   return (bool) config_get('ai_privacy.settings', 'log_redact_content');
+}
+
+/**
+ * Returns an array of field machine names excluded from AI extraction.
+ *
+ * @param string $entity_type
+ *   The entity type (e.g. 'node').
+ * @param string $bundle
+ *   The bundle machine name (e.g. 'article').
+ *
+ * @return array
+ *   List of field names that should not be extracted or sent to external AI models.
+ */
+function ai_privacy_get_excluded_fields($entity_type, $bundle) {
+  $excluded = config_get('ai_privacy.settings', 'excluded_fields') ?: [];
+  $fields = isset($excluded[$entity_type][$bundle]) ? (array) $excluded[$entity_type][$bundle] : [];
+
+  // Allow other modules to alter or add excluded fields.
+  backdrop_alter('ai_privacy_excluded_fields', $fields, $entity_type, $bundle);
+
+  return array_values(array_unique(array_filter($fields)));
 }

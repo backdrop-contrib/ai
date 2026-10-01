@@ -6,6 +6,20 @@
  */
 
 /**
+ * Resolve the global alt field on stock and patched image_entity_alt versions.
+ */
+function _ai_alt_image_entity_alt_field_name() {
+  if (function_exists('image_entity_alt_field_name')) {
+    $field_name = image_entity_alt_field_name();
+    if (is_string($field_name) && $field_name !== '') {
+      return $field_name;
+    }
+  }
+
+  return 'field_alt';
+}
+
+/**
  * Process callback to inject alt-text generation into managed file fields.
  */
 function _ai_alt_image_field_process($element, array &$form_state, $form) {
@@ -60,7 +74,7 @@ function _ai_alt_image_field_process($element, array &$form_state, $form) {
 
   $has_global_alt = FALSE;
   if (module_exists('image_entity_alt') && !empty($element['#value']['fid'])) {
-    $alt_field = function_exists('image_entity_alt_field_name') ? image_entity_alt_field_name() : 'field_alt';
+    $alt_field = _ai_alt_image_entity_alt_field_name();
     $file = file_load((int) $element['#value']['fid']);
     if ($file && !empty($file->{$alt_field}[LANGUAGE_NONE][0]['value'])) {
       $has_global_alt = TRUE;
@@ -68,15 +82,17 @@ function _ai_alt_image_field_process($element, array &$form_state, $form) {
   }
 
   if (!empty($autogenerate) && $current_alt === '' && !$has_global_alt) {
-    $unique_key = $field_name . ':' . $delta;
+    $unique_key = $field_name . ':' . $field_lang . ':' . $delta;
     $element['#attached']['js'][] = [
       'data' => [
         'aiAlt' => [
           $unique_key => [
             'fid' => isset($element['#value']['fid']) ? $element['#value']['fid'] : NULL,
             'field_name' => $field_name,
+            'field_lang' => $field_lang,
             'delta' => $delta,
             'target_id' => $element['#id'],
+            'token' => backdrop_get_token('ai-alt/generate-alt-text'),
           ],
         ],
       ],
@@ -156,6 +172,7 @@ function _ai_alt_form_alter(array &$form, array &$form_state, $form_id) {
         'aiAlt' => [
           'fid' => $uploaded_fid,
           'wrapper_id' => 'edit-alt-wrapper',
+          'token' => backdrop_get_token('ai-alt/ckeditor-autogenerate'),
         ],
       ],
       'type' => 'setting',
@@ -167,6 +184,7 @@ function _ai_alt_form_alter(array &$form, array &$form_state, $form_id) {
       'data' => [
         'aiAlt' => [
           'wrapper_id' => 'edit-alt-wrapper',
+          'token' => backdrop_get_token('ai-alt/ckeditor-autogenerate'),
         ],
       ],
       'type' => 'setting',
@@ -199,7 +217,7 @@ function _ai_alt_attach_to_file_form(array &$form, array &$form_state) {
     return;
   }
 
-  $alt_field = image_entity_alt_field_name();
+  $alt_field = _ai_alt_image_entity_alt_field_name();
   if (!isset($form[$alt_field])) {
     return;
   }
@@ -246,7 +264,7 @@ function _ai_alt_attach_to_file_form(array &$form, array &$form_state) {
  * AJAX callback for file form alt text generation.
  */
 function _ai_alt_file_form_ajax_callback($form, array &$form_state) {
-  $alt_field = image_entity_alt_field_name();
+  $alt_field = _ai_alt_image_entity_alt_field_name();
   $lang = isset($form[$alt_field]['#language']) ? $form[$alt_field]['#language'] : LANGUAGE_NONE;
 
   $fid = NULL;

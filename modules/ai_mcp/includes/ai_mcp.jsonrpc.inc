@@ -105,20 +105,13 @@ function ai_mcp_method_initialize($id, array $params, array $server) {
  *   JSON-RPC 2.0 success response with tools array.
  */
 function ai_mcp_method_tools_list($id, array $params, array $server) {
-  $all_tools = ai_tools_get_tools();
-
-  // Filter to the server's allowed tool set if configured.
-  $allowed = isset($server['tools']) ? $server['tools'] : [];
-  if (!empty($allowed) && is_array($allowed)) {
-    $allowed_keys = array_filter($allowed);
-    if (!empty($allowed_keys)) {
-      $all_tools = array_intersect_key($all_tools, array_flip($allowed_keys));
-    }
-  }
-
+  // Only tools this server may call: its allowlist (if set), and write
+  // tools only when the server has opted in to them.
   $mcp_tools = [];
-  foreach ($all_tools as $key => $tool) {
-    $mcp_tools[] = _ai_mcp_tool_to_mcp_schema($key, $tool);
+  foreach (ai_tools_get_tools() as $key => $tool) {
+    if (ai_mcp_server_allows_tool($server, $key, $tool)) {
+      $mcp_tools[] = _ai_mcp_tool_to_mcp_schema($key, $tool);
+    }
   }
 
   return [
@@ -158,15 +151,6 @@ function ai_mcp_method_tools_call($id, array $params, array $server) {
     $arguments = [];
   }
 
-  // Enforce the server's tool allowlist.
-  $allowed = isset($server['tools']) ? $server['tools'] : [];
-  if (!empty($allowed) && is_array($allowed)) {
-    $allowed_keys = array_filter($allowed);
-    if (!empty($allowed_keys) && !in_array($tool_name, $allowed_keys)) {
-      return ai_mcp_jsonrpc_error($id, -32602, 'Tool not available on this server');
-    }
-  }
-
   // Verify the tool exists in the registry (also enforces user permissions).
   $all_tools = ai_tools_get_tools();
   if (!isset($all_tools[$tool_name])) {
@@ -183,6 +167,18 @@ function ai_mcp_method_tools_call($id, array $params, array $server) {
         'isError' => TRUE,
       ],
     ];
+  }
+
+  // Enforce the server's allowlist and its write-tool opt-in. Checked here as
+  // well as in tools/list because a client can call a tool it was never shown.
+  if (!ai_mcp_server_allows_tool($server, $tool_name, $all_tools[$tool_name])) {
+    if (ai_mcp_tool_is_write($all_tools[$tool_name]) && empty($server['allow_write_tools'])) {
+      watchdog('ai_mcp', 'Refused write tool %tool on MCP server %server: write tools are not enabled for this server.', [
+        '%tool' => $tool_name,
+        '%server' => $server['id'] ?? '',
+      ], WATCHDOG_WARNING);
+    }
+    return ai_mcp_jsonrpc_error($id, -32602, 'Tool not available on this server');
   }
 
   // Dispatch and wrap in MCP content envelope.

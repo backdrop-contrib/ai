@@ -57,7 +57,7 @@ function bee_ai_upgrade($arguments = [], $options = []) {
   try {
     $results = ai_upgrade_execute($modules);
   }
-  catch (RuntimeException $e) {
+  catch (\Throwable $e) {
     bee_message(bt('AI upgrade aborted.'), 'error');
     foreach (explode("\n", trim($e->getMessage())) as $line) {
       if ($line !== '') {
@@ -67,11 +67,13 @@ function bee_ai_upgrade($arguments = [], $options = []) {
     return;
   }
   foreach ($results as $result) {
-    bee_message(bt('@label: migrated @count config object(s); disabled legacy: @legacy; tables: @tables', [
+    bee_message(bt('@label: migrated @count config object(s); disabled legacy: @legacy; tables: @tables; permission grants: @perms; blocks swapped: @blocks', [
       '@label' => $result['label'],
       '@count' => $result['migrated'],
       '@legacy' => !empty($result['disabled']) ? implode(', ', $result['disabled']) : bt('none'),
       '@tables' => ai_upgrade_table_results_summary($result['tables']),
+      '@perms' => $result['permissions'],
+      '@blocks' => $result['blocks'],
     ]));
   }
 }

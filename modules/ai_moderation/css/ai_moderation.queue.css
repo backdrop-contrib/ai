@@ -1,3 +1,13 @@
+:root {
+  --ai-moderation-smoldering-bg: #fff3e0;
+  --ai-moderation-smoldering-text: #a43e00;
+}
+
+.gin--dark-mode {
+  --ai-moderation-smoldering-bg: rgba(239, 108, 0, .18);
+  --ai-moderation-smoldering-text: #f0a670;
+}
+
 .ai-moderation-level {
   align-items: center;
   border-radius: 999px;
@@ -19,8 +29,8 @@
 }
 
 .ai-moderation-level--clear {
-  background: #e8f5e9;
-  color: #1b5e20;
+  background: var(--gin-status-success-bg, #e8f5e9);
+  color: var(--gin-status-success-text, #1b5e20);
 }
 
 .ai-moderation-level--clear .ai-moderation-level__icon {
@@ -28,8 +38,8 @@
 }
 
 .ai-moderation-level--needs-review {
-  background: #fff8e1;
-  color: #8a5a00;
+  background: var(--gin-status-warning-bg, #fff8e1);
+  color: var(--gin-status-warning-text, #8a5a00);
 }
 
 .ai-moderation-level--needs-review .ai-moderation-level__icon {
@@ -37,8 +47,8 @@
 }
 
 .ai-moderation-level--smoldering {
-  background: #fff3e0;
-  color: #a43e00;
+  background: var(--ai-moderation-smoldering-bg, #fff3e0);
+  color: var(--ai-moderation-smoldering-text, #a43e00);
 }
 
 .ai-moderation-level--smoldering .ai-moderation-level__icon {
@@ -47,8 +57,8 @@
 }
 
 .ai-moderation-level--dumpster-fire {
-  background: #ffebee;
-  color: #9b1c1c;
+  background: var(--gin-status-danger-bg, #ffebee);
+  color: var(--gin-status-danger-text, #9b1c1c);
 }
 
 .ai-moderation-level--dumpster-fire .ai-moderation-level__icon {
@@ -77,7 +87,8 @@
 }
 
 .ai-moderation-level-legend {
-  background: #f6f7f8;
+  background: var(--gin-bg-layer2, #f6f7f8);
+  color: var(--gin-color-text, inherit);
   border-left: 4px solid #607d8b;
   margin: 1rem 0;
   padding: .75rem 1rem;
@@ -93,8 +104,9 @@
 }
 
 .ai-moderation-reported-content__text pre {
-  background: #f6f7f8;
-  border: 1px solid #d9dde1;
+  background: var(--gin-bg-layer2, #f6f7f8);
+  color: var(--gin-color-text, inherit);
+  border: 1px solid var(--gin-border-color, #d9dde1);
   border-radius: 4px;
   max-height: 28rem;
   overflow: auto;

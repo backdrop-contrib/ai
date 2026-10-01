@@ -7,10 +7,14 @@
  *
  * Provides:
  *   - Regex-based security guardrails (XSS/injection pattern detection).
- *   - Regex-based PII guardrails (email, credit card, IBAN, phone numbers).
+ *   - Regex-based PII guardrails (email, credit card, IBAN, phone numbers),
+ *     with checksum validation (Luhn / MOD-97) to cut false positives, and
+ *     a configurable block-vs-mask action.
  *   - A plugin-style hook system so other modules can declare guardrails.
  *   - Pre-generate checking (user input before it reaches the AI provider).
  *   - Post-generate checking (AI response before it reaches the user).
+ *   - Per-operation overrides, so e.g. a RAG search block can be more
+ *     lenient than raw chat input from a site visitor.
  *
  * Extension points:
  *   hook_ai_guardrail_info()        Declare additional guardrail definitions.
@@ -72,7 +76,313 @@ function ai_guardrails_menu() {
     'type'             => MENU_NORMAL_ITEM,
   ];
 
+  $items['admin/config/ai/ai-guardrails/custom'] = [
+    'title'            => 'Custom guardrails',
+    'description'      => 'Add, edit, enable, disable, and remove custom AI guardrails.',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_guardrails_custom_list_form'],
+    'access arguments' => ['administer site configuration'],
+    // Keep this as a normal menu destination so the AI admin overview lists
+    // it alongside the main settings page instead of hiding it as a tab.
+    'type'             => MENU_NORMAL_ITEM,
+  ];
+
+  $items['admin/config/ai/ai-guardrails/custom/add'] = [
+    'title'            => 'Add custom guardrail',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_guardrails_custom_edit_form'],
+    'access arguments' => ['administer site configuration'],
+    'type'             => MENU_LOCAL_ACTION,
+  ];
+
+  $items['admin/config/ai/ai-guardrails/custom/%/edit'] = [
+    'title'            => 'Edit custom guardrail',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_guardrails_custom_edit_form', 5],
+    'access arguments' => ['administer site configuration'],
+    'type'             => MENU_CALLBACK,
+  ];
+
+  $items['admin/config/ai/ai-guardrails/custom/%/delete'] = [
+    'title'            => 'Delete custom guardrail',
+    'page callback'    => 'backdrop_get_form',
+    'page arguments'   => ['ai_guardrails_custom_delete_form', 5],
+    'access arguments' => ['administer site configuration'],
+    'type'             => MENU_CALLBACK,
+  ];
+
   return $items;
+}
+
+/**
+ * Lists custom guardrails and lets administrators enable or disable them.
+ */
+function ai_guardrails_custom_list_form($form, &$form_state) {
+  $config = config('ai_guardrails.settings');
+  $patterns = $config->get('custom_patterns') ?: [];
+  $saved = $config->get('guardrails') ?: [];
+  $options = [];
+  $enabled = [];
+
+  foreach ($patterns as $slug => $pattern) {
+    if (empty($pattern['label']) || empty($pattern['pattern'])) {
+      continue;
+    }
+
+    $id = 'custom_' . $slug;
+    $encoded_slug = rawurlencode($slug);
+    $options[$slug] = [
+      'title'   => ['data' => ['#title' => t('Enable @name', ['@name' => $pattern['label']])]],
+      'label'   => check_plain($pattern['label']),
+      'pattern' => check_plain($pattern['pattern']),
+      'phase'   => check_plain($pattern['phase'] ?? 'both'),
+      'action'  => check_plain($pattern['action'] ?? 'block'),
+      'links'   => [
+        'data' => [
+          '#markup' => l(t('Edit'), 'admin/config/ai/ai-guardrails/custom/' . $encoded_slug . '/edit') . ' · ' .
+            l(t('Delete'), 'admin/config/ai/ai-guardrails/custom/' . $encoded_slug . '/delete'),
+        ],
+      ],
+    ];
+
+    if (!isset($saved[$id]['enabled']) || !empty($saved[$id]['enabled'])) {
+      $enabled[$slug] = $slug;
+    }
+  }
+
+  $form['intro'] = [
+    '#type'   => 'item',
+    '#markup' => t('Custom guardrails match text in AI requests or responses. Enable a row to apply it. Edit a guardrail to change its match pattern, phase, or action.'),
+  ];
+
+  $form['patterns'] = [
+    '#type'          => 'tableselect',
+    '#header'        => [
+      'label'   => t('Name'),
+      'pattern' => t('Pattern'),
+      'phase'   => t('Applies to'),
+      'action'  => t('Action'),
+      'links'   => t('Operations'),
+    ],
+    '#options'       => $options,
+    '#default_value' => $enabled,
+    '#empty'         => t('No custom guardrails yet.'),
+    '#js_select'     => FALSE,
+  ];
+
+  $form['actions'] = ['#type' => 'actions'];
+  $form['actions']['save'] = [
+    '#type'  => 'submit',
+    '#value' => t('Save enabled status'),
+  ];
+  $form['actions']['add'] = [
+    '#type'  => 'submit',
+    '#value' => t('Add custom guardrail'),
+    '#submit' => ['ai_guardrails_custom_list_add_submit'],
+    '#limit_validation_errors' => [],
+  ];
+
+  return $form;
+}
+
+/**
+ * Saves enabled status for custom guardrails selected in the list.
+ */
+function ai_guardrails_custom_list_form_submit($form, &$form_state) {
+  $config = config('ai_guardrails.settings');
+  $patterns = $config->get('custom_patterns') ?: [];
+  $guardrails = $config->get('guardrails') ?: [];
+  $selected = array_filter($form_state['values']['patterns'] ?? []);
+
+  foreach ($patterns as $slug => $pattern) {
+    $id = 'custom_' . $slug;
+    $guardrails[$id]['enabled'] = isset($selected[$slug]) ? 1 : 0;
+  }
+
+  $config->set('guardrails', $guardrails);
+  $config->save();
+  backdrop_set_message(t('Custom guardrail status saved.'));
+}
+
+/**
+ * Redirects the list's Add button to the custom guardrail form.
+ */
+function ai_guardrails_custom_list_add_submit($form, &$form_state) {
+  $form_state['redirect'] = 'admin/config/ai/ai-guardrails/custom/add';
+}
+
+/**
+ * Builds the add or edit form for one custom guardrail.
+ */
+function ai_guardrails_custom_edit_form($form, &$form_state, $slug = NULL) {
+  $config = config('ai_guardrails.settings');
+  $patterns = $config->get('custom_patterns') ?: [];
+  $editing = $slug !== NULL && isset($patterns[$slug]);
+  if ($slug !== NULL && !$editing) {
+    backdrop_not_found();
+    return [];
+  }
+
+  $pattern = $editing ? $patterns[$slug] : [];
+  $saved = $config->get('guardrails') ?: [];
+  $guardrail_id = $editing ? 'custom_' . $slug : NULL;
+  $phase_options = [
+    'pre'  => t('Input only'),
+    'post' => t('Output only'),
+    'both' => t('Input and output'),
+  ];
+
+  $form['slug'] = [
+    '#type'  => 'value',
+    '#value' => $editing ? $slug : '',
+  ];
+  $form['label'] = [
+    '#type'          => 'textfield',
+    '#title'         => t('Name'),
+    '#required'      => TRUE,
+    '#maxlength'     => 80,
+    '#default_value' => $pattern['label'] ?? '',
+  ];
+  $form['pattern'] = [
+    '#type'          => 'textfield',
+    '#title'         => t('Text to match'),
+    '#description'   => t('Enter a word, phrase, or regular expression. Matching ignores letter case.'),
+    '#required'      => TRUE,
+    '#maxlength'     => 512,
+    '#default_value' => $pattern['pattern'] ?? '',
+  ];
+  $form['phase'] = [
+    '#type'          => 'select',
+    '#title'         => t('Apply to'),
+    '#options'       => $phase_options,
+    '#default_value' => $pattern['phase'] ?? 'both',
+  ];
+  $form['action'] = [
+    '#type'          => 'select',
+    '#title'         => t('When matched'),
+    '#options'       => [
+      'block' => t('Block request or response'),
+      'mask'  => t('Replace matched text and continue'),
+    ],
+    '#default_value' => $pattern['action'] ?? 'block',
+  ];
+  $form['mask_replacement'] = [
+    '#type'          => 'textfield',
+    '#title'         => t('Replacement text'),
+    '#description'   => t('Used only when action is set to replace matched text.'),
+    '#maxlength'     => 120,
+    '#default_value' => $pattern['mask_replacement'] ?? '[redacted]',
+    '#states'        => [':input[name="action"]' => ['value' => 'mask']],
+  ];
+  $form['enabled'] = [
+    '#type'          => 'checkbox',
+    '#title'         => t('Enable this guardrail'),
+    '#default_value' => $editing ? (!isset($saved[$guardrail_id]['enabled']) || !empty($saved[$guardrail_id]['enabled'])) : 1,
+  ];
+  $form['actions'] = ['#type' => 'actions'];
+  $form['actions']['save'] = [
+    '#type'  => 'submit',
+    '#value' => t('Save custom guardrail'),
+  ];
+  $form['actions']['cancel'] = [
+    '#type'  => 'link',
+    '#title' => t('Cancel'),
+    '#href'  => 'admin/config/ai/ai-guardrails/custom',
+  ];
+  $form['#validate'][] = 'ai_guardrails_custom_edit_form_validate';
+  $form['#submit'][] = 'ai_guardrails_custom_edit_form_submit';
+
+  return $form;
+}
+
+/**
+ * Validates a custom guardrail's regular expression and options.
+ */
+function ai_guardrails_custom_edit_form_validate($form, &$form_state) {
+  $pattern = $form_state['values']['pattern'] ?? '';
+  if (@preg_match('/' . $pattern . '/i', '') === FALSE) {
+    form_set_error('pattern', t('Enter a valid regular expression.'));
+  }
+}
+
+/**
+ * Saves one custom guardrail to configuration.
+ */
+function ai_guardrails_custom_edit_form_submit($form, &$form_state) {
+  $config = config('ai_guardrails.settings');
+  $patterns = $config->get('custom_patterns') ?: [];
+  $guardrails = $config->get('guardrails') ?: [];
+  $slug = $form_state['values']['slug'];
+  $label = trim($form_state['values']['label']);
+  $pattern = trim($form_state['values']['pattern']);
+
+  if ($slug === '') {
+    $slug = preg_replace('/[^a-z0-9_]+/', '_', strtolower($label));
+    $slug = trim($slug, '_');
+    if ($slug === '') {
+      $slug = 'pattern_' . substr(md5($pattern), 0, 8);
+    }
+    $base = $slug;
+    $suffix = 2;
+    while (isset($patterns[$slug])) {
+      $slug = $base . '_' . $suffix++;
+    }
+  }
+
+  $patterns[$slug] = [
+    'label'            => $label,
+    'pattern'          => $pattern,
+    'phase'            => $form_state['values']['phase'],
+    'action'           => $form_state['values']['action'],
+    'mask_replacement' => trim($form_state['values']['mask_replacement']) ?: '[redacted]',
+  ];
+  $guardrail_id = 'custom_' . $slug;
+  $guardrails[$guardrail_id]['enabled'] = !empty($form_state['values']['enabled']) ? 1 : 0;
+  unset($guardrails[$guardrail_id]['phase'], $guardrails[$guardrail_id]['action']);
+
+  $config->set('custom_patterns', $patterns);
+  $config->set('guardrails', $guardrails);
+  $config->save();
+  backdrop_set_message(t('Custom guardrail saved.'));
+  $form_state['redirect'] = 'admin/config/ai/ai-guardrails/custom';
+}
+
+/**
+ * Confirmation form for deleting a custom guardrail.
+ */
+function ai_guardrails_custom_delete_form($form, &$form_state, $slug) {
+  $config = config('ai_guardrails.settings');
+  $patterns = $config->get('custom_patterns') ?: [];
+  if (!isset($patterns[$slug])) {
+    backdrop_not_found();
+    return [];
+  }
+
+  $form['slug'] = ['#type' => 'value', '#value' => $slug];
+  return confirm_form(
+    $form,
+    t('Delete custom guardrail %name?', ['%name' => $patterns[$slug]['label']]),
+    'admin/config/ai/ai-guardrails/custom',
+    t('This also removes its enabled status and cannot be undone.'),
+    t('Delete'),
+    t('Cancel')
+  );
+}
+
+/**
+ * Removes a custom guardrail definition and its saved status.
+ */
+function ai_guardrails_custom_delete_form_submit($form, &$form_state) {
+  $config = config('ai_guardrails.settings');
+  $patterns = $config->get('custom_patterns') ?: [];
+  $guardrails = $config->get('guardrails') ?: [];
+  $slug = $form_state['values']['slug'];
+  unset($patterns[$slug], $guardrails['custom_' . $slug]);
+  $config->set('custom_patterns', $patterns);
+  $config->set('guardrails', $guardrails);
+  $config->save();
+  backdrop_set_message(t('Custom guardrail deleted.'));
+  $form_state['redirect'] = 'admin/config/ai/ai-guardrails/custom';
 }
 
 /**
@@ -99,6 +409,17 @@ function ai_guardrails_settings_form($form, &$form_state) {
     '#states'        => ['visible' => [':input[name="enabled"]' => ['checked' => TRUE]]],
   ];
 
+  $form['custom_patterns_management'] = [
+    '#type'        => 'fieldset',
+    '#title'       => t('Custom guardrails'),
+    '#description' => t('Manage custom guardrails from a dedicated list. Add, edit, enable, disable, or remove rules without editing configuration by hand.'),
+  ];
+  $form['custom_patterns_management']['manage'] = [
+    '#type'  => 'link',
+    '#title' => t('Manage custom guardrails'),
+    '#href'  => 'admin/config/ai/ai-guardrails/custom',
+  ];
+
   // Build per-guardrail settings grouped by group.
   $all = ai_guardrails_get_all();
   $saved = $config->get('guardrails') ?: [];
@@ -108,11 +429,23 @@ function ai_guardrails_settings_form($form, &$form_state) {
     'post' => t('Output only (post-generate)'),
     'both' => t('Both input and output'),
   ];
+  $action_options = [
+    'block' => t('Block the request/response'),
+    'mask'  => t('Redact the matched text and continue'),
+  ];
 
   foreach ($groups as $group_id => $group_label) {
     $group_guardrails = array_filter($all, function ($g) use ($group_id) {
       return ($g['group'] ?? 'custom') === $group_id;
     });
+
+    // User-defined patterns have their own CRUD list. Keep hook-provided
+    // custom guardrails on this settings form.
+    if ($group_id === 'custom') {
+      $group_guardrails = array_filter($group_guardrails, function ($guardrail_id) {
+        return strpos($guardrail_id, 'custom_') !== 0;
+      }, ARRAY_FILTER_USE_KEY);
+    }
 
     if (empty($group_guardrails)) {
       continue;
@@ -138,6 +471,19 @@ function ai_guardrails_settings_form($form, &$form_state) {
         '#default_value' => $default_enabled,
       ];
 
+      $enabled_selector = ':input[name="' . $group_id . '[' . $id . '__enabled]"]';
+
+      // Max-length field for length-type guardrails (input length limit).
+      if (($guardrail['type'] ?? 'regex') === 'length') {
+        $form[$group_id][$id . '__max_length'] = [
+          '#type'          => 'number',
+          '#title'         => t('Maximum length (characters)'),
+          '#min'           => 1,
+          '#default_value' => isset($saved_g['max_length']) ? (int) $saved_g['max_length'] : (int) ($guardrail['max_length'] ?? 8000),
+          '#states'        => ['visible' => [$enabled_selector => ['checked' => TRUE]]],
+        ];
+      }
+
       // Phase selector only for guardrails that support both phases.
       if (($guardrail['phase'] ?? 'pre') === 'both' || !empty($guardrail['phase_configurable'])) {
         $default_phase = isset($saved_g['phase']) ? $saved_g['phase'] : ($guardrail['phase'] ?? 'both');
@@ -146,9 +492,40 @@ function ai_guardrails_settings_form($form, &$form_state) {
           '#title'         => t('Apply during'),
           '#options'       => $phase_options,
           '#default_value' => $default_phase,
-          '#states'        => [
-            'visible' => [':input[name="' . $group_id . '[' . $id . '__enabled]"]' => ['checked' => TRUE]],
-          ],
+          '#states'        => ['visible' => [$enabled_selector => ['checked' => TRUE]]],
+        ];
+      }
+
+      // Action selector only for guardrails that support masking instead of
+      // an outright block (currently the PII group — security/injection
+      // patterns are always blocked outright).
+      if (!empty($guardrail['action_configurable'])) {
+        $default_action = isset($saved_g['action']) ? $saved_g['action'] : ($guardrail['action_default'] ?? 'block');
+        $form[$group_id][$id . '__action'] = [
+          '#type'          => 'select',
+          '#title'         => t('Action'),
+          '#options'       => $action_options,
+          '#default_value' => $default_action,
+          '#description'   => t('Masking replaces the matched text with %placeholder and lets the rest of the message through, instead of blocking it entirely.', ['%placeholder' => $guardrail['mask_replacement'] ?? '[redacted]']),
+          '#states'        => ['visible' => [$enabled_selector => ['checked' => TRUE]]],
+        ];
+
+        $op_lines = [];
+        foreach ((isset($saved_g['operations']) ? $saved_g['operations'] : []) as $op_name => $op_override) {
+          if (isset($op_override['enabled']) && !$op_override['enabled']) {
+            $op_lines[] = $op_name . ':off';
+          }
+          elseif (!empty($op_override['action'])) {
+            $op_lines[] = $op_name . ':' . $op_override['action'];
+          }
+        }
+        $form[$group_id][$id . '__operations'] = [
+          '#type'          => 'textarea',
+          '#title'         => t('Per-operation overrides'),
+          '#rows'          => 3,
+          '#default_value' => implode("\n", $op_lines),
+          '#description'   => t('Optional. One override per line as <code>operation:action</code>, where action is <code>block</code>, <code>mask</code>, or <code>off</code> (skip this guardrail entirely for that operation). The operation name is whatever the calling code passes to ai_guardrails_run() — e.g. <code>chat</code>, <code>chatbot</code>, <code>search_block</code>. Leave blank to use the action above for every operation.'),
+          '#states'        => ['visible' => [$enabled_selector => ['checked' => TRUE]]],
         ];
       }
     }
@@ -161,6 +538,13 @@ function ai_guardrails_settings_form($form, &$form_state) {
   ];
 
   return $form;
+}
+
+/**
+ * Validation handler for the settings form.
+ */
+function ai_guardrails_settings_form_validate($form, &$form_state) {
+  // Built-in and hook-provided guardrail settings use select/checkbox fields.
 }
 
 /**
@@ -189,8 +573,11 @@ function ai_guardrails_settings_form_submit($form, &$form_state) {
     });
 
     foreach (array_keys($group_guardrails) as $id) {
-      $enabled_key = $id . '__enabled';
-      $phase_key   = $id . '__phase';
+      $enabled_key     = $id . '__enabled';
+      $phase_key       = $id . '__phase';
+      $action_key      = $id . '__action';
+      $ops_key         = $id . '__operations';
+      $max_length_key  = $id . '__max_length';
 
       $guardrails_config[$id] = [
         'enabled' => !empty($group_values[$enabled_key]) ? 1 : 0,
@@ -198,12 +585,165 @@ function ai_guardrails_settings_form_submit($form, &$form_state) {
       if (isset($group_values[$phase_key])) {
         $guardrails_config[$id]['phase'] = $group_values[$phase_key];
       }
+      if (isset($group_values[$max_length_key]) && $group_values[$max_length_key] !== '') {
+        $guardrails_config[$id]['max_length'] = (int) $group_values[$max_length_key];
+      }
+      if (isset($group_values[$action_key])) {
+        $guardrails_config[$id]['action'] = $group_values[$action_key];
+      }
+      if (!empty($group_values[$ops_key])) {
+        $operations = [];
+        foreach (preg_split('/\r?\n/', trim($group_values[$ops_key])) as $line) {
+          $line = trim($line);
+          if ($line === '' || strpos($line, ':') === FALSE) {
+            continue;
+          }
+          list($op_name, $op_action) = array_map('trim', explode(':', $line, 2));
+          if ($op_name === '') {
+            continue;
+          }
+          if ($op_action === 'off') {
+            $operations[$op_name] = ['enabled' => 0];
+          }
+          elseif (in_array($op_action, ['block', 'mask'], TRUE)) {
+            $operations[$op_name] = ['enabled' => 1, 'action' => $op_action];
+          }
+        }
+        if (!empty($operations)) {
+          $guardrails_config[$id]['operations'] = $operations;
+        }
+      }
+    }
+  }
+
+  // Preserve user-defined custom guardrail status when unrelated settings
+  // are saved on this form. Their configuration belongs to the CRUD list.
+  $existing_guardrails = $config->get('guardrails') ?: [];
+  $custom_patterns = $config->get('custom_patterns') ?: [];
+  foreach ($custom_patterns as $slug => $pattern) {
+    $id = 'custom_' . $slug;
+    if (isset($existing_guardrails[$id])) {
+      $guardrails_config[$id] = $existing_guardrails[$id];
     }
   }
 
   $config->set('guardrails', $guardrails_config);
   $config->save();
   backdrop_set_message(t('Guardrail settings saved.'));
+}
+
+
+// ---------------------------------------------------------------------------
+// Checksum validators
+// ---------------------------------------------------------------------------
+
+/**
+ * Validates a matched digit string against the Luhn checksum algorithm.
+ *
+ * Real payment card numbers satisfy this checksum; an arbitrary run of
+ * 13-19 digits (e.g. an ID, phone number fragment, or hash prefix that
+ * happens to appear in retrieved RAG content) almost never does. Used to
+ * confirm a pii_credit_card regex match before it triggers a guardrail
+ * action, so we stop flagging non-card digit sequences.
+ *
+ * @param string $number
+ *   The raw matched substring.
+ *
+ * @return bool
+ *   TRUE if the digits pass the Luhn check.
+ */
+function _ai_guardrails_luhn_valid($number) {
+  $digits = preg_replace('/\D/', '', $number);
+  if ($digits === '') {
+    return FALSE;
+  }
+
+  $sum = 0;
+  $alternate = FALSE;
+  for ($i = strlen($digits) - 1; $i >= 0; $i--) {
+    $digit = (int) $digits[$i];
+    if ($alternate) {
+      $digit *= 2;
+      if ($digit > 9) {
+        $digit -= 9;
+      }
+    }
+    $sum += $digit;
+    $alternate = !$alternate;
+  }
+
+  return ($sum % 10) === 0;
+}
+
+/**
+ * Validates a matched string against the IBAN MOD-97 checksum (ISO 7064).
+ *
+ * Mirrors the Luhn rationale above, but for IBAN-shaped strings: confirms
+ * the match is actually a valid bank account number rather than an
+ * arbitrary alphanumeric string that happens to fit the IBAN pattern.
+ *
+ * @param string $iban
+ *   The raw matched substring.
+ *
+ * @return bool
+ *   TRUE if the string passes the MOD-97 check.
+ */
+function _ai_guardrails_iban_valid($iban) {
+  $iban = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $iban));
+  if (strlen($iban) < 5) {
+    return FALSE;
+  }
+
+  // Move the four-character country/checksum prefix to the end.
+  $rearranged = substr($iban, 4) . substr($iban, 0, 4);
+
+  // Convert letters to their numeric equivalent (A=10 ... Z=35).
+  $numeric = '';
+  foreach (str_split($rearranged) as $char) {
+    $numeric .= ctype_alpha($char) ? (string) (ord($char) - 55) : $char;
+  }
+
+  // MOD 97 over a string too large for a native int, taken in chunks.
+  $remainder = $numeric;
+  while (strlen($remainder) > 9) {
+    $chunk = substr($remainder, 0, 9);
+    $remainder = ((int) $chunk % 97) . substr($remainder, strlen($chunk));
+  }
+
+  return ((int) $remainder % 97) === 1;
+}
+
+/**
+ * Validates a matched US Social Security Number string against SSA rules.
+ *
+ * Checks that digits equal 9 digits, area number is not 000, 666, or 900-999,
+ * group number is not 00, and serial number is not 0000.
+ *
+ * @param string $ssn
+ *   The raw matched substring.
+ *
+ * @return bool
+ *   TRUE if the digits represent a structurally valid SSN.
+ */
+function _ai_guardrails_ssn_valid($ssn) {
+  $digits = preg_replace('/\D/', '', $ssn);
+  if (strlen($digits) !== 9) {
+    return FALSE;
+  }
+  $area = substr($digits, 0, 3);
+  $group = substr($digits, 3, 2);
+  $serial = substr($digits, 5, 4);
+
+  if ($area === '000' || $area === '666' || (int) $area >= 900) {
+    return FALSE;
+  }
+  if ($group === '00') {
+    return FALSE;
+  }
+  if ($serial === '0000') {
+    return FALSE;
+  }
+  return TRUE;
 }
 
 
@@ -224,14 +764,26 @@ function ai_guardrails_settings_form_submit($form, &$form_state) {
  *   - phase_configurable: (bool) If TRUE, admins can change the phase per-guardrail.
  *   - pattern:         (string, regex type) The regex pattern (without delimiters).
  *   - flags:           (string, regex type) Regex flags, default 'i'.
+ *   - validator:        (callable name) Optional. Called with each raw regex
+ *                        match; matches that return FALSE are ignored. Used
+ *                        for checksum validation (Luhn, MOD-97) to cut down
+ *                        false positives from plain pattern matching.
+ *   - action_configurable: (bool) If TRUE, admins can choose 'block' or
+ *                        'mask' as this guardrail's action (default 'block').
+ *   - action_default:   (string) 'block' or 'mask'. Only used when
+ *                        action_configurable is TRUE.
+ *   - mask_replacement: (string) Text substituted for matched content when
+ *                        the action is 'mask'. Default '[redacted]'.
  *   - message:         (string) Override the global blocked message for this guardrail.
  *   - enabled_default: (bool) Whether enabled out of the box. Default TRUE.
  *   - description:     (string) Help text shown in the settings form.
  */
 function ai_guardrails_ai_guardrail_info() {
-  return [
+  $guardrails = [
 
     // --- Security: injection / XSS patterns (pre-generate only) ---
+    // Always block outright — redacting an XSS payload and letting the rest
+    // of the input through is not a safe trade-off the way it is for PII.
 
     'script_tag' => [
       'label'         => t('Script tags'),
@@ -288,7 +840,48 @@ function ai_guardrails_ai_guardrail_info() {
       'description'   => t('Blocks inputs containing elements commonly used for injection: <code>iframe</code>, <code>object</code>, <code>embed</code>, <code>applet</code>.'),
     ],
 
+    'input_length_limit' => [
+      'label'         => t('Input length limit'),
+      'group'         => 'security',
+      'type'          => 'length',
+      'phase'         => 'pre',
+      'max_length'    => 8000,
+      'enabled_default' => FALSE,
+      'description'   => t('Blocks requests whose input text exceeds the configured character count. Guards against "denial-of-wallet" abuse — oversized prompts run up AI provider costs. Disabled by default; enable and tune the limit for a public-facing chat surface.'),
+    ],
+
+    'security_api_keys' => [
+      'label'               => t('API keys & secrets'),
+      'group'               => 'security',
+      'type'                => 'regex',
+      'phase'               => 'both',
+      'phase_configurable'  => TRUE,
+      'pattern'             => '(?:\b(?:sk-(?:proj-)?[a-zA-Z0-9_\-]{20,}|sk-ant-[a-zA-Z0-9_\-]{20,}|AIza[0-9A-Za-z\-_]{35}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{36,})\b|Bearer\s+[A-Za-z0-9\-\._~\+\/]{25,})',
+      'flags'               => 'i',
+      'enabled_default'     => TRUE,
+      'action_configurable' => TRUE,
+      'action_default'      => 'block',
+      'mask_replacement'    => '[redacted API key]',
+      'description'         => t('Detects exposed API keys and secret tokens (OpenAI, Anthropic, Google Gemini, AWS, GitHub, Bearer tokens) in prompts and responses.'),
+    ],
+
+    'security_prompt_injection' => [
+      'label'           => t('Prompt injection & jailbreak instructions'),
+      'group'           => 'security',
+      'type'            => 'regex',
+      'phase'           => 'pre',
+      'pattern'         => '(?:\b(?:ignore\s+(?:all\s+)?previous\s+instructions|disregard\s+all\s+(?:prior\s+)?instructions|you\s+are\s+now\s+in\s+developer\s+mode|dan\s+mode)\b|^\s*(?:system\s*:|<\|im_start\|>|\[system\]))',
+      'flags'           => 'i',
+      'enabled_default' => TRUE,
+      'description'     => t('Detects common adversarial instruction override and system delimiter mimicry attempts in user input.'),
+    ],
+
     // --- PII: personally identifiable information (pre and/or post) ---
+    // Checksum-validated where a checksum exists, and maskable rather than
+    // only blockable — RAG-retrieved site content (e.g. a published staff
+    // contact email) can legitimately contain PII that shouldn't nuke the
+    // whole response the way a visitor typing in a real credit card number
+    // should.
 
     'pii_email' => [
       'label'            => t('Email addresses'),
@@ -298,7 +891,10 @@ function ai_guardrails_ai_guardrail_info() {
       'phase_configurable' => TRUE,
       'pattern'          => '[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}',
       'enabled_default'  => TRUE,
-      'description'      => t('Detects email addresses in user input (pre) and AI responses (post). Prevents PII from being sent to third-party AI providers.'),
+      'action_configurable' => TRUE,
+      'action_default'   => 'mask',
+      'mask_replacement' => '[redacted email]',
+      'description'      => t('Detects email addresses in user input (pre) and AI responses (post). Default action redacts the address and lets the rest of the message through; switch to "block" for sites where any email in a request should stop it outright.'),
     ],
 
     'pii_credit_card' => [
@@ -308,8 +904,12 @@ function ai_guardrails_ai_guardrail_info() {
       'phase'            => 'both',
       'phase_configurable' => TRUE,
       'pattern'          => '\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b',
+      'validator'        => '_ai_guardrails_luhn_valid',
       'enabled_default'  => TRUE,
-      'description'      => t('Detects Visa, Mastercard, American Express, and Discover card numbers.'),
+      'action_configurable' => TRUE,
+      'action_default'   => 'block',
+      'mask_replacement' => '[redacted card number]',
+      'description'      => t('Detects Visa, Mastercard, American Express, and Discover card numbers, confirmed against the Luhn checksum so incidental digit runs (IDs, hashes, phone fragments) in retrieved content no longer trigger false positives.'),
     ],
 
     'pii_iban' => [
@@ -319,8 +919,12 @@ function ai_guardrails_ai_guardrail_info() {
       'phase'            => 'both',
       'phase_configurable' => TRUE,
       'pattern'          => '\b[A-Z]{2}[0-9]{2}[A-Z0-9]{4}[0-9]{7}(?:[A-Z0-9]{0,16})\b',
+      'validator'        => '_ai_guardrails_iban_valid',
       'enabled_default'  => FALSE,
-      'description'      => t('Detects IBAN-format bank account numbers. Disabled by default — enable for sites handling financial data.'),
+      'action_configurable' => TRUE,
+      'action_default'   => 'block',
+      'mask_replacement' => '[redacted IBAN]',
+      'description'      => t('Detects IBAN-format bank account numbers, confirmed against the MOD-97 checksum to avoid flagging arbitrary alphanumeric strings. Disabled by default — enable for sites handling financial data.'),
     ],
 
     'pii_phone' => [
@@ -331,10 +935,54 @@ function ai_guardrails_ai_guardrail_info() {
       'phase_configurable' => TRUE,
       'pattern'          => '\+[1-9][0-9]{7,14}\b',
       'enabled_default'  => FALSE,
+      'action_configurable' => TRUE,
+      'action_default'   => 'mask',
+      'mask_replacement' => '[redacted phone number]',
       'description'      => t('Detects E.164-format international phone numbers (e.g. +12025551234). Disabled by default to avoid false positives.'),
     ],
 
+    'pii_ssn' => [
+      'label'               => t('US Social Security numbers (SSN)'),
+      'group'               => 'pii',
+      'type'                => 'regex',
+      'phase'               => 'both',
+      'phase_configurable'  => TRUE,
+      'pattern'             => '\b(?!000|666|9\d{2})\d{3}[ -]?(?!00)\d{2}[ -]?(?!0000)\d{4}\b',
+      'validator'           => '_ai_guardrails_ssn_valid',
+      'enabled_default'     => TRUE,
+      'action_configurable' => TRUE,
+      'action_default'      => 'block',
+      'mask_replacement'    => '[redacted SSN]',
+      'description'         => t('Detects US Social Security numbers in standard 3-2-4 digit formats with area and group code validation.'),
+    ],
+
   ];
+
+  // Load user-defined custom patterns configured via admin settings.
+  $config = config('ai_guardrails.settings');
+  $custom_patterns = $config->get('custom_patterns') ?: [];
+  foreach ($custom_patterns as $slug => $p) {
+    if (empty($p['pattern']) || empty($p['label'])) {
+      continue;
+    }
+    $id = 'custom_' . $slug;
+    $guardrails[$id] = [
+      'label'               => $p['label'],
+      'group'               => 'custom',
+      'type'                => 'regex',
+      'phase'               => $p['phase'] ?? 'both',
+      'phase_configurable'  => TRUE,
+      'pattern'             => $p['pattern'],
+      'flags'               => 'i',
+      'action_configurable' => TRUE,
+      'action_default'      => $p['action'] ?? 'block',
+      'mask_replacement'    => !empty($p['mask_replacement']) ? $p['mask_replacement'] : '[redacted]',
+      'description'         => t('Custom user-defined pattern configured via admin settings.'),
+      'enabled_default'     => TRUE,
+    ];
+  }
+
+  return $guardrails;
 }
 
 /**
@@ -379,19 +1027,28 @@ function _ai_guardrails_group_labels() {
  * @param string $phase
  *   'pre' or 'post' — only guardrails applicable to this phase will run.
  * @param string $operation
- *   The operation context (e.g. 'chat', 'chatbot'). Reserved for future use.
+ *   The operation context (e.g. 'chat', 'chatbot', 'search_block'). Lets a
+ *   guardrail be configured differently per calling feature — see the
+ *   "Per-operation overrides" setting on each PII guardrail.
  *
  * @return array
  *   Result array with keys:
- *     - blocked (bool): TRUE if a guardrail matched.
- *     - guardrail_id (string|null): ID of the first guardrail that matched.
- *     - message (string): Message to return to the caller.
+ *     - blocked (bool): TRUE if a guardrail matched and its action is 'block'.
+ *     - guardrail_id (string|null): ID of the guardrail that blocked, if any.
+ *     - message (string): Message to return to the caller when blocked.
+ *     - masked (bool): TRUE if one or more guardrails redacted matched text.
+ *     - masked_ids (array): IDs of guardrails that masked content.
+ *     - text (string): $text with any masked guardrails' matches redacted.
+ *       Equal to the input $text when nothing was masked.
  */
 function ai_guardrails_run($text, $phase = 'pre', $operation = 'chat') {
   $result = [
     'blocked'      => FALSE,
     'guardrail_id' => NULL,
     'message'      => '',
+    'masked'       => FALSE,
+    'masked_ids'   => [],
+    'text'         => $text,
   ];
 
   if (empty($text)) {
@@ -403,62 +1060,146 @@ function ai_guardrails_run($text, $phase = 'pre', $operation = 'chat') {
   $default_message = $config->get('blocked_message') ?: t('Your request could not be processed due to content policy restrictions.');
 
   $all = ai_guardrails_get_all();
+  $working_text = $text;
 
   foreach ($all as $id => $guardrail) {
-    // Determine enabled state (saved config overrides definition default).
-    $enabled = isset($saved[$id]['enabled']) ? (bool) $saved[$id]['enabled'] : (bool) ($guardrail['enabled_default'] ?? TRUE);
+    $saved_g = isset($saved[$id]) ? $saved[$id] : [];
+    $op_override = isset($saved_g['operations'][$operation]) ? $saved_g['operations'][$operation] : [];
+
+    // Determine enabled state: per-operation override > saved site-wide
+    // setting > the guardrail's own default.
+    $enabled = isset($op_override['enabled'])
+      ? (bool) $op_override['enabled']
+      : (isset($saved_g['enabled']) ? (bool) $saved_g['enabled'] : (bool) ($guardrail['enabled_default'] ?? TRUE));
     if (!$enabled) {
       continue;
     }
 
     // Determine which phase this guardrail applies to.
-    $guardrail_phase = isset($saved[$id]['phase']) ? $saved[$id]['phase'] : ($guardrail['phase'] ?? 'pre');
+    $guardrail_phase = isset($saved_g['phase']) ? $saved_g['phase'] : ($guardrail['phase'] ?? 'pre');
     if ($guardrail_phase !== 'both' && $guardrail_phase !== $phase) {
       continue;
     }
 
     $type = $guardrail['type'] ?? 'regex';
 
-    if ($type === 'regex') {
-      $pattern = $guardrail['pattern'] ?? '';
-      $flags   = $guardrail['flags'] ?? 'i';
-      if (empty($pattern)) {
+    if ($type === 'length') {
+      $max_length = isset($saved_g['max_length']) ? (int) $saved_g['max_length'] : (int) ($guardrail['max_length'] ?? 8000);
+      $length = function_exists('mb_strlen') ? mb_strlen($working_text) : strlen($working_text);
+      if ($max_length <= 0 || $length <= $max_length) {
         continue;
       }
-      $matched = @preg_match('/' . $pattern . '/' . $flags, $text);
-      if ($matched === FALSE) {
-        // A broken pattern must not silently pass — fail closed so the
-        // guardrail still blocks while the admin fixes the regex.
-        watchdog('ai_guardrails', 'Guardrail @id has an invalid regex pattern; failing closed (blocking all @phase content) until it is fixed: @pattern', [
-          '@id' => $id,
-          '@pattern' => $pattern,
+
+      $result['blocked']      = TRUE;
+      $result['guardrail_id'] = $id;
+      $result['message']      = !empty($guardrail['message']) ? $guardrail['message'] : $default_message;
+
+      backdrop_alter('ai_guardrail_result', $result, $id, $guardrail, $working_text, $phase);
+
+      if ($result['blocked']) {
+        watchdog('ai_guardrails', 'Guardrail @id blocked a @phase-generate request (operation: @op): input length @len exceeds the @max character limit.', [
+          '@id'    => $id,
           '@phase' => $phase,
-        ], WATCHDOG_ERROR);
-        $matched = TRUE;
+          '@op'    => $operation,
+          '@len'   => $length,
+          '@max'   => $max_length,
+        ], WATCHDOG_NOTICE);
+        $result['text'] = $working_text;
+        return $result;
       }
-      if ($matched) {
-        $result['blocked']      = TRUE;
-        $result['guardrail_id'] = $id;
-        $result['message']      = !empty($guardrail['message']) ? $guardrail['message'] : $default_message;
+      continue;
+    }
 
-        // Allow other modules to react to or override the block decision.
-        backdrop_alter('ai_guardrail_result', $result, $id, $guardrail, $text, $phase);
+    if ($type !== 'regex') {
+      // Additional types (e.g. 'ai_classifier') can be handled by modules
+      // that implement hook_ai_guardrail_info() and
+      // hook_ai_guardrail_result_alter().
+      continue;
+    }
 
-        // A hook implementation can set blocked = FALSE to override.
-        if ($result['blocked']) {
-          watchdog('ai_guardrails', 'Guardrail @id blocked a @phase-generate request (operation: @op).', [
-            '@id'  => $id,
-            '@phase' => $phase,
-            '@op'  => $operation,
-          ], WATCHDOG_NOTICE);
-          return $result;
-        }
+    $pattern = $guardrail['pattern'] ?? '';
+    $flags   = $guardrail['flags'] ?? 'i';
+    if (empty($pattern)) {
+      continue;
+    }
+
+    $matched_count = @preg_match_all('/' . $pattern . '/' . $flags, $working_text, $matches);
+
+    if ($matched_count === FALSE) {
+      // A broken pattern must not silently pass — fail closed so the
+      // guardrail still blocks while the admin fixes the regex.
+      watchdog('ai_guardrails', 'Guardrail @id has an invalid regex pattern; failing closed (blocking all @phase content) until it is fixed: @pattern', [
+        '@id' => $id,
+        '@pattern' => $pattern,
+        '@phase' => $phase,
+      ], WATCHDOG_ERROR);
+      $result['blocked']      = TRUE;
+      $result['guardrail_id'] = $id;
+      $result['message']      = $default_message;
+      $result['text']         = $working_text;
+      return $result;
+    }
+
+    if ($matched_count === 0) {
+      continue;
+    }
+
+    // If the guardrail declares a checksum validator, drop matches that
+    // don't actually pass it (e.g. a 16-digit run that isn't Luhn-valid).
+    // If none of the matches survive, this guardrail does not apply here.
+    $confirmed_matches = $matches[0];
+    if (!empty($guardrail['validator']) && function_exists($guardrail['validator'])) {
+      $confirmed_matches = array_values(array_filter($matches[0], $guardrail['validator']));
+      if (empty($confirmed_matches)) {
+        continue;
       }
     }
-    // Additional types (e.g. 'ai_classifier') can be handled by modules that
-    // implement hook_ai_guardrail_info() and hook_ai_guardrail_result_alter().
+
+    // Determine the action: per-operation override > saved site-wide choice
+    // > the guardrail's own default ('block' unless it opts into masking).
+    $default_action = !empty($guardrail['action_configurable']) ? ($guardrail['action_default'] ?? 'block') : 'block';
+    $action = isset($op_override['action'])
+      ? $op_override['action']
+      : (isset($saved_g['action']) ? $saved_g['action'] : $default_action);
+
+    if ($action === 'mask' && !empty($guardrail['action_configurable'])) {
+      $replacement = $guardrail['mask_replacement'] ?? '[redacted]';
+      foreach (array_unique($confirmed_matches) as $raw_match) {
+        $working_text = str_replace($raw_match, $replacement, $working_text);
+      }
+      $result['masked']      = TRUE;
+      $result['masked_ids'][] = $id;
+      watchdog('ai_guardrails', 'Guardrail @id masked matched content in a @phase-generate request (operation: @op).', [
+        '@id'    => $id,
+        '@phase' => $phase,
+        '@op'    => $operation,
+      ], WATCHDOG_NOTICE);
+      // Masking doesn't stop the pipeline — other guardrails still run
+      // against the (now-redacted) working text.
+      continue;
+    }
+
+    // Block.
+    $result['blocked']      = TRUE;
+    $result['guardrail_id'] = $id;
+    $result['message']      = !empty($guardrail['message']) ? $guardrail['message'] : $default_message;
+
+    // Allow other modules to react to or override the block decision.
+    backdrop_alter('ai_guardrail_result', $result, $id, $guardrail, $working_text, $phase);
+
+    // A hook implementation can set blocked = FALSE to override.
+    if ($result['blocked']) {
+      watchdog('ai_guardrails', 'Guardrail @id blocked a @phase-generate request (operation: @op).', [
+        '@id'  => $id,
+        '@phase' => $phase,
+        '@op'  => $operation,
+      ], WATCHDOG_NOTICE);
+      $result['text'] = $working_text;
+      return $result;
+    }
   }
 
+  $result['text'] = $working_text;
   return $result;
 }
 
@@ -468,11 +1209,40 @@ function ai_guardrails_run($text, $phase = 'pre', $operation = 'chat') {
 // ---------------------------------------------------------------------------
 
 /**
+ * Extract plain text from one chat message's content.
+ *
+ * Content can be a string or an array of parts (vision payloads, etc.).
+ */
+function ai_guardrails_extract_message_text(array $msg) {
+  $content = $msg['content'] ?? '';
+  if (is_array($content)) {
+    $parts = [];
+    foreach ($content as $part) {
+      if (isset($part['text'])) {
+        $parts[] = $part['text'];
+      }
+    }
+    return implode(' ', $parts);
+  }
+  return (string) $content;
+}
+
+/**
  * Implements hook_ai_chat_messages_alter().
  *
- * Pre-generate check: inspect the last user message before it reaches the
- * AI provider. Sets $context['guardrail_blocked'] = TRUE to signal AIApi
- * to abort the request.
+ * Pre-generate check: inspect the last user turn before it reaches the AI
+ * provider. Sets $context['guardrail_blocked'] = TRUE to signal AIApi to
+ * abort the request. When a guardrail's action is 'mask' rather than
+ * 'block', the offending text is redacted in place and the request proceeds.
+ *
+ * "The last user turn" includes the last role:user message AND any
+ * role:tool messages that follow it — tool-calling agents (ai_agents'
+ * chatWithTools() loop, used by the /chatbot page's rag_assistant) return
+ * RAG/tool results as role:tool messages, not role:user, so a user-only scan
+ * misses PII that arrives via retrieved tool content rather than being typed
+ * by the visitor. Each message is scanned (and, if masked, rewritten)
+ * individually rather than as one joined blob, so a redaction can be written
+ * back to the message it came from.
  */
 function ai_guardrails_ai_chat_messages_alter(array &$messages, array &$context) {
   $config = config('ai_guardrails.settings');
@@ -484,38 +1254,44 @@ function ai_guardrails_ai_chat_messages_alter(array &$messages, array &$context)
     return;
   }
 
-  // Extract the last user message.
-  $user_text = '';
-  foreach (array_reverse($messages) as $msg) {
+  $last_user_index = NULL;
+  foreach ($messages as $index => $msg) {
     if (isset($msg['role']) && $msg['role'] === 'user') {
-      $content = $msg['content'] ?? '';
-      // Content can be a string or an array of parts (vision payloads, etc.).
-      if (is_array($content)) {
-        $parts = [];
-        foreach ($content as $part) {
-          if (isset($part['text'])) {
-            $parts[] = $part['text'];
-          }
-        }
-        $user_text = implode(' ', $parts);
-      }
-      else {
-        $user_text = (string) $content;
-      }
-      break;
+      $last_user_index = $index;
     }
   }
-
-  if (empty($user_text)) {
+  if ($last_user_index === NULL) {
     return;
   }
 
-  $operation = $context['operation'] ?? 'chat';
-  $result = ai_guardrails_run($user_text, 'pre', $operation);
+  $scan_indexes = [$last_user_index];
+  foreach ($messages as $index => $msg) {
+    if ($index > $last_user_index && isset($msg['role']) && $msg['role'] === 'tool') {
+      $scan_indexes[] = $index;
+    }
+  }
 
-  if ($result['blocked']) {
-    $context['guardrail_blocked'] = TRUE;
-    $context['guardrail_message'] = $result['message'];
+  $operation = $context['operation'] ?? 'chat';
+
+  foreach ($scan_indexes as $index) {
+    $text = ai_guardrails_extract_message_text($messages[$index]);
+    if ($text === '') {
+      continue;
+    }
+
+    $result = ai_guardrails_run($text, 'pre', $operation);
+
+    if ($result['blocked']) {
+      $context['guardrail_blocked'] = TRUE;
+      $context['guardrail_message'] = $result['message'];
+      return;
+    }
+
+    // Only rewrite plain-string content; vision-style array payloads are
+    // left as-is rather than guessing how to splice a redaction back in.
+    if ($result['masked'] && is_string($messages[$index]['content'] ?? NULL)) {
+      $messages[$index]['content'] = $result['text'];
+    }
   }
 }
 
@@ -523,7 +1299,9 @@ function ai_guardrails_ai_chat_messages_alter(array &$messages, array &$context)
  * Implements hook_ai_chat_response_alter().
  *
  * Post-generate check: inspect the AI response before it is returned to the
- * caller. Sets $context['guardrail_blocked'] = TRUE to abort delivery.
+ * caller. Sets $context['guardrail_blocked'] = TRUE to abort delivery. When
+ * a guardrail's action is 'mask' rather than 'block', the response is
+ * rewritten with the offending text redacted and delivery proceeds.
  *
  * Note: this hook is only fired for non-streamed responses. Streamed responses
  * are not checked post-generate because the content arrives incrementally.
@@ -543,5 +1321,10 @@ function ai_guardrails_ai_chat_response_alter(&$response, array &$context) {
   if ($result['blocked']) {
     $context['guardrail_blocked'] = TRUE;
     $context['guardrail_message'] = $result['message'];
+    return;
+  }
+
+  if ($result['masked']) {
+    $response = $result['text'];
   }
 }

@@ -1,0 +1,42 @@
+<?php
+
+/**
+ * @file
+ * Install, update, and requirements hooks for AI Translate.
+ */
+
+/**
+ * Implements hook_requirements().
+ */
+function ai_translate_requirements($phase) {
+  $requirements = [];
+
+  if ($phase !== 'runtime') {
+    return $requirements;
+  }
+
+  $language_count = count(language_list());
+  $requirements['ai_translate_languages'] = [
+    'title' => t('AI Translate'),
+    'value' => format_plural($language_count, '1 language configured', '@count languages configured'),
+  ];
+
+  if ($language_count < 2) {
+    $requirements['ai_translate_languages']['severity'] = REQUIREMENT_WARNING;
+    $requirements['ai_translate_languages']['description'] = t('AI Translate needs at least two languages configured under <a href="@url">Regional and language settings</a> before it can translate content. This module does not configure languages itself.', [
+      '@url' => url('admin/config/regional/language'),
+    ]);
+  }
+  else {
+    $requirements['ai_translate_languages']['severity'] = REQUIREMENT_OK;
+  }
+
+  return $requirements;
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function ai_translate_uninstall() {
+  config('ai_translate.settings')->delete();
+}

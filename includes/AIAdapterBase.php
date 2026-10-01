@@ -149,8 +149,9 @@ abstract class AIAdapterBase implements AIProviderClient {
     ];
 
     try {
-      $tool_choice = ['type' => 'function', 'function' => ['name' => 'record_decisions']];
-      $response = $this->chatWithTools($model, $messages, $tools, 0.0, 1024, $tool_choice, $context_extra);
+      // chatWithTools() takes a string tool_choice; with one tool, 'required'
+      // forces record_decisions.
+      $response = $this->chatWithTools($model, $messages, $tools, 0.0, 1024, 'required', $context_extra);
       if (!empty($response['tool_calls'])) {
         foreach ($response['tool_calls'] as $tool_call) {
           $call_name = $tool_call['name'] ?? ($tool_call['function']['name'] ?? '');
@@ -164,7 +165,7 @@ abstract class AIAdapterBase implements AIProviderClient {
         }
       }
     }
-    catch (\Exception $e) {
+    catch (\Throwable $e) {
       // Tool calling may not be supported; fall through to chat.
     }
 

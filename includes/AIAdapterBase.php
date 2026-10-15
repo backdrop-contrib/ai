@@ -123,6 +123,11 @@ abstract class AIAdapterBase implements AIProviderClient {
     if (empty($questions)) {
       return [];
     }
+    foreach ($questions as $q) {
+      if (($q['type'] ?? '') === 'box') {
+        throw new \InvalidArgumentException('Box questions are not supported without native decision support.');
+      }
+    }
 
     if ($model === '') {
       $chat_models = $this->getChatModels();

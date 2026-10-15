@@ -18,11 +18,13 @@ class AIDecisionHelper {
    * Build the typed-question map used by native decision endpoints.
    *
    * TypeSafe AI and Ollama's /v1/systemone take a state plus named questions,
-   * each typed "noul", "choice" or "score" with instructions and criteria.
-   * Choice questions take 'options' (a list, or option => description).
-   * Score questions take optional 'levels' (2-10 descriptions, low to high);
-   * without them a five-level scale is used and the answer is scaled to
-   * 0-100, as emulated decisions return.
+   * each typed "noul", "choice", "score" or "box" with instructions and
+   * criteria. Choice questions take 'options' (a list, or option =>
+   * description). Score questions take optional 'levels' (2-10 descriptions,
+   * low to high); without them a five-level scale is used and the answer is
+   * scaled to 0-100, as emulated decisions return. Box questions locate one
+   * target in an image named in the prompt (e.g. "the logo in `photo`") and
+   * take no criteria; see buildState() for attaching images.
    *
    * @return array
    *   [0] Questions keyed by ID. [1] Per-question metadata for
@@ -58,6 +60,9 @@ class AIDecisionHelper {
         $info['levels'] = $levels;
         $item += ['type' => 'score', 'criteria' => $levels];
       }
+      elseif ($type === 'box') {
+        $item += ['type' => 'box'];
+      }
       else {
         $info['type'] = 'boolean';
         $item += [
@@ -73,6 +78,49 @@ class AIDecisionHelper {
   }
 
   /**
+   * Build the request state and image assets for a native decision request.
+   *
+   * @param string $input
+   *   The text state.
+   * @param array $images
+   *   Images keyed by the name prompts use to refer to them in backticks,
+   *   each a stream wrapper URI or local path to a PNG or JPEG file.
+   *
+   * @return array
+   *   [0] The state: the input string alone, or an object holding the input
+   *   under "text" plus one asset reference per image. [1] The assets map,
+   *   keyed by reference.
+   *
+   * @throws \InvalidArgumentException
+   *   When an image cannot be read or is not a PNG or JPEG.
+   */
+  public static function buildState(string $input, array $images): array {
+    if (!$images) {
+      return [$input, []];
+    }
+    $state = $input !== '' ? ['text' => $input] : [];
+    $assets = [];
+    foreach ($images as $name => $uri) {
+      $name = (string) $name;
+      if (isset($state[$name])) {
+        throw new \InvalidArgumentException(sprintf('Image name "%s" is reserved.', $name));
+      }
+      $formats = ['image/png' => 'png', 'image/jpeg' => 'jpg'];
+      $format = $formats[file_get_mimetype((string) $uri)] ?? NULL;
+      $data = $format ? @file_get_contents((string) $uri) : FALSE;
+      if ($data === FALSE || $data === '') {
+        throw new \InvalidArgumentException(sprintf('Image "%s" is not a readable PNG or JPEG file.', $name));
+      }
+      // References are matched as plain text anywhere in the request, so use
+      // one that cannot occur in the input by accident.
+      $ref = 'img-' . bin2hex(random_bytes(8));
+      $state[$name] = $ref;
+      $assets[$ref] = ['type' => 'image', 'format' => $format, 'data_base64' => base64_encode($data)];
+    }
+    return [$state, $assets];
+  }
+
+  /**
    * Convert a native decision response into normalized decisions.
    *
    * @param array $response
@@ -82,7 +130,9 @@ class AIDecisionHelper {
    *
    * @return array
    *   Decisions in question order: id, type, answer, probability (of the
-   *   returned answer), probabilities and, when supplied, confidence.
+   *   returned answer), probabilities and, when supplied, confidence. A box
+   *   answer is its top, bottom, left and right edges as fractions of the
+   *   image's height and width; its probability is the confidence.
    *
    * @throws \RuntimeException
    *   When an answer is missing, so callers can fall back.
@@ -120,6 +170,25 @@ class AIDecisionHelper {
           'probability' => $probabilities[$choice] ?? 0.0,
           'probabilities' => $probabilities,
           'confidence' => $unit($raw['confidence'] ?? NULL),
+        ];
+      }
+      elseif ($info['type'] === 'box') {
+        $edges = [];
+        foreach (['top', 'bottom', 'left', 'right'] as $edge) {
+          $value = $raw['box'][$edge] ?? NULL;
+          if (!is_numeric($value)) {
+            throw new \RuntimeException(sprintf('The decision response has no box for "%s".', $info['id']));
+          }
+          $edges[$edge] = $unit($value);
+        }
+        $confidence = $unit($raw['confidence'] ?? NULL);
+        $decisions[] = [
+          'id' => $info['id'],
+          'type' => 'box',
+          'answer' => $edges,
+          'probability' => $confidence,
+          'probabilities' => [],
+          'confidence' => $confidence,
         ];
       }
       else {

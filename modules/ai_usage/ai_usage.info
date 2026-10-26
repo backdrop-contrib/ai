@@ -1,6 +1,6 @@
 name = AI Usage
-description = Records normalized AI operation usage for reporting and future budget controls.
-package = AI
+description = Experimental: records normalized AI operation usage for reporting and future budget controls.
+package = AI (Experimental)
 backdrop = 1.x
 type = module
 dependencies[] = ai

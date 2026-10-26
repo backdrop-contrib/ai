@@ -9,7 +9,7 @@
  * Authenticates an incoming MCP request by Bearer token.
  *
  * Reads the Authorization header, extracts the Bearer token, and finds the
- * first server config whose auth_key matches.
+ * first server config whose auth_key_hash matches the token's hash.
  *
  * @return array|FALSE
  *   The matching server config array, or FALSE if no match found.
@@ -20,9 +20,10 @@ function ai_mcp_authenticate_request() {
     return FALSE;
   }
 
+  $token_hash = ai_mcp_hash_token($token);
   $servers = ai_mcp_server_load_all();
   foreach ($servers as $server) {
-    if (!empty($server['auth_key']) && hash_equals($server['auth_key'], $token)) {
+    if (!empty($server['auth_key_hash']) && hash_equals((string) $server['auth_key_hash'], $token_hash)) {
       return $server;
     }
   }

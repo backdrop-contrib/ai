@@ -14,8 +14,13 @@ Exposes `ai_tools` as an MCP-compatible HTTP endpoint for the Backdrop CMS AI mo
 ## Configuration
 
 1. Go to **Administration > Configuration > Services > MCP** (`admin/config/services/mcp`).
-2. Configure the API key and any access restrictions for the MCP endpoint.
-3. Point your MCP client at the endpoint URL shown on the configuration page.
+2. Add a server. Set the user ID that tool calls run as (use a dedicated
+   low-privilege account) and any tool restrictions.
+3. Save. The Bearer token is generated and shown once; only its SHA-256 hash
+   is stored, so exported config never contains a usable token. To replace a
+   lost token, edit the server and check **Generate a new Bearer token**.
+4. Point your MCP client at the endpoint URL shown on the configuration page,
+   sending the token in an `Authorization: Bearer <token>` header.
 
 ### Write tools are off by default
 

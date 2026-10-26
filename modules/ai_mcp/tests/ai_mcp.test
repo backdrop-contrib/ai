@@ -94,7 +94,7 @@ class AIMcpTestCase extends BackdropWebTestCase {
    * Tests that ai_mcp_method_tools_list returns a tools array.
    */
   public function testJsonRpcToolsList() {
-    $server = ['id' => 'test', 'label' => 'Test', 'tools' => [], 'auth_key' => 'x'];
+    $server = ['id' => 'test', 'label' => 'Test', 'tools' => [], 'auth_key_hash' => ai_mcp_hash_token('x')];
     $response = ai_mcp_method_tools_list('1', [], $server);
 
     $this->assertEqual('2.0', $response['jsonrpc'], 'Response has jsonrpc 2.0.');
@@ -122,7 +122,7 @@ class AIMcpTestCase extends BackdropWebTestCase {
     }
 
     $first_key = key($all_tools);
-    $server    = ['id' => 'test', 'label' => 'Test', 'tools' => [$first_key], 'auth_key' => 'x'];
+    $server    = ['id' => 'test', 'label' => 'Test', 'tools' => [$first_key], 'auth_key_hash' => ai_mcp_hash_token('x')];
     $response  = ai_mcp_method_tools_list('2', [], $server);
 
     $this->assertEqual(1, count($response['result']['tools']), 'Filtered list returns exactly one tool.');
@@ -137,7 +137,7 @@ class AIMcpTestCase extends BackdropWebTestCase {
    * Tests that ai_mcp_method_initialize returns expected protocol fields.
    */
   public function testJsonRpcInitialize() {
-    $server   = ['id' => 'test', 'label' => 'My MCP', 'tools' => [], 'auth_key' => 'x'];
+    $server   = ['id' => 'test', 'label' => 'My MCP', 'tools' => [], 'auth_key_hash' => ai_mcp_hash_token('x')];
     $response = ai_mcp_method_initialize('1', [], $server);
 
     $this->assertEqual('2.0', $response['jsonrpc'], 'Response has jsonrpc 2.0.');
@@ -166,7 +166,7 @@ class AIMcpTestCase extends BackdropWebTestCase {
     $server = [
       'id'           => 'test_save_load_' . mt_rand(100, 999),
       'label'        => 'Test Save/Load Server',
-      'auth_key'     => 'test-bearer-token-abc123',
+      'auth_key_hash' => ai_mcp_hash_token('test-bearer-token-abc123'),
       'tools'        => ['get_node_info', 'list_nodes'],
       'oauth_enabled'=> FALSE,
     ];
@@ -178,7 +178,7 @@ class AIMcpTestCase extends BackdropWebTestCase {
     $this->assertTrue(is_array($loaded), 'Loaded server is an array.');
     $this->assertEqual($server['id'],       $loaded['id'],       'Loaded id matches saved id.');
     $this->assertEqual($server['label'],    $loaded['label'],    'Loaded label matches saved label.');
-    $this->assertEqual($server['auth_key'], $loaded['auth_key'], 'Loaded auth_key matches saved auth_key.');
+    $this->assertEqual($server['auth_key_hash'], $loaded['auth_key_hash'], 'Loaded auth_key_hash matches saved auth_key_hash.');
     $this->assertEqual($server['tools'],    $loaded['tools'],    'Loaded tools array matches saved tools.');
 
     // Verify it appears in load_all().
@@ -215,7 +215,7 @@ class AIMcpTestCase extends BackdropWebTestCase {
     $server = [
       'id'           => 'auth_test_server_' . mt_rand(100, 999),
       'label'        => 'Auth Test Server',
-      'auth_key'     => $token,
+      'auth_key_hash' => ai_mcp_hash_token($token),
       'tools'        => [],
       'oauth_enabled'=> FALSE,
     ];
@@ -257,7 +257,7 @@ class AIMcpTestCase extends BackdropWebTestCase {
    * Tests that the dispatcher routes unknown methods to a -32601 error.
    */
   public function testJsonRpcDispatchUnknownMethod() {
-    $server = ['id' => 'test', 'label' => 'Test', 'tools' => [], 'auth_key' => 'x'];
+    $server = ['id' => 'test', 'label' => 'Test', 'tools' => [], 'auth_key_hash' => ai_mcp_hash_token('x')];
     $body   = [
       'jsonrpc' => '2.0',
       'id'      => '99',
@@ -275,7 +275,7 @@ class AIMcpTestCase extends BackdropWebTestCase {
    * Tests that tools/call returns isError TRUE for unknown tool names.
    */
   public function testJsonRpcToolsCallUnknownTool() {
-    $server = ['id' => 'test', 'label' => 'Test', 'tools' => [], 'auth_key' => 'x'];
+    $server = ['id' => 'test', 'label' => 'Test', 'tools' => [], 'auth_key_hash' => ai_mcp_hash_token('x')];
     $params = ['name' => 'nonexistent_tool_xyz', 'arguments' => []];
 
     $response = ai_mcp_method_tools_call('3', $params, $server);

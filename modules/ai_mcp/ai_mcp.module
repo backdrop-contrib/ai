@@ -171,6 +171,22 @@ function ai_mcp_server_save(array $server) {
 }
 
 /**
+ * Hashes a Bearer token for storage and comparison.
+ *
+ * Servers store only this hash ('auth_key_hash'), so exported config never
+ * contains a usable token.
+ *
+ * @param string $token
+ *   The plain Bearer token.
+ *
+ * @return string
+ *   Hex SHA-256 hash of the token.
+ */
+function ai_mcp_hash_token($token) {
+  return hash('sha256', (string) $token);
+}
+
+/**
  * Deletes an MCP server config.
  *
  * @param string $id

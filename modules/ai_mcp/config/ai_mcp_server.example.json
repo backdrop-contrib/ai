@@ -2,7 +2,7 @@
   "_config_name": "ai_mcp_server.example",
   "id": "example",
   "label": "Example MCP Server",
-  "auth_key": "",
+  "auth_key_hash": "",
   "tools": [],
   "allow_write_tools": false,
   "oauth_enabled": false

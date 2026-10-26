@@ -244,6 +244,19 @@ function ai_menu() {
     'file' => 'ai.logs.pages.inc',
   ];
 
+  // Admin menu categories. ai_menu_link_alter() moves each top-level AI link
+  // under one of these so the admin bar flyout stays short.
+  foreach (ai_admin_menu_sections() as $category => $path) {
+    $items[$path] = [
+      'title' => $category,
+      'page callback' => 'system_admin_menu_block_page',
+      'access callback' => 'ai_admin_menu_section_access',
+      'access arguments' => [$path],
+      'file' => 'system.admin.inc',
+      'file path' => backdrop_get_path('module', 'system'),
+      'weight' => 10,
+    ];
+  }
 
   return $items;
 }
@@ -294,7 +307,7 @@ function ai_admin_overview() {
     }
 
     $path = $link->path;
-    if ($path === 'admin/config/ai') {
+    if ($path === 'admin/config/ai' || in_array($path, ai_admin_menu_sections(), TRUE)) {
       continue;
     }
 
@@ -406,6 +419,84 @@ function ai_admin_overview_category($path, $title) {
   }
 
   return 'Other';
+}
+
+/**
+ * Admin menu category paths, keyed by ai_admin_overview_category() label.
+ *
+ * Core links stay directly under admin/config/ai. Integrations is left out:
+ * no admin/config/ai link maps to it.
+ */
+function ai_admin_menu_sections() {
+  return [
+    'Content and Editorial' => 'admin/config/ai/group-content',
+    'Safety and Governance' => 'admin/config/ai/group-safety',
+    'Agents and Automation' => 'admin/config/ai/group-agents',
+    'Diagnostics' => 'admin/config/ai/group-diagnostics',
+    'Other' => 'admin/config/ai/group-other',
+  ];
+}
+
+/**
+ * Access callback: show a category only when it holds visible links.
+ */
+function ai_admin_menu_section_access($path) {
+  if (!user_access('administer site configuration')) {
+    return FALSE;
+  }
+  return (bool) db_query("SELECT 1 FROM {menu_links} c INNER JOIN {menu_links} p ON c.plid = p.mlid WHERE p.link_path = :path AND p.module = 'system' AND c.hidden = 0", [':path' => $path])->fetchField();
+}
+
+/**
+ * Implements hook_menu_link_alter().
+ *
+ * Re-parents router links that would sit directly under admin/config/ai into
+ * their admin menu category. Paths do not change.
+ */
+function ai_menu_link_alter(&$item) {
+  $path = $item['link_path'];
+  if (empty($item['module']) || $item['module'] !== 'system' || strpos($path, 'admin/config/ai/') !== 0) {
+    return;
+  }
+  $sections = ai_admin_menu_sections();
+  if (in_array($path, $sections, TRUE)) {
+    return;
+  }
+
+  // Deeper links keep their own parent, unless that parent has no router
+  // item (e.g. admin/config/ai/search/block-log).
+  $top = implode('/', array_slice(explode('/', $path), 0, 4));
+  if ($top !== $path && db_query('SELECT 1 FROM {menu_router} WHERE path = :path', [':path' => $top])->fetchField()) {
+    return;
+  }
+
+  $title = isset($item['link_title']) ? $item['link_title'] : (isset($item['title']) ? $item['title'] : '');
+  $category = ai_admin_overview_category($path, $title);
+  $parent = isset($sections[$category]) ? $sections[$category] : 'admin/config/ai';
+  if ($plid = ai_admin_menu_link_mlid($parent)) {
+    $item['plid'] = $plid;
+  }
+}
+
+/**
+ * Returns the mlid of a system menu link, saving a category link if missing.
+ */
+function ai_admin_menu_link_mlid($path) {
+  $mlid = db_query("SELECT mlid FROM {menu_links} WHERE link_path = :path AND module = 'system'", [':path' => $path])->fetchField();
+  if (!$mlid && in_array($path, ai_admin_menu_sections(), TRUE)) {
+    // Menu rebuild saves links shallowest first but in no set order within a
+    // depth, so a category can come after the links it holds. Save it now;
+    // the rebuild then finds and updates this link. {menu_router} has no menu
+    // name, so the parent must be given for the link to land in its menu.
+    $router = db_query('SELECT * FROM {menu_router} WHERE path = :path', [':path' => $path])->fetchAssoc();
+    $root = ai_admin_menu_link_mlid('admin/config/ai');
+    if ($router && $root) {
+      $link = _menu_link_build($router);
+      $link['plid'] = $root;
+      $mlid = menu_link_save($link);
+    }
+  }
+  return $mlid;
 }
 
 /**

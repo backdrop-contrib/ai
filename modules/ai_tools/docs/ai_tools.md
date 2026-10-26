@@ -17,7 +17,7 @@ The module provides:
 The built-in tool families currently cover:
 
 - Site information
-- Nodes/content (read, plus `create_node`)
+- Nodes/content (read, plus `create_node` and `set_node_published`)
 - Taxonomy (read, plus term and vocabulary writes)
 - Users
 - Content types (read, plus create/edit)

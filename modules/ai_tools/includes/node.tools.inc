@@ -159,6 +159,34 @@ function ai_tools_node_definitions() {
       'module'      => 'ai_tools',
       'category'    => 'node',
     ],
+    'set_node_published' => [
+      'definition' => [
+        'type'     => 'function',
+        'function' => [
+          'name'        => 'set_node_published',
+          'description' => 'Publish or unpublish an existing node. Call get_node_info first to confirm the node and its current status.',
+          'parameters'  => [
+            'type'       => 'object',
+            'properties' => [
+              'node_id' => [
+                'type'        => 'integer',
+                'description' => 'The numeric node ID (nid).',
+              ],
+              'published' => [
+                'type'        => 'boolean',
+                'description' => 'TRUE to publish, FALSE to unpublish.',
+              ],
+            ],
+            'required' => ['node_id', 'published'],
+          ],
+        ],
+      ],
+      'execute'     => 'ai_tools_execute_set_node_published',
+      'operation'   => 'write',
+      'destructive' => FALSE,
+      'module'      => 'ai_tools',
+      'category'    => 'node',
+    ],
   ];
 }
 
@@ -319,6 +347,38 @@ function ai_tools_execute_create_node(array $args) {
     'nid' => (int) $node->nid,
     'title' => $node->title,
     'type' => $node->type,
+    'published' => (bool) $node->status,
+  ];
+}
+
+function ai_tools_execute_set_node_published(array $args) {
+  $nid = (int) ($args['node_id'] ?? 0);
+  if (!$nid) {
+    return ['error' => 'node_id must be a positive integer.'];
+  }
+  if (!isset($args['published'])) {
+    return ['error' => 'published is required.'];
+  }
+  $node = node_load($nid);
+  if (!$node) {
+    return ['error' => "Node $nid not found."];
+  }
+  // Changing status needs edit access and the permission the node form
+  // requires for the Published checkbox.
+  if (!node_access('update', $node) || !user_access('administer nodes')) {
+    return ['error' => "Access denied: you may not change the published status of node $nid."];
+  }
+
+  $published = (bool) $args['published'];
+  if ((bool) $node->status !== $published) {
+    $node->status = $published ? 1 : 0;
+    node_save($node);
+  }
+
+  return [
+    'status' => 'updated',
+    'nid' => (int) $node->nid,
+    'title' => $node->title,
     'published' => (bool) $node->status,
   ];
 }

@@ -107,14 +107,21 @@ function ai_mcp_server_form(array $form, array &$form_state, $server = NULL) {
     '#description'   => t('Unique identifier (cannot be changed after creation).'),
   ];
 
-  $form['auth_key'] = [
-    '#type'          => 'textfield',
-    '#title'         => t('Auth key (Bearer token)'),
-    '#default_value' => $is_new ? '' : $server['auth_key'],
-    '#required'      => TRUE,
-    '#description'   => t('Clients must send this token in the <code>Authorization: Bearer &lt;token&gt;</code> header.'),
-    '#attributes'    => ['autocomplete' => 'off'],
-  ];
+  // The token is generated on save and shown once; only its hash is stored.
+  if ($is_new || empty($server['auth_key_hash'])) {
+    $form['auth_key_info'] = [
+      '#type'   => 'item',
+      '#title'  => t('Bearer token'),
+      '#markup' => t('A token is generated when you save and shown once. Clients send it in the <code>Authorization: Bearer &lt;token&gt;</code> header.'),
+    ];
+  }
+  else {
+    $form['regenerate_token'] = [
+      '#type'          => 'checkbox',
+      '#title'         => t('Generate a new Bearer token'),
+      '#description'   => t('Only a hash of the current token is stored, so it cannot be shown again. A new token replaces it, and clients using the old one lose access.'),
+    ];
+  }
 
   $form['uid'] = [
     '#type'          => 'number',
@@ -171,11 +178,6 @@ function ai_mcp_server_form(array $form, array &$form_state, $server = NULL) {
  * Validates the server form.
  */
 function ai_mcp_server_form_validate(array $form, array &$form_state) {
-  $auth_key = trim($form_state['values']['auth_key']);
-  if (empty($auth_key)) {
-    form_set_error('auth_key', t('Auth key is required.'));
-  }
-
   $uid_raw = isset($form_state['values']['uid']) ? trim((string) $form_state['values']['uid']) : '';
   if ($uid_raw !== '') {
     if (!ctype_digit($uid_raw)) {
@@ -213,10 +215,17 @@ function ai_mcp_server_form_submit(array $form, array &$form_state) {
   $raw_tools   = isset($values['tools']) ? $values['tools'] : [];
   $tools_clean = array_values(array_filter($raw_tools));
 
+  $token = NULL;
+  $token_hash = $is_new ? '' : (string) ($form['#server']['auth_key_hash'] ?? '');
+  if ($token_hash === '' || !empty($values['regenerate_token'])) {
+    $token = backdrop_random_key(32);
+    $token_hash = ai_mcp_hash_token($token);
+  }
+
   $server = [
     'id'           => $values['id'],
     'label'        => $values['label'],
-    'auth_key'     => trim($values['auth_key']),
+    'auth_key_hash' => $token_hash,
     'uid'          => $uid_raw === '' ? 0 : (int) $uid_raw,
     'tools'        => $tools_clean,
     'allow_write_tools' => !empty($values['allow_write_tools']),
@@ -229,6 +238,12 @@ function ai_mcp_server_form_submit(array $form, array &$form_state) {
     ? t('MCP server %label created.', ['%label' => $server['label']])
     : t('MCP server %label updated.', ['%label' => $server['label']])
   );
+  if ($token !== NULL) {
+    backdrop_set_message(t('Bearer token for %label: <code>@token</code><br>Copy it now. It is stored only as a hash and will not be shown again.', [
+      '%label' => $server['label'],
+      '@token' => $token,
+    ]), 'warning');
+  }
 
   $form_state['redirect'] = 'admin/config/services/mcp';
 }

@@ -18,6 +18,35 @@ class AIUsageTestCase extends BackdropWebTestCase {
     $providers->save();
   }
 
+  /**
+   * Replace the AI model catalog, keyed by "provider/model".
+   *
+   * Each value holds input and output rates plus optional catalog fields;
+   * family defaults to "test".
+   */
+  protected function setSyncedPrices(array $values) {
+    db_delete('ai_model_catalog')->execute();
+    foreach ($values as $key => $rates) {
+      list($provider, $model) = explode('/', $key, 2);
+      db_insert('ai_model_catalog')
+        ->fields([
+          'provider' => $provider,
+          'model' => $model,
+          'input_usd' => $rates['input'],
+          'output_usd' => $rates['output'],
+          'cache_read_usd' => $rates['cache_read'] ?? NULL,
+          'cache_write_usd' => $rates['cache_write'] ?? NULL,
+          'tool_call' => $rates['tool_call'] ?? NULL,
+          'family' => $rates['family'] ?? 'test',
+          'status' => $rates['status'] ?? '',
+          'price_source' => 'models.dev',
+        ])
+        ->execute();
+    }
+    state_set('ai_catalog_synced', REQUEST_TIME);
+    backdrop_static_reset('ai_model_catalog_provider');
+  }
+
   public function testProviderUsageNormalization() {
     $usage = ai_usage_normalize_usage([
       'prompt_tokens' => 12,
@@ -73,6 +102,207 @@ class AIUsageTestCase extends BackdropWebTestCase {
     $this->assertEqual(7, (int) $row->total_tokens, 'Provider totals are preserved without estimation.');
     $this->assertEqual(0.011, round((float) $row->cost_usd, 3), 'Manual model pricing is applied to normalized usage.');
     $this->assertEqual('manual', $row->cost_source, 'Manual pricing is labeled separately from provider usage quality.');
+  }
+
+  public function testCachedInputPricing() {
+    $this->setSyncedPrices([
+      'test/cached-model' => ['input' => 0.001, 'output' => 0.002, 'cache_read' => 0.0001],
+    ]);
+    $record_id = ai_usage_record_operation([
+      'module' => 'ai_usage_test',
+      'operation' => 'chat',
+      'provider' => 'test',
+      'model' => 'cached-model',
+      'usage' => ['input_tokens' => 100, 'output_tokens' => 10, 'cached_tokens' => 80, 'total_tokens' => 110],
+      'status' => TRUE,
+    ]);
+    $row = db_query('SELECT * FROM {ai_usage_records} WHERE id = :id', [':id' => $record_id])->fetchObject();
+    $this->assertEqual(0.028, round((float) $row->input_cost_usd, 6), 'Cached input is billed at the cache-read rate.');
+
+    $usage = ai_usage_normalize_usage(['input_tokens' => 20, 'cache_read_input_tokens' => 60, 'cache_creation_input_tokens' => 20, 'output_tokens' => 10]);
+    $this->assertEqual(100, $usage['input_tokens'], 'Anthropic cache reads and writes are folded into input tokens.');
+    $this->assertEqual(60, $usage['cached_tokens'], 'Anthropic cache reads count as cached tokens.');
+    $this->assertEqual(20, $usage['cache_write_tokens'], 'Anthropic cache writes are counted separately.');
+
+    $this->setSyncedPrices([
+      'test/cached-model' => ['input' => 0.001, 'output' => 0.002, 'cache_read' => 0.0001, 'cache_write' => 0.00125],
+    ]);
+    $record_id = ai_usage_record_operation([
+      'module' => 'ai_usage_test',
+      'operation' => 'chat',
+      'provider' => 'test',
+      'model' => 'cached-model',
+      'usage' => $usage,
+      'status' => TRUE,
+    ]);
+    $row = db_query('SELECT * FROM {ai_usage_records} WHERE id = :id', [':id' => $record_id])->fetchObject();
+    $this->assertEqual(20, (int) $row->cache_write_tokens, 'The ledger records cache write tokens.');
+    $this->assertEqual(0.051, round((float) $row->input_cost_usd, 6), 'Cache writes are billed at the cache-write rate.');
+  }
+
+  public function testSyncedPricingAndManualOverride() {
+    $this->setSyncedPrices([
+      'test/test-model' => ['input' => 0.001, 'output' => 0.001],
+      'test/other-model' => ['input' => 0.5, 'output' => 0.5],
+    ]);
+    $config = config('ai_usage.settings');
+    $config->set('pricing', ['test/other-model' => ['input' => 0.002, 'output' => 0.002]]);
+    $config->save();
+
+    $synced = ai_usage_get_pricing('test', 'test-model');
+    $this->assertEqual('synced', $synced['source'], 'Synced catalog prices apply when no manual row exists.');
+    $manual = ai_usage_get_pricing('test', 'other-model');
+    $this->assertEqual('manual', $manual['source'], 'A manual row overrides the synced price.');
+    $this->assertEqual(0.002, $manual['input'], 'The manual rate is used.');
+    $this->assertNull(ai_usage_get_pricing('test', 'unpriced-model'), 'Unpriced models have no price.');
+
+    $record_id = ai_usage_record_operation([
+      'module' => 'ai_usage_test',
+      'operation' => 'chat',
+      'provider' => 'test',
+      'model' => 'test-model',
+      'usage' => ['input_tokens' => 3, 'output_tokens' => 4, 'total_tokens' => 7],
+      'status' => TRUE,
+    ]);
+    $row = db_query('SELECT * FROM {ai_usage_records} WHERE id = :id', [':id' => $record_id])->fetchObject();
+    $this->assertEqual(0.007, round((float) $row->cost_usd, 3), 'Synced pricing is applied to usage records.');
+    $this->assertEqual('synced', $row->cost_source, 'Synced pricing is labeled as such.');
+  }
+
+  /**
+   * Prices two agent_test chat models and makes both discoverable.
+   */
+  protected function setUpEconomyModels() {
+    cache_set(ai_models_cache_key('agent_test', 'getChatModels'), ['big-model' => 'Big', 'small-model' => 'Small', 'unpriced-model' => 'Unpriced'], 'cache', REQUEST_TIME + 3600);
+    $this->setSyncedPrices([
+      'agent_test/big-model' => ['input' => 0.00001, 'output' => 0.00003],
+      'agent_test/small-model' => ['input' => 0.0000001, 'output' => 0.0000004],
+    ]);
+    AITestSupportAdapter::$chatCalls = [];
+  }
+
+  public function testEconomySwitchesToCheaperModel() {
+    $this->setUpEconomyModels();
+    $config = config('ai_usage.settings');
+    $config->set('economy_default', TRUE);
+    $config->save();
+
+    $api = ai_get_api('agent_test');
+    $api->setCallerModule('ai_usage_test');
+    $api->chat('big-model', [['role' => 'user', 'content' => 'hello']], 0.2, 64);
+    $this->assertEqual('small-model', AITestSupportAdapter::$chatCalls[0]['model'], 'The cheapest capable priced model is used.');
+    $row = db_query('SELECT * FROM {ai_usage_records} ORDER BY id DESC')->fetchObject();
+    $this->assertEqual('small-model', $row->model, 'The ledger records the model that ran.');
+    $this->assertEqual('big-model', $row->requested_model, 'The ledger records the requested model.');
+
+    AITestSupportAdapter::$chatCalls = [];
+    $api->chat('unpriced-model', [['role' => 'user', 'content' => 'hello']], 0.2, 64);
+    $this->assertEqual('unpriced-model', AITestSupportAdapter::$chatCalls[0]['model'], 'An unpriced requested model is never switched.');
+  }
+
+  public function testEconomyFamilyAndDeprecation() {
+    $this->setUpEconomyModels();
+    cache_set(ai_models_cache_key('agent_test', 'getChatModels'), ['big-model' => 'Big', 'other-family' => 'Other', 'old-model' => 'Old', 'tier-model' => 'Tier'], 'cache', REQUEST_TIME + 3600);
+    $this->setSyncedPrices([
+      'agent_test/big-model' => ['input' => 0.00001, 'output' => 0.00003],
+      'agent_test/other-family' => ['input' => 0.0000001, 'output' => 0.0000001, 'family' => 'other'],
+      'agent_test/old-model' => ['input' => 0.0000001, 'output' => 0.0000002, 'status' => 'deprecated'],
+      'agent_test/tier-model' => ['input' => 0.000001, 'output' => 0.000002, 'family' => 'test-mini'],
+    ]);
+    $config = config('ai_usage.settings');
+    $config->set('economy_default', TRUE);
+    $config->save();
+
+    $api = ai_get_api('agent_test');
+    $api->setCallerModule('ai_usage_test');
+    $api->chat('big-model', [['role' => 'user', 'content' => 'hello']], 0.2, 64);
+    $this->assertEqual('tier-model', AITestSupportAdapter::$chatCalls[0]['model'], 'A smaller tier of the family qualifies; other families and deprecated models do not.');
+  }
+
+  public function testEconomyModuleOverride() {
+    $this->setUpEconomyModels();
+    $config = config('ai_usage.settings');
+    $config->set('economy_default', TRUE);
+    $config->set('economy_modules', ['ai_usage_test' => 'off', 'ai_usage_cheap' => 'on']);
+    $config->save();
+
+    $api = ai_get_api('agent_test');
+    $api->setCallerModule('ai_usage_test');
+    $api->chat('big-model', [['role' => 'user', 'content' => 'hello']], 0.2, 64);
+    $this->assertEqual('big-model', AITestSupportAdapter::$chatCalls[0]['model'], 'A module set to off overrides the site default.');
+
+    $config->set('economy_default', FALSE);
+    $config->save();
+    AITestSupportAdapter::$chatCalls = [];
+    $api->setCallerModule('ai_usage_cheap');
+    $api->chat('big-model', [['role' => 'user', 'content' => 'hello']], 0.2, 64);
+    $this->assertEqual('small-model', AITestSupportAdapter::$chatCalls[0]['model'], 'A module set to on switches even when the default is off.');
+  }
+
+  public function testEconomyRetriesRequestedModel() {
+    $this->setUpEconomyModels();
+    $config = config('ai_usage.settings');
+    $config->set('economy_default', TRUE);
+    $config->save();
+
+    $api = ai_get_api('agent_test');
+    $api->setCallerModule('ai_usage_test');
+    try {
+      $api->chat('big-model', [['role' => 'user', 'content' => 'hello']], 0.2, 64, FALSE, ['throw_runtime_exception' => TRUE]);
+      $this->fail('The adapter failure is rethrown.');
+    }
+    catch (Exception $e) {
+      $this->pass('The adapter failure is rethrown after the retry.');
+    }
+    $models = array_column(AITestSupportAdapter::$chatCalls, 'model');
+    $this->assertEqual(['small-model', 'big-model'], $models, 'A failed cheaper call is retried once on the requested model.');
+  }
+
+  public function testPricingPage() {
+    $this->setSyncedPrices([
+      'agent_test/synced-model' => ['input' => 0.00000025, 'output' => 0.000002],
+      'agent_test/overridden-model' => ['input' => 0.5, 'output' => 0.5],
+    ]);
+    $config = config('ai_usage.settings');
+    $config->set('pricing', ['agent_test/overridden-model' => ['input' => 0.000001, 'output' => 0.000003]]);
+    $config->save();
+
+    $this->backdropLogin($this->backdropCreateUser(['view ai usage']));
+    $this->backdropGet('admin/reports/ai-usage/pricing');
+    $this->assertResponse(200, 'The price list is available to usage viewers.');
+    $this->assertText('synced-model', 'Synced models are listed.');
+    $this->assertText('$0.25', 'Per-token rates are shown per million tokens.');
+    $this->assertText('manual override', 'Manual rows that replace synced prices are labeled.');
+    $this->assertNoText('$500000', 'The overridden synced rate is not shown.');
+    $this->assertLinkByHref('admin/reports/ai-usage/pricing?sort=asc&order=Model', 0, 'Columns are sortable.');
+
+    $many = [];
+    for ($i = 0; $i < 60; $i++) {
+      $many['zz_provider/bulk-' . sprintf('%02d', $i)] = ['input' => 0.000001, 'output' => 0.000001];
+    }
+    $many['agent_test/synced-model'] = ['input' => 0.00000025, 'output' => 0.000002];
+    $this->setSyncedPrices($many);
+    $this->backdropGet('admin/reports/ai-usage/pricing');
+    $this->assertLinkByHref('admin/reports/ai-usage/pricing?page=1', 0, 'Long price lists are paged.');
+
+    $this->backdropPost('admin/reports/ai-usage/pricing', ['provider' => 'agent_test'], t('Filter'));
+    $this->assertText('synced-model', 'The provider filter keeps matching models.');
+    $this->assertNoText('bulk-01', 'The provider filter hides other providers.');
+    $this->backdropPost('admin/reports/ai-usage/pricing', ['provider' => '', 'model' => 'bulk-5'], t('Filter'));
+    $this->assertText('bulk-55', 'The model filter matches part of a model ID.');
+    $this->assertNoText('synced-model', 'The model filter hides non-matching models.');
+
+    $this->setSyncedPrices([
+      'agent_test/tool-model' => ['input' => 0.000001, 'output' => 0.000001, 'tool_call' => 1],
+      'agent_test/plain-model' => ['input' => 0.000001, 'output' => 0.000001, 'tool_call' => 0],
+      'agent_test/retired-model' => ['input' => 0.000001, 'output' => 0.000001, 'status' => 'deprecated'],
+    ]);
+    $this->backdropPost('admin/reports/ai-usage/pricing', ['provider' => '', 'model' => '', 'capability' => 'tool_call'], t('Filter'));
+    $this->assertText('tool-model', 'The capability filter keeps capable models.');
+    $this->assertNoText('plain-model', 'The capability filter hides models without the capability.');
+    $this->backdropPost('admin/reports/ai-usage/pricing', ['provider' => '', 'model' => '', 'capability' => '', 'hide_deprecated' => TRUE], t('Filter'));
+    $this->assertNoText('retired-model', 'Deprecated models can be hidden.');
+    $this->assertLinkByHref('admin/reports/ai-usage/pricing?sort=asc&order=Tools', 0, 'The price list sorts by capability.');
   }
 
   public function testCoreApiRecordsAnOperation() {

@@ -17,6 +17,13 @@ class AIApi {
     $this->client = $this->initializeProviderClient($api_key, $this->provider);
   }
 
+  /**
+   * The provider ID this API wraps.
+   */
+  public function getProviderId(): string {
+    return (string) $this->provider;
+  }
+
   public function setCallerModule($module) {
     $this->callerModule = $module;
     return $this;
@@ -177,6 +184,14 @@ class AIApi {
       $reasoning = $this->firstUsageNumber($usage['completion_tokens_details'] ?? [], ['reasoning_tokens'])
         ?: $this->firstUsageNumber($usage['output_tokens_details'] ?? [], ['reasoning_tokens']);
     }
+    $cache_write = $this->firstUsageNumber($usage, ['cache_write_tokens', 'cache_creation_input_tokens']);
+    // Anthropic-style envelopes report cache reads and writes beside
+    // input_tokens rather than inside it; fold them in so input_tokens is
+    // always the whole prompt, with cached_tokens and cache_write_tokens the
+    // parts of it read from and written to the cache.
+    if (array_key_exists('cache_read_input_tokens', $usage) || array_key_exists('cache_creation_input_tokens', $usage)) {
+      $input += $cached + $cache_write;
+    }
     $total = $this->firstUsageNumber($usage, ['total_tokens', 'totalTokenCount']);
     if ($total <= 0) {
       $total = $input + $output;
@@ -186,6 +201,7 @@ class AIApi {
       'input_tokens' => $input,
       'output_tokens' => $output,
       'cached_tokens' => $cached,
+      'cache_write_tokens' => $cache_write,
       'reasoning_tokens' => $reasoning,
       'total_tokens' => $total,
     ];
@@ -222,6 +238,7 @@ class AIApi {
       'operation' => $record_operation,
       'provider' => $this->provider,
       'model' => $model,
+      'requested_model' => $context['requested_model'] ?? '',
       'request_id' => $context['request_id'] ?? '',
       'context_group' => $context['usage_group'] ?? '',
       'status' => $status,
@@ -365,13 +382,48 @@ class AIApi {
     $manual = ai_get_provider_manual_capability_models($this->provider);
     $canonical = ai_normalize_capability_name($capability);
     if (!array_key_exists($canonical, $manual)) {
-      return $models;
+      return $models ?: $this->catalogCapabilityModels($canonical);
     }
     // An explicit empty list disables the capability without fetching models.
     if (!$manual[$canonical]) {
       return [];
     }
     return ai_filter_models_by_manual_capability($this->getModels(), $this->provider, $canonical);
+  }
+
+  /**
+   * Catalog models with a capability, for providers that report none.
+   *
+   * Only fills an empty provider answer, and only with models the provider
+   * itself lists, so the provider API stays authoritative where it speaks.
+   */
+  protected function catalogCapabilityModels(string $capability): array {
+    $fields = ['tool_calling' => 'tool_call', 'vision' => 'vision', 'thinking' => 'reasoning'];
+    if (!isset($fields[$capability]) || !function_exists('ai_model_catalog_provider')) {
+      return [];
+    }
+    $catalog = ai_model_catalog_provider($this->provider);
+    if (!$catalog) {
+      return [];
+    }
+    $models = [];
+    foreach (ai_get_provider_models_for_method($this->provider, 'getModels') as $model_id => $label) {
+      if (($catalog[$model_id][$fields[$capability]] ?? NULL) === 1) {
+        $models[$model_id] = $label;
+      }
+    }
+    return $models;
+  }
+
+  /**
+   * Cap max_tokens at the catalog output limit for the model.
+   */
+  protected function capMaxTokens(string $model, $max_tokens) {
+    $entry = function_exists('ai_model_catalog_entry') ? ai_model_catalog_entry($this->provider, $model) : NULL;
+    if ($entry && $entry['output_limit'] && (int) $max_tokens > $entry['output_limit']) {
+      return $entry['output_limit'];
+    }
+    return $max_tokens;
   }
 
   public function getModelsByCapability($capability): array {
@@ -475,7 +527,49 @@ class AIApi {
     return $this->applyCapabilityOverride($this->client->getDecisionModels(), 'decision');
   }
 
+  /**
+   * Let modules swap the requested model before a text operation runs.
+   *
+   * Implementations of hook_ai_operation_model_alter(&$model, $info) receive
+   * the provider, operation, calling module, and the capabilities any
+   * replacement model must support. A context that already carries
+   * requested_model was resolved once and is left alone, so a retry on the
+   * requested model never switches again.
+   */
+  protected function alterOperationModel(string $operation, string $model, array $capabilities, array $context_extra): string {
+    if ($model === '' || array_key_exists('requested_model', $context_extra) || !function_exists('backdrop_alter')) {
+      return $model;
+    }
+    $selected = $model;
+    $info = [
+      'provider' => $this->provider,
+      'operation' => $operation,
+      'module' => $this->detectCallerModule(),
+      'capabilities' => $capabilities,
+    ];
+    backdrop_alter('ai_operation_model', $selected, $info);
+    return is_string($selected) && $selected !== '' ? $selected : $model;
+  }
+
+  /**
+   * Whether any message carries an image part.
+   */
+  protected function messagesNeedVision(array $messages): bool {
+    foreach ($messages as $message) {
+      if (!is_array($message) || !is_array($message['content'] ?? NULL)) {
+        continue;
+      }
+      foreach ($message['content'] as $part) {
+        if (is_array($part) && ($part['type'] ?? '') === 'image_url') {
+          return TRUE;
+        }
+      }
+    }
+    return FALSE;
+  }
+
   public function completions(string $model, string $prompt, $temperature, $max_tokens = 512, bool $stream_response = FALSE, array $context_extra = []) {
+    $max_tokens = $this->capMaxTokens($model, $max_tokens);
     $this->checkRateLimit('completions', $model);
     $start_time = microtime(TRUE);
     $context = $this->beginUsageOperation('completions', $model, $context_extra);
@@ -501,6 +595,21 @@ class AIApi {
   }
 
   public function chat(string $model, array $messages, $temperature, $max_tokens = 1024, bool $stream_response = FALSE, array $context_extra = []) {
+    $capabilities = $this->messagesNeedVision($messages) ? ['text', 'vision'] : ['text'];
+    $selected = $this->alterOperationModel('chat', $model, $capabilities, $context_extra);
+    if ($selected !== $model) {
+      try {
+        return $this->chat($selected, $messages, $temperature, $max_tokens, $stream_response, ['requested_model' => $model] + $context_extra);
+      }
+      catch (\Throwable $e) {
+        // A stream may already have sent output, so it is never replayed.
+        if ($stream_response) {
+          throw $e;
+        }
+      }
+    }
+
+    $max_tokens = $this->capMaxTokens($model, $max_tokens);
     $this->checkRateLimit('chat', $model);
     $start_time = microtime(TRUE);
     $log_messages = (isset($context_extra['log_messages']) && is_array($context_extra['log_messages'])) ? $context_extra['log_messages'] : $messages;
@@ -616,6 +725,18 @@ class AIApi {
   }
 
   public function chatWithTools(string $model, array $messages, array $tools, $temperature, $max_tokens = 1024, string $tool_choice = 'auto', array $context_extra = []): array {
+    $capabilities = $this->messagesNeedVision($messages) ? ['text', 'tool_calling', 'vision'] : ['text', 'tool_calling'];
+    $selected = $this->alterOperationModel('chat', $model, $capabilities, $context_extra);
+    if ($selected !== $model) {
+      try {
+        return $this->chatWithTools($selected, $messages, $tools, $temperature, $max_tokens, $tool_choice, ['requested_model' => $model] + $context_extra);
+      }
+      catch (\Throwable $e) {
+        // Fall through and retry on the requested model.
+      }
+    }
+
+    $max_tokens = $this->capMaxTokens($model, $max_tokens);
     $this->checkRateLimit('chat', $model);
     $start_time = microtime(TRUE);
     $context = $this->beginUsageOperation('chat', $model, $context_extra);
@@ -732,6 +853,17 @@ class AIApi {
       }
       if (empty($question['prompt']) && empty($question['question'])) {
         throw new AIInvalidArgumentException('Question must include a prompt.', 0, NULL, $this->provider, 'decision', ['question' => $question]);
+      }
+    }
+
+    $capabilities = !empty($context_extra['images']) ? ['text', 'vision'] : ['text'];
+    $selected = $this->alterOperationModel('decision', $model, $capabilities, $context_extra);
+    if ($selected !== $model) {
+      try {
+        return $this->decide($input, $questions, $selected, ['requested_model' => $model] + $context_extra);
+      }
+      catch (\Throwable $e) {
+        // Fall through and retry on the requested model.
       }
     }
 

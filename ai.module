@@ -218,6 +218,16 @@ function ai_menu() {
     'weight' => -7,
   ];
 
+  $items['admin/config/ai/settings/catalog'] = [
+    'title' => 'Model catalog',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['ai_catalog_settings_form'],
+    'access arguments' => ['administer site configuration'],
+    'file' => 'ai.catalog.inc',
+    'type' => MENU_LOCAL_TASK,
+    'weight' => -6,
+  ];
+
   $items['admin/reports/ai'] = [
     'title' => 'AI Logs',
     'description' => 'AI reports and log entries.',
@@ -446,6 +456,13 @@ function ai_admin_reports_overview() {
  * Implements hook_cron().
  */
 function ai_cron() {
+  if (config_get('ai.settings', 'catalog_sync') !== FALSE
+    && db_table_exists('ai_model_catalog')
+    && REQUEST_TIME - (int) state_get('ai_catalog_sync_attempted', 0) >= 86400) {
+    module_load_include('inc', 'ai', 'ai.catalog');
+    ai_catalog_sync();
+  }
+
   $max_age = config_get('ai.settings', 'ai_log_max_age');
   if ($max_age > 0) {
     $cutoff = REQUEST_TIME - $max_age;
@@ -1685,48 +1702,16 @@ function ai_get_all_models_for_method($method, array $method_args = []) {
       continue;
     }
 
-    try {
-      $cache_key = ai_models_cache_key($provider_id, $method, $method_args);
-      $cached = cache_get($cache_key);
-      if ($cached && is_array($cached->data)) {
-        $provider_models = $cached->data;
-      }
-      else {
-        $provider_api = ai_get_api($provider_id);
-        if (!$provider_api) {
-          continue;
-        }
-
-        if ($method === 'getModelsByCapability') {
-          $provider_models = $provider_api->getModelsByCapability($method_args[0] ?? '');
-        }
-        elseif (method_exists($provider_api, $method)) {
-          $provider_models = $provider_api->{$method}();
-        }
-        else {
-          $provider_models = $provider_api->getModels();
-        }
-
-        if (is_array($provider_models)) {
-          cache_set($cache_key, $provider_models, 'cache', REQUEST_TIME + 21600);
-        }
-      }
-
-      if (empty($provider_models)) {
-        continue;
-      }
-
-      $provider_label = ai_get_provider_label($provider_id);
-      foreach ($provider_models as $model_id => $model_name) {
-        $prefixed_id = $provider_id . '/' . $model_id;
-        $models[$provider_label][$prefixed_id] = $model_name;
-      }
+    $provider_models = ai_get_provider_models_for_method($provider_id, $method, $method_args);
+    if (empty($provider_models)) {
+      continue;
     }
-    catch (\Exception $e) {
-      watchdog('ai', 'Failed to fetch models from @provider: @message', [
-        '@provider' => $provider_id,
-        '@message' => $e->getMessage(),
-      ], WATCHDOG_WARNING);
+
+    $provider_label = ai_get_provider_label($provider_id);
+    $catalog = ai_model_catalog_provider($provider_id);
+    foreach ($provider_models as $model_id => $model_name) {
+      $prefixed_id = $provider_id . '/' . $model_id;
+      $models[$provider_label][$prefixed_id] = ai_model_catalog_label($model_name, $catalog[$model_id] ?? NULL);
     }
   }
 
@@ -1736,6 +1721,106 @@ function ai_get_all_models_for_method($method, array $method_args = []) {
   }
   unset($provider_models);
   return $models;
+}
+
+/**
+ * Returns one provider's models for a discovery method, cached for 6 hours.
+ *
+ * @return array
+ *   Map of model_id => label. Empty when the provider cannot be reached.
+ */
+function ai_get_provider_models_for_method($provider_id, $method, array $method_args = []) {
+  try {
+    $cache_key = ai_models_cache_key($provider_id, $method, $method_args);
+    $cached = cache_get($cache_key);
+    if ($cached && is_array($cached->data)) {
+      return $cached->data;
+    }
+
+    $provider_api = ai_get_api($provider_id);
+    if (!$provider_api) {
+      return [];
+    }
+
+    if ($method === 'getModelsByCapability') {
+      $provider_models = $provider_api->getModelsByCapability($method_args[0] ?? '');
+    }
+    elseif (method_exists($provider_api, $method)) {
+      $provider_models = $provider_api->{$method}();
+    }
+    else {
+      $provider_models = $provider_api->getModels();
+    }
+
+    if (!is_array($provider_models)) {
+      return [];
+    }
+    cache_set($cache_key, $provider_models, 'cache', REQUEST_TIME + 21600);
+    return $provider_models;
+  }
+  catch (\Exception $e) {
+    watchdog('ai', 'Failed to fetch models from @provider: @message', [
+      '@provider' => $provider_id,
+      '@message' => $e->getMessage(),
+    ], WATCHDOG_WARNING);
+    // Remember the failure briefly so per-request callers do not retry it.
+    cache_set($cache_key, [], 'cache', REQUEST_TIME + 300);
+    return [];
+  }
+}
+
+/**
+ * Catalog entries for one provider, keyed by model ID.
+ *
+ * Entries come from ai_model_catalog; NULL fields mean the catalog does not
+ * know. Catalog data is a hint: manual capability overrides and what the
+ * provider API reports take precedence wherever both exist.
+ */
+function ai_model_catalog_provider($provider_id) {
+  $cache = &backdrop_static(__FUNCTION__, []);
+  $provider_id = (string) $provider_id;
+  if (isset($cache[$provider_id])) {
+    return $cache[$provider_id];
+  }
+  $entries = [];
+  if ($provider_id !== '' && db_table_exists('ai_model_catalog')) {
+    foreach (db_query('SELECT * FROM {ai_model_catalog} WHERE provider = :provider', [':provider' => $provider_id], ['fetch' => PDO::FETCH_ASSOC]) as $row) {
+      foreach (['input_usd', 'output_usd', 'cache_read_usd', 'cache_write_usd'] as $field) {
+        $row[$field] = $row[$field] === NULL ? NULL : (float) $row[$field];
+      }
+      foreach (['tool_call', 'vision', 'reasoning', 'structured_output', 'temperature', 'context_limit', 'output_limit'] as $field) {
+        $row[$field] = $row[$field] === NULL ? NULL : (int) $row[$field];
+      }
+      $entries[$row['model']] = $row;
+    }
+  }
+  $cache[$provider_id] = $entries;
+  return $entries;
+}
+
+/**
+ * One catalog entry, or NULL when the catalog does not list the model.
+ */
+function ai_model_catalog_entry($provider_id, $model) {
+  $entries = ai_model_catalog_provider($provider_id);
+  return $entries[$model] ?? NULL;
+}
+
+/**
+ * Append the catalog release date and deprecation to a model label.
+ */
+function ai_model_catalog_label($label, ?array $entry) {
+  if (!$entry) {
+    return $label;
+  }
+  $notes = [];
+  if ($entry['release_date'] !== '') {
+    $notes[] = $entry['release_date'];
+  }
+  if ($entry['status'] === 'deprecated') {
+    $notes[] = t('deprecated');
+  }
+  return $notes ? $label . ' (' . implode(', ', $notes) . ')' : $label;
 }
 
 /**

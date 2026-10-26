@@ -15,6 +15,10 @@ The ledger provides cost estimates, alerts, quotas, and budget enforcement as on
 - Provider-reported usage when an adapter exposes it through the parent API.
 - Conservative four-characters-per-token estimates when provider metadata is unavailable.
 - Manual per-model input/output USD pricing with explicit cost-source labels.
+- Prices from the AI model catalog (models.dev with a LiteLLM fallback); manual rows override catalog prices.
+- Cached input billed at the catalog cache-read rate.
+- Price list at `admin/reports/ai-usage/pricing`, sortable and filterable by provider, model, capability, and deprecation.
+- Optional cheaper model switching for chat, tool-calling, and decision calls, set site-wide and overridden per module.
 - Filterable admin report at `admin/reports/ai-usage`.
 - CSV export at `admin/reports/ai-usage/export`.
 - Recording and retention settings at `admin/config/ai/ai-usage`.
@@ -28,7 +32,8 @@ The ledger provides cost estimates, alerts, quotas, and budget enforcement as on
 
 - Usage ledger and operation lifecycle instrumentation.
 - Provider-reported or explicitly estimated usage across chat, tools, completions, embeddings, image, moderation, and audio operations.
-- Explicit manual provider/model pricing with clearly labeled estimated costs.
+- Synced and manual provider/model pricing with clearly labeled estimated costs (`manual` or `synced`).
+- Cheaper model switching: a call runs on the cheapest priced model from the same provider with every capability it needs (text, tool calling, vision), in the requested model's catalog family or a smaller tier of it (gpt to gpt-mini), and never a deprecated one. The requested model must be priced and in the catalog. A failed cheaper call is retried once on the requested model, except for streams. The ledger records both models.
 - Filtered dashboard summaries, per-call records, CSV export, monthly budget status, and threshold alerts.
 - Optional authenticated-user and anonymous token/cost quotas with report-only or hard-block enforcement.
 - Retention controls and alter hooks for privacy, alert delivery, and site-specific governance.
@@ -37,14 +42,16 @@ The ledger provides cost estimates, alerts, quotas, and budget enforcement as on
 
 The shipped feature is complete without these additions. They may be added for larger installations or more accounting precision:
 
-- Synchronizing a vendor pricing catalog while preserving manual overrides.
 - Durable pre-aggregated rollups for very large ledgers.
 - Projected-token reservations before a provider call, instead of enforcement based on completed rows.
-- Provider fallback selection, which belongs to routing policy rather than usage storage.
 
 ## Architecture
 
 The parent `AIApi` owns the operation lifecycle and calls `ai_usage_record_operation()` only when the optional submodule is available. `ai_usage` owns persistence, cost estimation, reporting, alerts, and quota policy. Provider adapters may call `AIApi::setProviderUsage()` after receiving an authoritative provider usage envelope.
+
+Cheaper model switching uses `hook_ai_operation_model_alter(&$model, $info)`, which `AIApi` invokes before chat, tool-calling, and decision calls. `$info` holds `provider`, `operation`, `module`, and `capabilities`. The parent module knows nothing about prices; `ai_usage` implements the hook because it owns pricing. Embeddings, images, audio, and moderation never switch models.
+
+Synced prices come from the parent module's model catalog (`ai_model_catalog`, configured at `admin/config/ai/settings/catalog`). Providers without a hosted catalog entry (local runtimes, proxies, character- or second-billed services) get no synced prices.
 
 ## Installation
 

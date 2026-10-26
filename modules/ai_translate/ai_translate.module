@@ -105,10 +105,7 @@ function ai_translate_translate_node($node, $target_langcode) {
  */
 function _ai_translate_get_model() {
   $config = config('ai_translate.settings');
-  $model = $config->get('model');
-  if (empty($model) && function_exists('ai_default_model')) {
-    $model = ai_default_model('chat');
-  }
+  $model = ai_resolve_model($config->get('model'), 'text');
   return !empty($model) ? $model : FALSE;
 }
 

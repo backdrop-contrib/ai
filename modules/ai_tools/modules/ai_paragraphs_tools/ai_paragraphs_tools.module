@@ -1,0 +1,411 @@
+<?php
+
+/**
+ * @file
+ * Generic Paragraphs tools for the AI Tools registry.
+ *
+ * Nothing here names a specific paragraph type: bundles, fields, and allowed
+ * children are read from the field API, so the tools work on any site.
+ */
+
+/**
+ * Implements hook_ai_tools().
+ */
+function ai_paragraphs_tools_ai_tools() {
+  return ai_paragraphs_tools_definitions();
+}
+
+/**
+ * Returns tool definitions for paragraph operations.
+ */
+function ai_paragraphs_tools_definitions() {
+  $host_properties = [
+    'host_type' => [
+      'type'        => 'string',
+      'enum'        => ['node', 'paragraphs_item'],
+      'description' => 'Entity type holding the paragraphs field: "node" or "paragraphs_item" (for nested paragraphs).',
+    ],
+    'host_id' => [
+      'type'        => 'integer',
+      'description' => 'Node ID (nid) or paragraphs item ID of the host.',
+    ],
+  ];
+  $field_values = [
+    'type'        => 'object',
+    'description' => 'Map of paragraph field machine name to value, as listed by list_paragraph_types. Text: a string. Text with summary: a string, or {"value","summary"}. Number/list: the value. Link: a URL string or {"url","title"}. Entity reference: a target ID. Use an array for multi-value fields. File and image fields are not supported.',
+    'additionalProperties' => TRUE,
+  ];
+
+  return [
+    'list_paragraph_types' => [
+      'definition' => [
+        'type'     => 'function',
+        'function' => [
+          'name'        => 'list_paragraph_types',
+          'description' => 'List paragraph types (bundles) with their fields and which fields accept values from this toolset, plus every paragraphs field with the host bundles and paragraph types it allows. Call this before add_paragraph.',
+          'parameters'  => [
+            'type'       => 'object',
+            'properties' => [
+              'bundle' => [
+                'type'        => 'string',
+                'description' => 'Optional paragraph type machine name to describe just one.',
+              ],
+            ],
+          ],
+        ],
+      ],
+      'execute'      => 'ai_paragraphs_tools_execute_list_paragraph_types',
+      'operation'    => 'read',
+      'module'       => 'ai_paragraphs_tools',
+      'category'     => 'paragraph',
+    ],
+    'get_paragraphs' => [
+      'definition' => [
+        'type'     => 'function',
+        'function' => [
+          'name'        => 'get_paragraphs',
+          'description' => 'List the paragraphs in a host (node or paragraph) including nested children, with their text-like field values.',
+          'parameters'  => [
+            'type'       => 'object',
+            'properties' => $host_properties + [
+              'field_name' => [
+                'type'        => 'string',
+                'description' => 'Optional paragraphs field to limit to.',
+              ],
+            ],
+            'required' => ['host_type', 'host_id'],
+          ],
+        ],
+      ],
+      'execute'      => 'ai_paragraphs_tools_execute_get_paragraphs',
+      'operation'    => 'read',
+      'module'       => 'ai_paragraphs_tools',
+      'category'     => 'paragraph',
+    ],
+    'add_paragraph' => [
+      'definition' => [
+        'type'     => 'function',
+        'function' => [
+          'name'        => 'add_paragraph',
+          'description' => 'Append a paragraph of an allowed type to a paragraphs field on a node or inside another paragraph. Saves the host.',
+          'parameters'  => [
+            'type'       => 'object',
+            'properties' => $host_properties + [
+              'field_name' => [
+                'type'        => 'string',
+                'description' => 'Paragraphs field on the host (see list_paragraph_types).',
+              ],
+              'bundle' => [
+                'type'        => 'string',
+                'description' => 'Paragraph type machine name.',
+              ],
+              'field_values' => $field_values,
+            ],
+            'required' => ['host_type', 'host_id', 'field_name', 'bundle'],
+          ],
+        ],
+      ],
+      'execute'      => 'ai_paragraphs_tools_execute_add_paragraph',
+      'operation'    => 'write',
+      'destructive'  => FALSE,
+      'module'       => 'ai_paragraphs_tools',
+      'category'     => 'paragraph',
+    ],
+    'edit_paragraph' => [
+      'definition' => [
+        'type'     => 'function',
+        'function' => [
+          'name'        => 'edit_paragraph',
+          'description' => 'Replace the given field values on an existing paragraph. Fields not listed are left unchanged.',
+          'parameters'  => [
+            'type'       => 'object',
+            'properties' => [
+              'item_id' => [
+                'type'        => 'integer',
+                'description' => 'Paragraphs item ID.',
+              ],
+              'field_values' => $field_values,
+            ],
+            'required' => ['item_id', 'field_values'],
+          ],
+        ],
+      ],
+      'execute'      => 'ai_paragraphs_tools_execute_edit_paragraph',
+      'operation'    => 'write',
+      'destructive'  => FALSE,
+      'module'       => 'ai_paragraphs_tools',
+      'category'     => 'paragraph',
+    ],
+  ];
+}
+
+// -----------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------
+
+/**
+ * Field types whose values this toolset can read and write, by column.
+ */
+function ai_paragraphs_tools_scalar_columns() {
+  return [
+    'text' => 'value',
+    'text_long' => 'value',
+    'number_integer' => 'value',
+    'number_decimal' => 'value',
+    'number_float' => 'value',
+    'list_text' => 'value',
+    'list_integer' => 'value',
+    'list_float' => 'value',
+    'list_boolean' => 'value',
+    'entityreference' => 'target_id',
+  ];
+}
+
+function ai_paragraphs_tools_field_supported($type) {
+  return isset(ai_paragraphs_tools_scalar_columns()[$type]) || in_array($type, ['text_with_summary', 'link_field'], TRUE);
+}
+
+/**
+ * Loads a host entity and checks the current user may update its root node.
+ *
+ * @return array
+ *   [$entity, NULL] or [NULL, error array].
+ */
+function ai_paragraphs_tools_load_host($type, $id, $op = 'update') {
+  $id = (int) $id;
+  if (!in_array($type, ['node', 'paragraphs_item'], TRUE) || $id <= 0) {
+    return [NULL, ['error' => 'host_type must be "node" or "paragraphs_item" and host_id a positive integer.']];
+  }
+  $entity = $type === 'node' ? node_load($id) : paragraphs_item_load($id);
+  if (!$entity) {
+    return [NULL, ['error' => "No $type found with ID $id."]];
+  }
+  $root = $entity;
+  for ($i = 0; $root instanceof ParagraphsItemEntity && $i < 10; $i++) {
+    $root = $root->hostEntity();
+  }
+  if (!$root || empty($root->nid)) {
+    return [NULL, ['error' => 'Could not resolve the node that owns this paragraph.']];
+  }
+  if (!node_access($op, $root)) {
+    return [NULL, ['error' => "Access denied: you may not $op node {$root->nid}."]];
+  }
+  return [$entity, NULL];
+}
+
+/**
+ * Converts tool-supplied values to field items; returns [items, error].
+ */
+function ai_paragraphs_tools_build_items($field, $value) {
+  global $user;
+  $type = $field['type'];
+  $values = (is_array($value) && array_values($value) === $value) ? $value : [$value];
+  $items = [];
+  foreach ($values as $v) {
+    if ($type === 'text' || $type === 'text_long' || $type === 'text_with_summary') {
+      $text = is_array($v) ? (string) ($v['value'] ?? '') : (string) $v;
+      $item = ['value' => $text, 'format' => filter_default_format($user)];
+      if ($type === 'text_with_summary' && is_array($v) && isset($v['summary'])) {
+        $item['summary'] = (string) $v['summary'];
+      }
+      if ($type === 'text') {
+        // Plain single-line text carries no format.
+        unset($item['format']);
+      }
+    }
+    elseif ($type === 'link_field') {
+      $url = is_array($v) ? (string) ($v['url'] ?? '') : (string) $v;
+      $item = ['url' => $url, 'title' => is_array($v) ? (string) ($v['title'] ?? '') : '', 'attributes' => []];
+    }
+    else {
+      $column = ai_paragraphs_tools_scalar_columns()[$type];
+      if (is_array($v) || is_object($v)) {
+        return [NULL, "Field {$field['field_name']} expects a single value per item."];
+      }
+      $item = [$column => $v];
+    }
+    $items[] = $item;
+  }
+  return [$items, NULL];
+}
+
+/**
+ * Applies field values to a paragraph item; returns an error string or NULL.
+ */
+function ai_paragraphs_tools_apply_values(ParagraphsItemEntity $item, array $values) {
+  $instances = field_info_instances('paragraphs_item', $item->bundle());
+  foreach ($values as $name => $value) {
+    if (!isset($instances[$name])) {
+      return "Paragraph type '{$item->bundle()}' has no field '$name'.";
+    }
+    $field = field_info_field($name);
+    if (!ai_paragraphs_tools_field_supported($field['type'])) {
+      return "Field '$name' (type {$field['type']}) is not supported by these tools.";
+    }
+    if (!field_access('edit', $field, 'paragraphs_item', $item)) {
+      return "Access denied for field '$name'.";
+    }
+    list($items, $error) = ai_paragraphs_tools_build_items($field, $value);
+    if ($error) {
+      return $error;
+    }
+    $item->{$name}[LANGUAGE_NONE] = $items;
+  }
+  return NULL;
+}
+
+/**
+ * Summarises a paragraph item and its children.
+ */
+function ai_paragraphs_tools_describe(ParagraphsItemEntity $item, $depth = 0) {
+  $out = ['item_id' => (int) $item->item_id, 'bundle' => $item->bundle(), 'field_name' => $item->field_name, 'fields' => [], 'children' => []];
+  foreach (field_info_instances('paragraphs_item', $item->bundle()) as $name => $instance) {
+    $field = field_info_field($name);
+    $items = $item->{$name}[LANGUAGE_NONE] ?? [];
+    if ($field['type'] === 'paragraphs') {
+      if ($depth < 3) {
+        foreach (paragraphs_field_item_to_ids($items) as $id) {
+          if ($child = paragraphs_item_load($id)) {
+            $out['children'][] = ai_paragraphs_tools_describe($child, $depth + 1);
+          }
+        }
+      }
+      continue;
+    }
+    if (!ai_paragraphs_tools_field_supported($field['type'])) {
+      $out['fields'][$name] = count($items) . ' ' . $field['type'] . ' item(s)';
+      continue;
+    }
+    $vals = [];
+    foreach ($items as $i) {
+      $v = $i['value'] ?? ($i['url'] ?? ($i['target_id'] ?? ''));
+      $vals[] = mb_substr(strip_tags((string) $v), 0, 300);
+    }
+    $out['fields'][$name] = count($vals) === 1 ? $vals[0] : $vals;
+  }
+  return $out;
+}
+
+// -----------------------------------------------------------------------
+// Executors
+// -----------------------------------------------------------------------
+
+function ai_paragraphs_tools_execute_list_paragraph_types(array $args) {
+  $only = trim($args['bundle'] ?? '');
+  $types = [];
+  foreach (paragraphs_bundle_load() as $name => $bundle) {
+    if ($only !== '' && $name !== $only) {
+      continue;
+    }
+    $fields = [];
+    foreach (field_info_instances('paragraphs_item', $name) as $fname => $instance) {
+      $field = field_info_field($fname);
+      $fields[] = [
+        'name' => $fname,
+        'label' => $instance['label'],
+        'type' => $field['type'],
+        'required' => !empty($instance['required']),
+        'multiple' => (int) $field['cardinality'] !== 1,
+        'supported' => $field['type'] === 'paragraphs' || ai_paragraphs_tools_field_supported($field['type']),
+      ];
+    }
+    $types[$name] = ['label' => $bundle->name, 'fields' => $fields];
+  }
+  if ($only !== '' && !$types) {
+    return ['error' => "Paragraph type '$only' not found."];
+  }
+
+  $hosts = [];
+  foreach (field_info_fields() as $fname => $field) {
+    if ($field['type'] !== 'paragraphs') {
+      continue;
+    }
+    foreach ($field['bundles'] as $entity_type => $bundles) {
+      foreach ($bundles as $host_bundle) {
+        $instance = field_info_instance($entity_type, $fname, $host_bundle);
+        $allowed = [];
+        foreach (($instance['settings']['allowed_bundles'] ?? []) as $b => $v) {
+          if ($v !== -1 && $v !== '-1' && $v) {
+            $allowed[] = $b;
+          }
+        }
+        $hosts[] = ['host_type' => $entity_type, 'host_bundle' => $host_bundle, 'field_name' => $fname, 'allowed_types' => $allowed];
+      }
+    }
+  }
+  return ['paragraph_types' => $types, 'paragraph_fields' => $hosts];
+}
+
+function ai_paragraphs_tools_execute_get_paragraphs(array $args) {
+  list($host, $error) = ai_paragraphs_tools_load_host($args['host_type'] ?? '', $args['host_id'] ?? 0, 'view');
+  if ($error) {
+    return $error;
+  }
+  $only = trim($args['field_name'] ?? '');
+  $result = [];
+  foreach (field_info_instances($args['host_type'], $host->type ?? $host->bundle()) as $fname => $instance) {
+    $field = field_info_field($fname);
+    if ($field['type'] !== 'paragraphs' || ($only !== '' && $only !== $fname)) {
+      continue;
+    }
+    $items = $host->{$fname}[LANGUAGE_NONE] ?? [];
+    foreach (paragraphs_field_item_to_ids($items) as $id) {
+      if ($item = paragraphs_item_load($id)) {
+        $result[] = ai_paragraphs_tools_describe($item);
+      }
+    }
+  }
+  return ['paragraphs' => $result, 'count' => count($result)];
+}
+
+function ai_paragraphs_tools_execute_add_paragraph(array $args) {
+  list($host, $error) = ai_paragraphs_tools_load_host($args['host_type'] ?? '', $args['host_id'] ?? 0);
+  if ($error) {
+    return $error;
+  }
+  $host_type = $args['host_type'];
+  $field_name = trim($args['field_name'] ?? '');
+  $bundle = trim($args['bundle'] ?? '');
+  $host_bundle = $host_type === 'node' ? $host->type : $host->bundle();
+  $instance = field_info_instance($host_type, $field_name, $host_bundle);
+  $field = $instance ? field_info_field($field_name) : NULL;
+  if (!$field || $field['type'] !== 'paragraphs') {
+    return ['error' => "'$field_name' is not a paragraphs field on this $host_type."];
+  }
+  $allowed = $instance['settings']['allowed_bundles'] ?? [];
+  if (empty($allowed[$bundle]) || $allowed[$bundle] === -1 || $allowed[$bundle] === '-1') {
+    return ['error' => "Paragraph type '$bundle' is not allowed in field '$field_name'."];
+  }
+  if ((int) $field['cardinality'] > 0 && count($host->{$field_name}[LANGUAGE_NONE] ?? []) >= (int) $field['cardinality']) {
+    return ['error' => "Field '$field_name' is full."];
+  }
+  if (!field_access('edit', $field, $host_type, $host)) {
+    return ['error' => "Access denied for field '$field_name'."];
+  }
+
+  $item = entity_create('paragraphs_item', ['bundle' => $bundle, 'field_name' => $field_name]);
+  $item->setHostEntity($host_type, $host);
+  $values = is_array($args['field_values'] ?? NULL) ? $args['field_values'] : [];
+  if ($error = ai_paragraphs_tools_apply_values($item, $values)) {
+    return ['error' => $error];
+  }
+  $item->save();
+
+  return ['status' => 'created', 'item_id' => (int) $item->item_id, 'bundle' => $bundle, 'host_type' => $host_type, 'host_id' => (int) $args['host_id'], 'field_name' => $field_name];
+}
+
+function ai_paragraphs_tools_execute_edit_paragraph(array $args) {
+  list($item, $error) = ai_paragraphs_tools_load_host('paragraphs_item', $args['item_id'] ?? 0);
+  if ($error) {
+    return $error;
+  }
+  $values = is_array($args['field_values'] ?? NULL) ? $args['field_values'] : [];
+  if (!$values) {
+    return ['error' => 'field_values must not be empty.'];
+  }
+  if ($error = ai_paragraphs_tools_apply_values($item, $values)) {
+    return ['error' => $error];
+  }
+  $item->save();
+  return ['status' => 'updated', 'item_id' => (int) $item->item_id, 'bundle' => $item->bundle()];
+}

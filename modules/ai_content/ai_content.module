@@ -189,8 +189,6 @@ function ai_content_settings_form($form, &$form_state) {
   // Get moderation models from all enabled providers
   $moderation_models = ai_get_all_moderation_models();
 
-  $default_chat_model = _ai_content_resolve_model('default_text_model');
-  $default_mod_model = _ai_content_resolve_model('text_analysis_model', 'moderation');
 
   $form = [];
   $form['#config'] = 'ai_content.settings';
@@ -224,8 +222,8 @@ function ai_content_settings_form($form, &$form_state) {
   $form['features']['text_analysis_settings']['text_analysis_model'] = [
     '#type' => 'select',
     '#title' => t('Model for Text Analysis'),
-    '#options' => $moderation_models,
-    '#default_value' => _ai_content_resolve_model('text_analysis_model', 'moderation') ?: $default_mod_model,
+    '#options' => ai_model_options_with_default($moderation_models, 'moderation'),
+    '#default_value' => (string) $config->get('text_analysis_model'),
     '#description' => t('Select the moderation model to use for text analysis.'),
   ];
 
@@ -254,8 +252,8 @@ function ai_content_settings_form($form, &$form_state) {
   $form['features']['tone_adjustment_settings']['tone_adjustment_model'] = [
     '#type' => 'select',
     '#title' => t('Model for Tone Adjustment'),
-    '#options' => $chat_models,
-    '#default_value' => _ai_content_resolve_model('tone_adjustment_model') ?: $default_chat_model,
+    '#options' => ai_model_options_with_default($chat_models, 'text'),
+    '#default_value' => (string) $config->get('tone_adjustment_model'),
     '#description' => t('Select the model to use for tone adjustment.'),
   ];
 
@@ -302,8 +300,8 @@ function ai_content_settings_form($form, &$form_state) {
   $form['features']['summarization_settings']['summarization_model'] = [
     '#type' => 'select',
     '#title' => t('Model for Summarization'),
-    '#options' => $chat_models,
-    '#default_value' => _ai_content_resolve_model('summarization_model') ?: $default_chat_model,
+    '#options' => ai_model_options_with_default($chat_models, 'text'),
+    '#default_value' => (string) $config->get('summarization_model'),
     '#description' => t('Select the model to use for summarization.'),
   ];
 
@@ -349,8 +347,8 @@ function ai_content_settings_form($form, &$form_state) {
   $form['features']['title_settings']['title_model'] = [
     '#type' => 'select',
     '#title' => t('Model for Title Suggestion'),
-    '#options' => $chat_models,
-    '#default_value' => _ai_content_resolve_model('title_model') ?: $default_chat_model,
+    '#options' => ai_model_options_with_default($chat_models, 'text'),
+    '#default_value' => (string) $config->get('title_model'),
     '#description' => t('Select the model to use for title suggestions.'),
   ];
 
@@ -400,8 +398,8 @@ function ai_content_settings_form($form, &$form_state) {
   $form['features']['taxonomy_settings']['taxonomy_model'] = [
     '#type' => 'select',
     '#title' => t('Model for Taxonomy Suggestion'),
-    '#options' => $chat_models,
-    '#default_value' => _ai_content_resolve_model('taxonomy_model') ?: $default_chat_model,
+    '#options' => ai_model_options_with_default($chat_models, 'text'),
+    '#default_value' => (string) $config->get('taxonomy_model'),
     '#description' => t('Select the model to use for taxonomy suggestions.'),
   ];
 

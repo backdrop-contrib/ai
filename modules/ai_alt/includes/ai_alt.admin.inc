@@ -107,9 +107,8 @@ function ai_alt_settings_form(array $form, array &$form_state) {
   $form['model'] = [
     '#type' => 'select',
     '#title' => t('Model to use'),
-    '#options' => $models,
-    '#default_value' => isset($flat_models[$current_model]) ? $current_model : $default_model,
-    '#required' => TRUE,
+    '#options' => ai_model_options_with_default($models, 'vision'),
+    '#default_value' => isset($flat_models[$current_model]) ? $current_model : '',
     '#description' => t('AI model to use for generating the alt text. If the desired model is not listed, ensure its provider is enabled in AI settings.'),
   ];
 

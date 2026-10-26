@@ -11,7 +11,7 @@ class AIDbLog {
 
     // Fetch the model from the settings
     $config = config_get('ai_dblog.settings');
-    $model = !empty($config['model']) ? $config['model'] : '';
+    $model = ai_resolve_model($config['model'] ?? '', 'text');
     if (empty($model)) {
       throw new Exception(t('No model is configured for AI dblog.'));
     }
@@ -111,7 +111,7 @@ class AIDbLog {
    */
   public function getCachedExplanation($dblog) {
     $config = config_get('ai_dblog.settings');
-    $model = !empty($config['model']) ? $config['model'] : '';
+    $model = ai_resolve_model($config['model'] ?? '', 'text');
     if (empty($model)) {
       return NULL;
     }
@@ -126,7 +126,7 @@ class AIDbLog {
   public function processExplanation($dblog) {
     $message = dblog_format_message($dblog);
     $config = config_get('ai_dblog.settings');
-    $model = !empty($config['model']) ? $config['model'] : '';
+    $model = ai_resolve_model($config['model'] ?? '', 'text');
     $hash = $this->generateHash($message, $model);
 
     $existing_explanation = $this->hashSearch($hash);

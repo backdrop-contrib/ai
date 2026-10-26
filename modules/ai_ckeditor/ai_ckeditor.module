@@ -150,12 +150,12 @@ function ai_ckeditor_form_alter(&$form, &$form_state, $form_id) {
     // Model selector: use ai module helper for all chat models from all providers.
     $model_options = ai_get_all_chat_models();
 
-    $default_model = _ai_ckeditor_resolve_model($ai_settings['model'] ?? NULL);
+    $default_model = !empty($ai_settings['model']) ? _ai_ckeditor_resolve_model($ai_settings['model']) : '';
 
     $form['editor_settings']['plugins']['ai']['model'] = [
       '#type' => 'select',
       '#title' => t('Default model'),
-      '#options' => $model_options,
+      '#options' => ai_model_options_with_default($model_options, 'text'),
       '#default_value' => $default_model,
       '#description' => t('Select which model to use to analyze text. See the <a href="@url" target="_blank">model overview</a> for details about each model.', ['@url' => 'https://platform.ai.com/docs/models']),
     ];

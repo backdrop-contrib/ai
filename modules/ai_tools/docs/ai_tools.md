@@ -10,20 +10,33 @@ The module provides:
 
 - A registry of callable tools via `ai_tools_get_tools()`
 - A dispatcher via `ai_tools_dispatch()` that executes a named tool with decoded arguments
-- A Tool Explorer UI at `admin/config/ai/tool-explorer`
-- A built-in set of read-oriented tools for common Backdrop domains
-- Extension points so any module can register more tools
+- A Tool Explorer UI at `admin/config/ai/ai-explorer/tool-explorer` (old path `admin/config/ai/tool-explorer` still works)
+- Built-in read and write tools for common Backdrop domains
+- `hook_ai_tools()` and `hook_ai_tools_alter()` so any module can register or change tools; see `ai_tools.api.php`
 
 The built-in tool families currently cover:
 
 - Site information
-- Nodes/content
-- Taxonomy
+- Nodes/content (read, plus `create_node`)
+- Taxonomy (read, plus term and vocabulary writes)
 - Users
-- Fields/content model
+- Content types (read, plus create/edit)
+- Fields (read, plus field storage/instance create/edit)
 - Entities
-- Config
+- Config (read only)
+- Menus (read, plus create/edit/delete links), when the Menu module is enabled
+- Layouts (read, which layout renders a path, plus add/move/remove blocks)
+- Media (`ai_image_to_text`)
+- Bee command help
 - Views, when the Views module is enabled
+
+Submodules add tools for other contrib modules:
+
+- `ai_webform_tools`: Webform read/build tools (needs `webform`)
+- `ai_paragraphs_tools`: Paragraphs read/build tools (needs `paragraphs`)
+- `ai_alt_tools`: image alt text tools
+
+Other `ai_*` modules register their own tools, for example `ai_metatag`, `ai_seo_advisor`, `ai_search`, `ai_related_content`, `ai_content_lifecycle` and `ai_translate`.
 
 See `views-agent.md` for the Views Agent tool set, approval behavior, and examples.
 
@@ -79,12 +92,25 @@ This is useful for:
 
 ## How To Create A Tool
 
-Any module can add tools through `hook_ai_tools()`.
+Any module can add tools through `hook_ai_tools()`. `ai_tools.api.php` documents every key a tool entry accepts.
 
-Each tool has two parts:
+Each tool needs:
 
 - A `definition` that tells the model what the tool is called, what it does, and what arguments it accepts
 - An `execute` callback that runs the actual PHP logic
+- An `operation`: `read` for tools that only read. Anything else, or a missing value, is treated as a write, and agents ask for approval before running it
+
+The registry key must match `definition.function.name`.
+
+### Where to put the tools
+
+The hook can live in any module, so a contrib integration does not have to live in `ai`:
+
+- In the integrated module itself, if its maintainers want it. No dependency on `ai_tools` is needed: the hook only runs when `ai_tools` is enabled.
+- In an `ai_tools` submodule, like `ai_webform_tools`, for generic integrations whose upstream will not carry AI code.
+- In a standalone `ai_<thing>` module, like `ai_metatag`, when the integration also has its own UI, settings or cron.
+
+Guard on `module_exists()` for any module the tools need, or set a `requirements` callback.
 
 ### Step 1: Implement `hook_ai_tools()`
 
@@ -117,6 +143,8 @@ function mymodule_ai_tools() {
       ],
     ],
     'execute' => 'mymodule_execute_get_campaign_summary',
+    'operation' => 'read',
+    'destructive' => FALSE,
     'module' => 'mymodule',
     'category' => 'campaigns',
   ];
@@ -162,7 +190,7 @@ function mymodule_execute_get_campaign_summary(array $args) {
 
 ### Step 3: Test it in Tool Explorer
 
-Go to `admin/config/ai/tool-explorer`, expose only the new tool, and try prompts like:
+Go to `admin/config/ai/ai-explorer/tool-explorer`, expose only the new tool, and try prompts like:
 
 - "Summarize campaign node 123."
 - "Look up campaign 123 and tell me its title."
@@ -193,15 +221,13 @@ Avoid:
 
 ### Write Tools Need Extra Discipline
 
-If you add mutation tools later, treat them differently from read tools.
+Write tools must:
 
-You will usually want:
-
-- Clear naming such as `create_`, `update_`, `delete_`
-- Strong permission checks inside the executor
-- Validation and error handling
-- Logging or auditability
-- Tight schema definitions
+- Declare `'operation' => 'write'`, and `'destructive' => TRUE` if they delete or overwrite data, so agents and MCP clients ask for approval
+- Use clear names such as `create_`, `edit_`, `delete_`
+- Set a `permission`, and check access to the specific object inside the executor too. `permission` only hides the tool
+- Validate input and return `['error' => ...]` on failure
+- Use tight schema definitions
 
 ## Is This "Agents"?
 
@@ -217,7 +243,7 @@ A fuller "agent" usually also includes:
 - Planning or task decomposition
 - State or memory across steps
 - Retry/recovery rules
-- Optional write actions
+- Approval for write actions
 - Guardrails, permissions, and auditing
 
 So the right way to think about this module is:
@@ -231,13 +257,7 @@ So the right way to think about this module is:
 
 If the goal is agent-like behavior inside Backdrop, this module is the correct foundation.
 
-Natural next layers on top of it would be:
-
-- A reusable orchestrator that loops until the model stops requesting tools
-- Task-specific assistants such as site auditor, content strategist, search copilot, or admin assistant
-- Write-capable tools with explicit permission boundaries
-- Session memory or saved working context
-- Logging and review of tool traces for safety
+`ai_agents` builds on it: it runs the tool loop, holds thread state, and pauses for approval before write tools. `ai_mcp` exposes the same registry to MCP clients.
 
 ## Current Boundaries
 
@@ -256,13 +276,11 @@ It is not trying to be:
 
 ## Files To Know
 
-- [ai_tools.module](/home/justink/Documents/GitHub/amafoundation-backdrop/modules/contrib/ai_tools/ai_tools.module)
-- [explorer.inc](/home/justink/Documents/GitHub/amafoundation-backdrop/modules/contrib/ai_tools/includes/explorer.inc)
-- [node.tools.inc](/home/justink/Documents/GitHub/amafoundation-backdrop/modules/contrib/ai_tools/includes/node.tools.inc)
-- [site.tools.inc](/home/justink/Documents/GitHub/amafoundation-backdrop/modules/contrib/ai_tools/includes/site.tools.inc)
-- [taxonomy.tools.inc](/home/justink/Documents/GitHub/amafoundation-backdrop/modules/contrib/ai_tools/includes/taxonomy.tools.inc)
-- [user.tools.inc](/home/justink/Documents/GitHub/amafoundation-backdrop/modules/contrib/ai_tools/includes/user.tools.inc)
-- [field.tools.inc](/home/justink/Documents/GitHub/amafoundation-backdrop/modules/contrib/ai_tools/includes/field.tools.inc)
-- [entity.tools.inc](/home/justink/Documents/GitHub/amafoundation-backdrop/modules/contrib/ai_tools/includes/entity.tools.inc)
-- [config.tools.inc](/home/justink/Documents/GitHub/amafoundation-backdrop/modules/contrib/ai_tools/includes/config.tools.inc)
-- [views.tools.inc](/home/justink/Documents/GitHub/amafoundation-backdrop/modules/contrib/ai_tools/includes/views.tools.inc)
+Paths are relative to `modules/contrib/ai/modules/ai_tools/`.
+
+- `ai_tools.module`: registry, filtering, dispatcher
+- `ai_tools.api.php`: hook documentation
+- `includes/explorer.inc`: Tool Explorer UI
+- `includes/*.tools.inc`: built-in tools, one file per domain
+- `modules/`: contrib integration submodules
+- `docs/views-agent.md`: Views tools and the Views agent

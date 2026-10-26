@@ -698,7 +698,9 @@ class AIApi {
    * @param string $model
    *   Model ID, or empty string to use provider default.
    * @param array $context_extra
-   *   Optional extra execution context.
+   *   Optional extra execution context. 'images' maps names that prompts
+   *   refer to in backticks to PNG or JPEG URIs; providers with native image
+   *   support add them to the state. Box questions require them.
    *
    * @return array
    *   Array of evaluated outcome arrays.
@@ -717,13 +719,16 @@ class AIApi {
         throw new AIInvalidArgumentException('Each question must be an array.', 0, NULL, $this->provider, 'decision', ['index' => $idx]);
       }
       $type = $question['type'] ?? 'boolean';
-      if (!in_array($type, ['boolean', 'choice', 'score'], TRUE)) {
+      if (!in_array($type, ['boolean', 'choice', 'score', 'box'], TRUE)) {
         throw new AIInvalidArgumentException('Unsupported question type: ' . $type, 0, NULL, $this->provider, 'decision', ['question' => $question]);
       }
       if ($type === 'choice') {
         if (empty($question['options']) || !is_array($question['options'])) {
           throw new AIInvalidArgumentException('Choice questions must include a non-empty options array.', 0, NULL, $this->provider, 'decision', ['question' => $question]);
         }
+      }
+      if ($type === 'box' && empty($context_extra['images'])) {
+        throw new AIInvalidArgumentException('Box questions need an image in $context_extra[\'images\'].', 0, NULL, $this->provider, 'decision', ['question' => $question]);
       }
       if (empty($question['prompt']) && empty($question['question'])) {
         throw new AIInvalidArgumentException('Question must include a prompt.', 0, NULL, $this->provider, 'decision', ['question' => $question]);

@@ -6,14 +6,29 @@
  */
 class AIStreamingResponse {
 
+  /**
+   * Most retries a single send() makes.
+   */
+  const MAX_RETRIES = 3;
+
   protected $url;
   protected $options;
   protected $extractor;
 
-  public function __construct(string $url, array $options, callable $extractor) {
+  /**
+   * Callable(string $error_message, array $options): ?array, or NULL.
+   *
+   * Returns the request options to resend with, or NULL to give up.
+   *
+   * @var callable|null
+   */
+  protected $retry;
+
+  public function __construct(string $url, array $options, callable $extractor, ?callable $retry = NULL) {
     $this->url = $url;
     $this->options = $options;
     $this->extractor = $extractor;
+    $this->retry = $retry;
   }
 
   /**
@@ -23,13 +38,28 @@ class AIStreamingResponse {
    * received. backdrop_http_request() buffers the whole body, which would
    * turn "streaming" into wait-then-dump — it remains only as the fallback
    * when cURL is unavailable.
+   *
+   * Resending on error is safe: a non-200 stream echoes nothing.
    */
   public function send(): void {
-    if (function_exists('curl_init') && $this->canUseCurlStreaming()) {
-      $this->sendStreaming();
-      return;
+    for ($attempt = 0; ; $attempt++) {
+      try {
+        if (function_exists('curl_init') && $this->canUseCurlStreaming()) {
+          $this->sendStreaming();
+        }
+        else {
+          $this->sendBuffered();
+        }
+        return;
+      }
+      catch (\Exception $e) {
+        $options = ($this->retry && $attempt < self::MAX_RETRIES) ? ($this->retry)($e->getMessage(), $this->options) : NULL;
+        if ($options === NULL) {
+          throw $e;
+        }
+        $this->options = $options;
+      }
     }
-    $this->sendBuffered();
   }
 
   /**
@@ -122,7 +152,8 @@ class AIStreamingResponse {
     $response = backdrop_http_request($this->url, $this->options);
 
     if (!isset($response->code) || (int) $response->code !== 200) {
-      throw new \Exception('Streaming API error: ' . ($response->code ?? 'unknown'));
+      $detail = !empty($response->data) ? ': ' . substr(trim(strip_tags((string) $response->data)), 0, 500) : '';
+      throw new \Exception('Streaming API error (' . ($response->code ?? 'unknown') . ')' . $detail);
     }
 
     if (!isset($response->data) || !is_string($response->data)) {

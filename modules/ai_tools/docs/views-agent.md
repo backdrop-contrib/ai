@@ -4,9 +4,8 @@ The Views Agent is the Backdrop assistant specialist for Views. It can inspect e
 
 The implementation lives in:
 
-- `modules/contrib/ai_tools/includes/views.tools.inc`
-- `modules/contrib/ai_agent/config/install/ai_agent.settings.json`
-- `config_3925413841b7cdf12a96360339e59b6d/active/ai_agent.settings.json`
+- `ai/modules/ai_tools/includes/views.tools.inc` (the tools)
+- `ai_agents/config/ai_agents.settings.json` (the `views_agent` agent definition)
 
 ## Capabilities
 
@@ -159,7 +158,7 @@ Write tools are marked with:
 'operation' => 'write',
 ```
 
-The AI Agent approval layer pauses before write tools and asks the user to approve the action. The agent should clearly describe the action that needs approval and wait for the approval flow to complete.
+The `ai_agents` approval layer pauses before any tool whose `operation` is not `read` or `propose`, or that is marked `destructive`, and asks the user to approve the action. The agent should clearly describe the action that needs approval and wait for the approval flow to complete.
 
 Current write tools:
 
@@ -236,7 +235,7 @@ Expected tool flow:
 Useful checks after changing Views tools:
 
 ```bash
-php -l modules/contrib/ai_tools/includes/views.tools.inc
+php -l modules/contrib/ai/modules/ai_tools/includes/views.tools.inc
 ddev bee cc all
 ```
 
@@ -254,5 +253,5 @@ For a create smoke test, create a uniquely named temporary View, inspect the res
 - Keep tool schemas compatible with common tool-calling APIs: `parameters` must be an object schema, and empty `properties` should be `new stdClass()`, not `[]`.
 - Keep create tools narrow and predictable. If a feature requires deep Views UI behavior, add a purpose-built tool instead of overloading `create_basic_view`.
 - Prefer structured arrays over rendered HTML in tool results.
-- Preserve approval on any tool that writes config.
+- Preserve approval on any tool that writes config: keep `'operation' => 'write'` on it.
 - After changing active agent settings, clear caches.

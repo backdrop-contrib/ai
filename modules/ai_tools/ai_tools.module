@@ -248,6 +248,14 @@ function ai_tools_ai_tools() {
   module_load_include('inc', 'ai_tools', 'includes/config.tools');
   $tools += ai_tools_config_definitions();
 
+  module_load_include('inc', 'ai_tools', 'includes/layout.tools');
+  $tools += ai_tools_layout_definitions();
+
+  if (module_exists('menu')) {
+    module_load_include('inc', 'ai_tools', 'includes/menu.tools');
+    $tools += ai_tools_menu_definitions();
+  }
+
   if (module_exists('views')) {
     module_load_include('inc', 'ai_tools', 'includes/views.tools');
     $tools += ai_tools_views_definitions();

@@ -100,7 +100,7 @@ function ai_agent_test_ai_tools() {
       'execute' => 'ai_agent_test_execute_test_echo_message',
       'module' => 'ai_agent_test',
       'category' => 'test',
-      'operation' => 'transform',
+      'operation' => 'read',
       'destructive' => FALSE,
     ],
     'test_controlled_message' => [
@@ -128,7 +128,7 @@ function ai_agent_test_ai_tools() {
       'execute' => 'ai_agent_test_execute_test_controlled_message',
       'module' => 'ai_agent_test',
       'category' => 'test',
-      'operation' => 'transform',
+      'operation' => 'read',
       'destructive' => FALSE,
     ],
     'test_routed_message' => [

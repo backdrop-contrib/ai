@@ -39,7 +39,7 @@ function ai_tools_node_definitions() {
         'type'     => 'function',
         'function' => [
           'name'        => 'search_nodes',
-          'description' => 'Search published nodes by title or body text. Returns matching node IDs, titles, and types.',
+          'description' => 'Search nodes by title or body text. Returns matching node IDs, titles, types, and published status. Includes unpublished nodes the current user is allowed to see.',
           'parameters'  => [
             'type'       => 'object',
             'properties' => [
@@ -54,6 +54,10 @@ function ai_tools_node_definitions() {
               'limit' => [
                 'type'        => 'integer',
                 'description' => 'Maximum number of results to return (default 5, max 20).',
+              ],
+              'include_unpublished' => [
+                'type'        => 'boolean',
+                'description' => 'Include unpublished nodes the user may see (default true). Set false for published only.',
               ],
             ],
             'required' => ['query'],
@@ -119,6 +123,42 @@ function ai_tools_node_definitions() {
       'module'   => 'ai_tools',
       'category' => 'node',
     ],
+    'create_node' => [
+      'definition' => [
+        'type'     => 'function',
+        'function' => [
+          'name'        => 'create_node',
+          'description' => 'Create a new node of an existing content type. The node is saved unpublished unless published is true and the user may publish. Call search_nodes first to avoid duplicates. Only fills title and body; use get_content_type_info to check the type exists.',
+          'parameters'  => [
+            'type'       => 'object',
+            'properties' => [
+              'content_type' => [
+                'type'        => 'string',
+                'description' => 'Machine name of the content type (e.g. "post", "page").',
+              ],
+              'title' => [
+                'type'        => 'string',
+                'description' => 'Node title.',
+              ],
+              'body' => [
+                'type'        => 'string',
+                'description' => 'Node body as HTML or plain text. Omit for an empty body.',
+              ],
+              'published' => [
+                'type'        => 'boolean',
+                'description' => 'Publish immediately. Defaults to false (unpublished draft).',
+              ],
+            ],
+            'required' => ['content_type', 'title'],
+          ],
+        ],
+      ],
+      'execute'     => 'ai_tools_execute_create_node',
+      'operation'   => 'write',
+      'destructive' => FALSE,
+      'module'      => 'ai_tools',
+      'category'    => 'node',
+    ],
   ];
 }
 
@@ -157,9 +197,23 @@ function ai_tools_execute_search_nodes(array $args) {
     ->fields('n', ['nid', 'title', 'type', 'status'])
     ->distinct()
     ->addTag('node_access')
-    ->condition('n.status', 1)
     ->orderBy('n.changed', 'DESC')
     ->range(0, $limit);
+
+  // Unpublished nodes only appear to users who could open them anyway.
+  global $user;
+  $include_unpublished = !isset($args['include_unpublished']) || !empty($args['include_unpublished']);
+  if (!$include_unpublished) {
+    $q->condition('n.status', 1);
+  }
+  elseif (!user_access('bypass node access') && !user_access('administer nodes')) {
+    if (user_access('view own unpublished content') && $user->uid) {
+      $q->condition(db_or()->condition('n.status', 1)->condition('n.uid', $user->uid));
+    }
+    else {
+      $q->condition('n.status', 1);
+    }
+  }
 
   $search_or = db_or()
     ->condition('n.title', '%' . db_like($query_text) . '%', 'LIKE');
@@ -215,4 +269,56 @@ function ai_tools_execute_get_recent_nodes(array $args) {
 
   $rows = $q->execute()->fetchAll(PDO::FETCH_ASSOC);
   return ['results' => $rows, 'count' => count($rows)];
+}
+
+function ai_tools_execute_create_node(array $args) {
+  global $user;
+
+  $type = trim($args['content_type'] ?? '');
+  $title = trim($args['title'] ?? '');
+  if ($type === '' || $title === '') {
+    return ['error' => 'content_type and title are required.'];
+  }
+  if (!node_type_get_type($type)) {
+    return ['error' => "Content type '$type' not found."];
+  }
+  if (!node_access('create', $type)) {
+    return ['error' => "Access denied: you may not create '$type' content."];
+  }
+
+  $node = entity_create('node', [
+    'type' => $type,
+    'title' => $title,
+    'uid' => $user->uid,
+    'name' => $user->name,
+    'language' => LANGUAGE_NONE,
+    'status' => 0,
+  ]);
+
+  // Publishing needs the same permission the node form requires.
+  if (!empty($args['published'])) {
+    if (!user_access('administer nodes')) {
+      return ['error' => 'Access denied: you may not publish nodes. Omit published to save a draft.'];
+    }
+    $node->status = 1;
+  }
+
+  $body = isset($args['body']) ? (string) $args['body'] : '';
+  if ($body !== '') {
+    if (!field_info_instance('node', 'body', $type)) {
+      return ['error' => "Content type '$type' has no body field; omit body."];
+    }
+    $format = filter_default_format($user);
+    $node->body[LANGUAGE_NONE][0] = ['value' => $body, 'format' => $format];
+  }
+
+  node_save($node);
+
+  return [
+    'status' => 'created',
+    'nid' => (int) $node->nid,
+    'title' => $node->title,
+    'type' => $node->type,
+    'published' => (bool) $node->status,
+  ];
 }

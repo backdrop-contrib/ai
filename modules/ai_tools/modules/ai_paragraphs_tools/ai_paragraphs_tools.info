@@ -1,0 +1,7 @@
+name = AI Paragraphs Tools
+description = Generic AI tools for reading and building Paragraphs content.
+backdrop = 1.x
+type = module
+package = AI
+dependencies[] = ai_tools
+dependencies[] = paragraphs

@@ -463,7 +463,135 @@ abstract class AIAdapterBase implements AIProviderClient {
     return is_array($data) ? $this->captureProviderUsage($data) : [];
   }
 
-  protected function buildStreamingResponse(string $url, array $options, callable $extractor) {
-    return new AIStreamingResponse($url, $options, $extractor);
+  protected function buildStreamingResponse(string $url, array $options, callable $extractor, ?callable $retry = NULL) {
+    return new AIStreamingResponse($url, $options, $extractor, $retry);
+  }
+
+  /**
+   * Sampling params a model may refuse, as dotted payload paths.
+   *
+   * New model families drop sampling controls (temperature first) and no
+   * provider catalog says which. Requests send them; an error naming one
+   * removes it for that model, so no model-name lists are needed.
+   */
+  protected function optionalParams(): array {
+    return ['temperature', 'top_p', 'top_k'];
+  }
+
+  /**
+   * Name the optional param a provider error rejects, if any.
+   *
+   * @return string|null
+   *   The dotted path from optionalParams(), present in $payload, that the
+   *   error refuses; NULL for any other error.
+   */
+  protected function rejectedParam(string $message, array $payload): ?string {
+    if (!preg_match('/unsupported|not supported|(?:doesn\'t|does not) support|deprecated|not allowed|not permitted/i', $message)) {
+      return NULL;
+    }
+    foreach ($this->optionalParams() as $path) {
+      $parts = explode('.', $path);
+      if ($this->payloadHasPath($payload, $parts) && preg_match('/\b' . preg_quote(end($parts), '/') . '\b/i', $message)) {
+        return $path;
+      }
+    }
+    return NULL;
+  }
+
+  /**
+   * Send a payload, dropping optional params the model rejects.
+   *
+   * Params a model refused before are left out up front; a new refusal is
+   * remembered for 30 days so a model that regains support gets them back.
+   *
+   * @param callable $send
+   *   Callable(array $payload) performing the request; it throws on error.
+   */
+  protected function sendDroppingRejectedParams(string $model, array $payload, callable $send) {
+    $payload = $this->withoutRejectedParams($model, $payload);
+    for ($attempt = 0; ; $attempt++) {
+      try {
+        return $send($payload);
+      }
+      catch (\Exception $e) {
+        $path = $attempt < count($this->optionalParams()) ? $this->rejectedParam($e->getMessage(), $payload) : NULL;
+        if ($path === NULL) {
+          throw $e;
+        }
+        $this->rememberRejectedParam($model, $path);
+        $payload = $this->payloadWithoutPath($payload, explode('.', $path));
+      }
+    }
+  }
+
+  /**
+   * Retry callable for AIStreamingResponse that drops a rejected param.
+   *
+   * The payload is kept as an array rather than decoded back from the
+   * request body, which would turn empty JSON objects into arrays.
+   */
+  protected function streamRetryDroppingRejectedParams(string $model, array $payload): callable {
+    return function (string $message, array $options) use ($model, &$payload) {
+      $path = $this->rejectedParam($message, $payload);
+      if ($path === NULL) {
+        return NULL;
+      }
+      $this->rememberRejectedParam($model, $path);
+      $payload = $this->payloadWithoutPath($payload, explode('.', $path));
+      $options['data'] = json_encode($payload);
+      return $options;
+    };
+  }
+
+  /**
+   * Remove the optional params a model has refused before.
+   */
+  protected function withoutRejectedParams(string $model, array $payload): array {
+    $cache = cache_get($this->rejectedParamsCid($model));
+    foreach (($cache && is_array($cache->data)) ? $cache->data : [] as $path) {
+      $payload = $this->payloadWithoutPath($payload, explode('.', $path));
+    }
+    return $payload;
+  }
+
+  protected function rememberRejectedParam(string $model, string $path): void {
+    $cid = $this->rejectedParamsCid($model);
+    $cache = cache_get($cid);
+    $known = ($cache && is_array($cache->data)) ? $cache->data : [];
+    $known[] = $path;
+    cache_set($cid, array_values(array_unique($known)), 'cache', REQUEST_TIME + 30 * 86400);
+    watchdog('ai', '@class: model @model rejected @param; omitting it for this model.', [
+      '@class' => get_class($this),
+      '@model' => $model,
+      '@param' => $path,
+    ], WATCHDOG_NOTICE);
+  }
+
+  protected function rejectedParamsCid(string $model): string {
+    return 'ai:rejected_params:' . get_class($this) . ':' . $model;
+  }
+
+  protected function payloadHasPath(array $payload, array $parts): bool {
+    foreach ($parts as $part) {
+      if (!is_array($payload) || !array_key_exists($part, $payload)) {
+        return FALSE;
+      }
+      $payload = $payload[$part];
+    }
+    return TRUE;
+  }
+
+  protected function payloadWithoutPath(array $payload, array $parts): array {
+    $key = array_shift($parts);
+    if (!array_key_exists($key, $payload)) {
+      return $payload;
+    }
+    if (empty($parts)) {
+      unset($payload[$key]);
+    }
+    elseif (is_array($payload[$key])) {
+      $payload[$key] = $this->payloadWithoutPath($payload[$key], $parts);
+    }
+    return $payload;
   }
 }

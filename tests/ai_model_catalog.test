@@ -1,0 +1,173 @@
+<?php
+
+/**
+ * @file
+ * Tests for the AI model catalog.
+ */
+
+/**
+ * Adapter stub exposing the rejected-param filter.
+ */
+class AIModelCatalogTestAdapter extends AIAdapterBase {
+
+  protected function getDefaultHeaders(): array {
+    return [];
+  }
+
+  public function dropRejected(string $model, array $payload): array {
+    return $this->withoutRejectedParams($model, $payload);
+  }
+
+  public function getModels(): array {
+    return [];
+  }
+
+  public function completions(string $model, string $prompt, $temperature, $max_tokens = 512, bool $stream_response = FALSE) {
+    return '';
+  }
+
+  public function chat(string $model, array $messages, $temperature, $max_tokens = 1024, bool $stream_response = FALSE, array $context_extra = []) {
+    return '';
+  }
+
+  public function images(string $model, string $prompt, string $size, string $response_format, string $quality = 'standard', string $style = 'natural', ?string $output_format = NULL) {
+    return [];
+  }
+
+  public function textToSpeech(string $model, string $input, string $voice, string $response_format) {
+    return '';
+  }
+
+  public function speechToText(string $model, string $file, string $task = 'transcribe', $temperature = 0.4, string $response_format = 'verbose_json') {
+    return '';
+  }
+
+  public function moderation(string $input, string $model = 'omni-moderation-latest'): array {
+    return [];
+  }
+
+  public function embedding(string $input, string $model, bool $log = TRUE): array {
+    return [];
+  }
+
+  public function chatWithTools(string $model, array $messages, array $tools, $temperature, $max_tokens = 1024, string $tool_choice = 'auto', array $context_extra = []): array {
+    return [];
+  }
+
+}
+
+/**
+ * API stub exposing the output-token cap.
+ */
+class AIModelCatalogTestApi extends AIApi {
+
+  public function cap(string $model, $max_tokens) {
+    return $this->capMaxTokens($model, $max_tokens);
+  }
+
+}
+
+class AIModelCatalogTestCase extends BackdropWebTestCase {
+
+  public function setUp() {
+    parent::setUp(['ai', 'ai_agent_test']);
+    config_set('ai.settings', 'providers', ['agent_test' => ['enabled' => 1]]);
+    module_load_include('inc', 'ai', 'ai.catalog');
+  }
+
+  /**
+   * Insert one catalog entry for agent_test.
+   */
+  protected function addEntry($model, array $fields) {
+    db_insert('ai_model_catalog')
+      ->fields(['provider' => 'agent_test', 'model' => $model] + $fields)
+      ->execute();
+    backdrop_static_reset('ai_model_catalog_provider');
+  }
+
+  public function testModelsDevParsing() {
+    $feed = [
+      'openai' => [
+        'models' => [
+          'gpt-test' => [
+            'cost' => ['input' => 0.25, 'output' => 2, 'cache_read' => 0.025, 'cache_write' => 0.3125],
+            'tool_call' => TRUE,
+            'reasoning' => TRUE,
+            'temperature' => FALSE,
+            'modalities' => ['input' => ['text', 'image']],
+            'limit' => ['context' => 400000, 'output' => 128000],
+            'family' => 'gpt-mini',
+            'release_date' => '2025-08-07',
+          ],
+          'free-test' => ['cost' => [], 'modalities' => ['input' => ['text']]],
+        ],
+      ],
+      'anthropic' => ['models' => ['claude-test' => ['cost' => ['input' => 3, 'output' => 15]]]],
+    ];
+    $entries = ai_catalog_parse_models_dev($feed, ['openai']);
+    $this->assertEqual(['openai/gpt-test', 'openai/free-test'], array_keys($entries), 'Only enabled, mapped providers are kept, priced or not.');
+    $gpt = $entries['openai/gpt-test'];
+    $this->assertEqual(0.00000025, round($gpt['input_usd'], 12), 'Per-million prices convert to per-token rates.');
+    $this->assertEqual(0.000000025, round($gpt['cache_read_usd'], 12), 'Cache-read prices are kept.');
+    $this->assertEqual(0.0000003125, round($gpt['cache_write_usd'], 13), 'Cache-write prices are kept.');
+    $this->assertIdentical(1, $gpt['tool_call'], 'Tool calling is read.');
+    $this->assertIdentical(1, $gpt['vision'], 'Image input means vision.');
+    $this->assertIdentical(0, $gpt['temperature'], 'Temperature refusal is read.');
+    $this->assertEqual(128000, $gpt['output_limit'], 'The output limit is read.');
+    $this->assertEqual('gpt-mini', $gpt['family'], 'The family is read.');
+    $this->assertNull($entries['openai/free-test']['input_usd'], 'Models without a token price stay unpriced.');
+    $this->assertIdentical(0, $entries['openai/free-test']['vision'], 'Text-only input means no vision.');
+    $this->assertNull($entries['openai/free-test']['temperature'], 'An absent flag stays unknown.');
+  }
+
+  public function testLiteLLMParsingAndMerge() {
+    $map = [
+      'gpt-test' => ['litellm_provider' => 'openai', 'input_cost_per_token' => 1e-6, 'output_cost_per_token' => 2e-6, 'cache_creation_input_token_cost' => 1.25e-6, 'supports_vision' => TRUE, 'max_output_tokens' => 4096],
+      'gpt-old' => ['litellm_provider' => 'openai', 'input_cost_per_token' => 1e-6, 'output_cost_per_token' => 2e-6, 'deprecation_date' => '2020-01-01'],
+      'gemini/gemini-test' => ['litellm_provider' => 'gemini', 'input_cost_per_token' => 3e-7, 'output_cost_per_token' => 2.5e-6],
+      'bedrock/us-east-1/model-x' => ['litellm_provider' => 'bedrock', 'input_cost_per_token' => 1e-6],
+      'sample_spec' => ['litellm_provider' => 'one of the providers'],
+    ];
+    $fallback = ai_catalog_parse_litellm($map, ['openai', 'google_gemini', 'aws_bedrock']);
+    $keys = array_keys($fallback);
+    sort($keys);
+    $this->assertEqual(['google_gemini/gemini-test', 'openai/gpt-old', 'openai/gpt-test'], $keys, 'Provider prefixes are stripped and region-prefixed Bedrock keys skipped.');
+    $this->assertEqual('deprecated', $fallback['openai/gpt-old']['status'], 'A past deprecation date marks the model deprecated.');
+
+    $primary = ai_catalog_parse_models_dev(['openai' => ['models' => ['gpt-test' => ['cost' => [], 'tool_call' => TRUE, 'family' => 'gpt']]]], ['openai']);
+    $merged = ai_catalog_merge($primary, $fallback);
+    $this->assertEqual('litellm', $merged['openai/gpt-test']['price_source'], 'LiteLLM supplies a price models.dev lacks.');
+    $this->assertEqual(1.25e-6, $merged['openai/gpt-test']['cache_write_usd'], 'The LiteLLM cache-write price comes with its price set.');
+    $this->assertIdentical(1, $merged['openai/gpt-test']['tool_call'], 'models.dev fields are kept.');
+    $this->assertIdentical(1, $merged['openai/gpt-test']['vision'], 'LiteLLM fills unknown fields.');
+    $this->assertEqual('gpt', $merged['openai/gpt-test']['family'], 'Known models.dev fields are not overwritten.');
+    $this->assertTrue(isset($merged['google_gemini/gemini-test']), 'Models only LiteLLM knows are added.');
+  }
+
+  public function testCatalogHints() {
+    $this->addEntry('gpt-4o-mini', ['vision' => 1, 'temperature' => 0, 'output_limit' => 100, 'release_date' => '2024-07-18', 'status' => 'deprecated']);
+
+    $api = ai_get_api('agent_test');
+    $this->assertTrue(isset($api->getVisionModels()['gpt-4o-mini']), 'The catalog fills a capability the provider does not report.');
+    $this->assertTrue(isset($api->getToolCallingModels()['gpt-4o-mini']), 'Provider-reported capabilities are kept.');
+
+    $providers = config_get('ai.settings', 'providers');
+    $providers['agent_test']['manual_capability_models'] = ['vision' => []];
+    config_set('ai.settings', 'providers', $providers);
+    $this->assertEqual([], ai_get_api('agent_test')->getVisionModels(), 'A manual capability override beats the catalog.');
+
+    $capped = new AIModelCatalogTestApi('', 'agent_test');
+    $this->assertEqual(100, $capped->cap('gpt-4o-mini', 500), 'max_tokens is capped at the catalog output limit.');
+    $this->assertEqual(64, $capped->cap('gpt-4o-mini', 64), 'A smaller max_tokens is kept.');
+
+    $adapter = new AIModelCatalogTestAdapter('', $capped);
+    $payload = $adapter->dropRejected('gpt-4o-mini', ['model' => 'gpt-4o-mini', 'temperature' => 0.2, 'top_p' => 1]);
+    $this->assertFalse(isset($payload['temperature']), 'Temperature is omitted for models the catalog says refuse it.');
+    $this->assertTrue(isset($payload['top_p']), 'Other optional params are kept.');
+    $payload = $adapter->dropRejected('unknown-model', ['temperature' => 0.2]);
+    $this->assertTrue(isset($payload['temperature']), 'Temperature is sent when the catalog does not know the model.');
+
+    $this->assertEqual('GPT-4o Mini (2024-07-18, deprecated)', ai_model_catalog_label('GPT-4o Mini', ai_model_catalog_entry('agent_test', 'gpt-4o-mini')), 'Model labels show release date and deprecation.');
+  }
+
+}

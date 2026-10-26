@@ -470,9 +470,10 @@ abstract class AIAdapterBase implements AIProviderClient {
   /**
    * Sampling params a model may refuse, as dotted payload paths.
    *
-   * New model families drop sampling controls (temperature first) and no
-   * provider catalog says which. Requests send them; an error naming one
-   * removes it for that model, so no model-name lists are needed.
+   * New model families drop sampling controls (temperature first). Requests
+   * send them; an error naming one removes it for that model, so no
+   * model-name lists are needed. The model catalog, when it knows a model
+   * refuses temperature, removes it up front.
    */
   protected function optionalParams(): array {
     return ['temperature', 'top_p', 'top_k'];
@@ -548,7 +549,16 @@ abstract class AIAdapterBase implements AIProviderClient {
    */
   protected function withoutRejectedParams(string $model, array $payload): array {
     $cache = cache_get($this->rejectedParamsCid($model));
-    foreach (($cache && is_array($cache->data)) ? $cache->data : [] as $path) {
+    $rejected = ($cache && is_array($cache->data)) ? $cache->data : [];
+    $entry = $this->api && function_exists('ai_model_catalog_entry') ? ai_model_catalog_entry($this->api->getProviderId(), $model) : NULL;
+    if ($entry && $entry['temperature'] === 0) {
+      foreach ($this->optionalParams() as $path) {
+        if (substr($path, -strlen('temperature')) === 'temperature') {
+          $rejected[] = $path;
+        }
+      }
+    }
+    foreach (array_unique($rejected) as $path) {
       $payload = $this->payloadWithoutPath($payload, explode('.', $path));
     }
     return $payload;

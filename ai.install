@@ -111,6 +111,119 @@ function ai_schema() {
     ],
   ];
 
+  $schema['ai_model_catalog'] = [
+    'description' => 'Per-model metadata synced from public catalogs; NULL means unknown.',
+    'fields' => [
+      'provider' => [
+        'type' => 'varchar',
+        'length' => 96,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'AI provider ID.',
+      ],
+      'model' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Provider model ID.',
+      ],
+      'input_usd' => [
+        'type' => 'float',
+        'size' => 'big',
+        'not null' => FALSE,
+        'description' => 'Input price in USD per token.',
+      ],
+      'output_usd' => [
+        'type' => 'float',
+        'size' => 'big',
+        'not null' => FALSE,
+        'description' => 'Output price in USD per token.',
+      ],
+      'cache_read_usd' => [
+        'type' => 'float',
+        'size' => 'big',
+        'not null' => FALSE,
+        'description' => 'Cached input price in USD per token.',
+      ],
+      'cache_write_usd' => [
+        'type' => 'float',
+        'size' => 'big',
+        'not null' => FALSE,
+        'description' => 'Cache write price in USD per token.',
+      ],
+      'tool_call' => [
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => FALSE,
+        'description' => 'Whether the model supports tool calling.',
+      ],
+      'vision' => [
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => FALSE,
+        'description' => 'Whether the model accepts image input.',
+      ],
+      'reasoning' => [
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => FALSE,
+        'description' => 'Whether the model is a reasoning model.',
+      ],
+      'structured_output' => [
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => FALSE,
+        'description' => 'Whether the model supports structured output.',
+      ],
+      'temperature' => [
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => FALSE,
+        'description' => 'Whether the model accepts a temperature parameter.',
+      ],
+      'context_limit' => [
+        'type' => 'int',
+        'not null' => FALSE,
+        'description' => 'Context window in tokens.',
+      ],
+      'output_limit' => [
+        'type' => 'int',
+        'not null' => FALSE,
+        'description' => 'Maximum output tokens.',
+      ],
+      'family' => [
+        'type' => 'varchar',
+        'length' => 64,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Catalog model family, such as gpt-mini.',
+      ],
+      'status' => [
+        'type' => 'varchar',
+        'length' => 16,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Catalog status, such as deprecated or beta.',
+      ],
+      'release_date' => [
+        'type' => 'varchar',
+        'length' => 10,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Release date as YYYY-MM-DD.',
+      ],
+      'price_source' => [
+        'type' => 'varchar',
+        'length' => 16,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Feed the prices came from.',
+      ],
+    ],
+    'primary key' => ['provider', 'model'],
+  ];
+
   return $schema;
 }
 
@@ -243,4 +356,25 @@ function ai_update_1002() {
  */
 function ai_update_1003() {
   return t('Legacy OpenAI modules are not disabled automatically. Use AI Upgrade at admin/config/ai/upgrade to complete the cutover.');
+}
+
+/**
+ * Add the model catalog table.
+ */
+function ai_update_1004() {
+  if (!db_table_exists('ai_model_catalog')) {
+    $schema = ai_schema();
+    db_create_table('ai_model_catalog', $schema['ai_model_catalog']);
+  }
+  return t('Added the AI model catalog table. It fills on the next cron run, or sync it at admin/config/ai/settings/catalog.');
+}
+
+/**
+ * Add the cache write price to the model catalog.
+ */
+function ai_update_1005() {
+  if (db_table_exists('ai_model_catalog') && !db_field_exists('ai_model_catalog', 'cache_write_usd')) {
+    $schema = ai_schema();
+    db_add_field('ai_model_catalog', 'cache_write_usd', $schema['ai_model_catalog']['fields']['cache_write_usd']);
+  }
 }

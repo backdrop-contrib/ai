@@ -3,6 +3,8 @@
   "enabled": true,
   "retention_days": 0,
   "pricing": {},
+  "economy_default": false,
+  "economy_modules": {},
   "budget_enabled": false,
   "budget_action": "report",
   "user_token_limit": 0,

@@ -48,6 +48,29 @@ rejected without saving partial assignments.
 Offline regression tests:
 `php modules/contrib/ai/tests/model_capabilities.php` from the site root.
 
+## Model catalog
+
+Cron syncs a model catalog once a day from the public
+[models.dev](https://models.dev) feed, with the
+[LiteLLM price map](https://github.com/BerriAI/litellm) filling models and
+fields models.dev lacks. Configure or sync it at
+`admin/config/ai/settings/catalog`. Entries are stored in the
+`ai_model_catalog` table, not in config, and cover only enabled providers with
+a hosted catalog entry.
+
+The catalog is a hint, never the authority:
+
+- Capabilities: it fills tool calling, vision, and thinking only when the
+  provider reports no models for that capability, and only with models the
+  provider lists. Manual capability assignments always win.
+- Temperature: adapters that drop rejected params (OpenAI, Anthropic, Bedrock)
+  omit temperature up front for models the catalog says refuse it.
+- Output tokens: `max_tokens` is capped at the model's catalog output limit.
+- Model lists: labels show the release date and a deprecated marker.
+- Prices: `ai_usage` reads per-token and cached-input prices from it.
+
+When models.dev fails the previous catalog is kept; a LiteLLM failure only skips the fallback.
+
 ## Included Submodules
 
 ### **ai_alt**

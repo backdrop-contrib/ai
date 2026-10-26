@@ -72,6 +72,18 @@ function ai_usage_menu() {
     'file' => 'ai_usage.pages.inc',
     'type' => MENU_NORMAL_ITEM,
   ];
+  $items['admin/reports/ai-usage/records'] = [
+    'title' => 'Usage',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => -10,
+  ];
+  $items['admin/reports/ai-usage/pricing'] = [
+    'title' => 'Model prices',
+    'page callback' => 'ai_usage_pricing_page',
+    'access arguments' => ['view ai usage'],
+    'file' => 'ai_usage.pages.inc',
+    'type' => MENU_LOCAL_TASK,
+  ];
   $items['admin/reports/ai-usage/export'] = [
     'title' => 'Export AI Usage',
     'page callback' => 'ai_usage_export_page',
@@ -106,8 +118,35 @@ function ai_usage_settings_form($form, &$form_state) {
     '#title' => t('Manual model pricing'),
     '#default_value' => ai_usage_pricing_to_text(config_get('ai_usage.settings', 'pricing') ?: []),
     '#rows' => 8,
-    '#description' => t('One model per line: provider/model|input USD per token|output USD per token. Example: openai/gpt-4o-mini|0.00000015|0.00000060. Values are estimates, not provider invoices.'),
+    '#description' => t('One model per line: provider/model|input USD per token|output USD per token. Example: openai/gpt-4o-mini|0.00000015|0.00000060. Manual rows override prices from the <a href="@catalog">AI model catalog</a>. Values are estimates, not provider invoices.', ['@catalog' => url('admin/config/ai/settings/catalog')]),
   ];
+
+  $form['economy'] = [
+    '#type' => 'fieldset',
+    '#title' => t('Cheaper model switching'),
+    '#collapsible' => TRUE,
+    '#collapsed' => !$config->get('economy_default') && !$config->get('economy_modules'),
+    '#description' => t('Chat, tool-calling, and decision calls can run on the cheapest priced model from the same provider that has every capability the call needs (text, tools, vision). The requested model must itself be priced, and the cheaper model must be in the same catalog family or a smaller tier of it (gpt to gpt-mini), and not deprecated. A failed call on the cheaper model is retried on the requested model. Restrict which models qualify with the provider capability overrides at <a href="@url">AI capabilities</a>.', ['@url' => url('admin/config/ai/settings/capabilities')]),
+  ];
+  $form['economy']['economy_default'] = [
+    '#type' => 'checkbox',
+    '#title' => t('Switch to cheaper models by default'),
+    '#default_value' => (bool) $config->get('economy_default'),
+  ];
+  $module_settings = $config->get('economy_modules') ?: [];
+  $form['economy']['economy_modules'] = ['#tree' => TRUE];
+  foreach (ai_usage_economy_module_options() as $module => $label) {
+    $form['economy']['economy_modules'][$module] = [
+      '#type' => 'select',
+      '#title' => check_plain($label),
+      '#options' => [
+        '' => t('Use the default'),
+        'on' => t('Switch to cheaper models'),
+        'off' => t('Always use the requested model'),
+      ],
+      '#default_value' => $module_settings[$module] ?? '',
+    ];
+  }
 
   $budget = ai_usage_get_budget_config();
   $form['budget'] = [
@@ -195,6 +234,10 @@ function ai_usage_settings_form_submit($form, &$form_state) {
   $config->set('enabled', !empty($form_state['values']['enabled']));
   $config->set('retention_days', max(0, (int) $form_state['values']['retention_days']));
   $config->set('pricing', $pricing['values']);
+  $config->set('economy_default', !empty($form_state['values']['economy_default']));
+  $config->set('economy_modules', array_filter((array) ($form_state['values']['economy_modules'] ?? []), function ($value) {
+    return in_array($value, ['on', 'off'], TRUE);
+  }));
   $config->set('budget_enabled', !empty($form_state['values']['budget_enabled']));
   $config->set('budget_action', $form_state['values']['budget_action'] === 'block' ? 'block' : 'report');
   $config->set('user_token_limit', max(0, (int) $form_state['values']['user_token_limit']));
@@ -219,6 +262,115 @@ function ai_usage_cron() {
   db_delete('ai_usage_records')
     ->condition('timestamp', time() - ($retention_days * 86400), '<')
     ->execute();
+}
+
+/**
+ * Enabled modules that build on the AI module, keyed by machine name.
+ */
+function ai_usage_economy_module_options() {
+  $options = [];
+  foreach (system_get_info('module') as $module => $info) {
+    if ($module === 'ai_usage' || strpos($module, 'ai_provider_') === 0) {
+      continue;
+    }
+    $dependencies = array_map(function ($dependency) {
+      return strtok(trim($dependency), ' (');
+    }, $info['dependencies'] ?? []);
+    if ($module === 'ai' || in_array('ai', $dependencies, TRUE)) {
+      $options[$module] = $info['name'] ?? $module;
+    }
+  }
+  natcasesort($options);
+  return $options;
+}
+
+/**
+ * Whether cheaper model switching applies to calls from a module.
+ *
+ * A per-module setting overrides the site default.
+ */
+function ai_usage_economy_applies($module) {
+  $config = config('ai_usage.settings');
+  $modules = $config->get('economy_modules') ?: [];
+  if (isset($modules[$module]) && in_array($modules[$module], ['on', 'off'], TRUE)) {
+    return $modules[$module] === 'on';
+  }
+  return (bool) $config->get('economy_default');
+}
+
+/**
+ * Implements hook_ai_operation_model_alter().
+ */
+function ai_usage_ai_operation_model_alter(&$model, array $info) {
+  if (!ai_usage_economy_applies($info['module']) || empty($info['provider'])) {
+    return;
+  }
+  $requested = ai_usage_get_pricing($info['provider'], $model);
+  if (!$requested) {
+    return;
+  }
+  $entry = ai_model_catalog_entry($info['provider'], $model);
+  if (!$entry || $entry['family'] === '') {
+    return;
+  }
+  $cheaper = ai_usage_cheapest_model($info['provider'], $info['capabilities'], $requested['input'] + $requested['output'], $entry['family']);
+  if ($cheaper !== NULL) {
+    $model = $cheaper;
+  }
+}
+
+/**
+ * Find the cheapest priced provider model that has every capability.
+ *
+ * Models are ranked by input plus output price per token. Deprecated models
+ * never qualify, and a model qualifies only in the requested family or a
+ * smaller tier of it (gpt to gpt-mini, gemini-flash to gemini-flash-lite).
+ *
+ * @param string $provider
+ *   AI provider ID.
+ * @param array $capabilities
+ *   Capabilities the model must support: text, tool_calling, vision.
+ * @param float $below
+ *   Only models cheaper than this combined rate qualify.
+ * @param string $family
+ *   Catalog family of the requested model.
+ *
+ * @return string|null
+ *   Model ID, or NULL when no priced model is cheaper.
+ */
+function ai_usage_cheapest_model($provider, array $capabilities, $below, $family) {
+  $methods = [
+    'text' => 'getChatModels',
+    'tool_calling' => 'getToolCallingModels',
+    'vision' => 'getVisionModels',
+  ];
+  $candidates = NULL;
+  foreach ($capabilities as $capability) {
+    if (!isset($methods[$capability])) {
+      return NULL;
+    }
+    $ids = array_keys(ai_get_provider_models_for_method($provider, $methods[$capability]));
+    $candidates = $candidates === NULL ? $ids : array_intersect($candidates, $ids);
+  }
+
+  $prices = ai_usage_get_provider_pricing($provider);
+  $catalog = ai_model_catalog_provider($provider);
+  $best = NULL;
+  foreach ($candidates ?: [] as $candidate) {
+    $pricing = $prices[$candidate] ?? NULL;
+    $entry = $catalog[$candidate] ?? NULL;
+    if (!$pricing || !$entry || $entry['status'] === 'deprecated') {
+      continue;
+    }
+    if ($entry['family'] !== $family && strpos($entry['family'], $family . '-') !== 0) {
+      continue;
+    }
+    if ($pricing['input'] + $pricing['output'] < $below) {
+      $below = $pricing['input'] + $pricing['output'];
+      $best = (string) $candidate;
+    }
+  }
+  return $best;
 }
 
 /**
@@ -404,6 +556,7 @@ function ai_usage_record_operation(array $record) {
     'operation' => substr((string) ($record['operation'] ?? 'unknown'), 0, 96),
     'provider' => substr((string) ($record['provider'] ?? ''), 0, 96),
     'model' => substr((string) ($record['model'] ?? ''), 0, 255),
+    'requested_model' => substr((string) ($record['requested_model'] ?? ''), 0, 255),
     'request_id' => substr((string) ($record['request_id'] ?? ''), 0, 128),
     'context_group' => substr((string) ($record['context_group'] ?? ''), 0, 128),
     'status' => !empty($record['status']) ? 1 : 0,
@@ -411,6 +564,7 @@ function ai_usage_record_operation(array $record) {
     'input_tokens' => (int) ($usage['input_tokens'] ?? 0),
     'output_tokens' => (int) ($usage['output_tokens'] ?? 0),
     'cached_tokens' => (int) ($usage['cached_tokens'] ?? 0),
+    'cache_write_tokens' => (int) ($usage['cache_write_tokens'] ?? 0),
     'reasoning_tokens' => (int) ($usage['reasoning_tokens'] ?? 0),
     'total_tokens' => (int) ($usage['total_tokens'] ?? 0),
     'input_cost_usd' => 0,
@@ -423,10 +577,16 @@ function ai_usage_record_operation(array $record) {
 
   $pricing = ai_usage_get_pricing($row['provider'], $row['model']);
   if ($pricing) {
-    $row['input_cost_usd'] = $row['input_tokens'] * $pricing['input'];
+    // Cache reads and writes are billed at their own rates when the catalog
+    // has them, and at the input rate otherwise.
+    $cached = min($row['cached_tokens'], $row['input_tokens']);
+    $written = min($row['cache_write_tokens'], $row['input_tokens'] - $cached);
+    $row['input_cost_usd'] = ($row['input_tokens'] - $cached - $written) * $pricing['input']
+      + $cached * ($pricing['cache_read'] ?? $pricing['input'])
+      + $written * ($pricing['cache_write'] ?? $pricing['input']);
     $row['output_cost_usd'] = $row['output_tokens'] * $pricing['output'];
     $row['cost_usd'] = $row['input_cost_usd'] + $row['output_cost_usd'];
-    $row['cost_source'] = 'manual';
+    $row['cost_source'] = $pricing['source'];
   }
 
   backdrop_alter('ai_usage_record', $row, $record);
@@ -467,6 +627,12 @@ function ai_usage_normalize_usage(array $usage) {
     $reasoning = ai_usage_first_numeric($usage['completion_tokens_details'] ?? [], ['reasoning_tokens'])
       ?: ai_usage_first_numeric($usage['output_tokens_details'] ?? [], ['reasoning_tokens']);
   }
+  $cache_write = ai_usage_first_numeric($usage, ['cache_write_tokens', 'cache_creation_input_tokens']);
+  // Anthropic-style envelopes report cache reads and writes beside
+  // input_tokens rather than inside it.
+  if (array_key_exists('cache_read_input_tokens', $usage) || array_key_exists('cache_creation_input_tokens', $usage)) {
+    $input += $cached + $cache_write;
+  }
   $total = ai_usage_first_numeric($usage, ['total_tokens', 'totalTokenCount']);
 
   if ($total <= 0) {
@@ -477,6 +643,7 @@ function ai_usage_normalize_usage(array $usage) {
     'input_tokens' => $input,
     'output_tokens' => $output,
     'cached_tokens' => $cached,
+    'cache_write_tokens' => $cache_write,
     'reasoning_tokens' => $reasoning,
     'total_tokens' => $total,
   ];
@@ -492,6 +659,7 @@ function ai_usage_estimate_operation(array $record) {
       'input_tokens' => 0,
       'output_tokens' => 0,
       'cached_tokens' => 0,
+      'cache_write_tokens' => 0,
       'reasoning_tokens' => 0,
       'total_tokens' => 0,
     ];
@@ -510,6 +678,7 @@ function ai_usage_estimate_operation(array $record) {
     'input_tokens' => $input_tokens,
     'output_tokens' => $output_tokens,
     'cached_tokens' => 0,
+    'cache_write_tokens' => 0,
     'reasoning_tokens' => 0,
     'total_tokens' => $input_tokens + $output_tokens,
   ];
@@ -604,18 +773,59 @@ function ai_usage_pricing_to_text(array $pricing) {
 }
 
 /**
- * Find manual pricing for a provider/model pair.
+ * Find pricing for a provider/model pair.
+ *
+ * @return array|null
+ *   Keys input, output, cache_read, and cache_write (USD per token; the
+ *   cache rates are NULL when unknown) and source ("manual" or "synced"), or NULL when the model
+ *   has no price.
  */
 function ai_usage_get_pricing($provider, $model) {
-  $pricing = config_get('ai_usage.settings', 'pricing') ?: [];
-  $keys = [$provider . '/' . $model, $model];
-  foreach ($keys as $key) {
-    if (!empty($pricing[$key]) && is_array($pricing[$key])) {
-      return [
-        'input' => max(0, (float) ($pricing[$key]['input'] ?? 0)),
-        'output' => max(0, (float) ($pricing[$key]['output'] ?? 0)),
+  $pricing = ai_usage_get_provider_pricing($provider);
+  return $pricing[$model] ?? NULL;
+}
+
+/**
+ * All prices for one provider, keyed by model ID.
+ *
+ * Prices from the AI model catalog are overlaid by manual rows: first rows keyed by bare
+ * model ID, then rows keyed by provider/model.
+ */
+function ai_usage_get_provider_pricing($provider) {
+  $provider = (string) $provider;
+
+  $prices = [];
+  foreach (ai_model_catalog_provider($provider) as $model => $entry) {
+    if ($entry['input_usd'] !== NULL) {
+      $prices[$model] = [
+        'input' => $entry['input_usd'],
+        'output' => (float) $entry['output_usd'],
+        'cache_read' => $entry['cache_read_usd'],
+        'cache_write' => $entry['cache_write_usd'],
+        'source' => 'synced',
       ];
     }
   }
-  return NULL;
+
+  $manual = config_get('ai_usage.settings', 'pricing') ?: [];
+  $specific = [];
+  foreach ($manual as $key => $rates) {
+    if (!is_array($rates)) {
+      continue;
+    }
+    $rates = [
+      'input' => max(0, (float) ($rates['input'] ?? 0)),
+      'output' => max(0, (float) ($rates['output'] ?? 0)),
+      'cache_read' => NULL,
+      'cache_write' => NULL,
+      'source' => 'manual',
+    ];
+    if (strpos($key, $provider . '/') === 0) {
+      $specific[substr($key, strlen($provider) + 1)] = $rates;
+    }
+    else {
+      $prices[$key] = $rates;
+    }
+  }
+  return $specific + $prices;
 }

@@ -69,6 +69,13 @@ function ai_usage_schema() {
         'default' => '',
         'description' => 'Provider-local model identifier.',
       ],
+      'requested_model' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Model the caller asked for when a cheaper model was used instead.',
+      ],
       'request_id' => [
         'type' => 'varchar',
         'length' => 128,
@@ -117,6 +124,13 @@ function ai_usage_schema() {
         'not null' => TRUE,
         'default' => 0,
         'description' => 'Cached input tokens when the provider reports them.',
+      ],
+      'cache_write_tokens' => [
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Input tokens written to the provider cache when reported.',
       ],
       'reasoning_tokens' => [
         'type' => 'int',
@@ -187,7 +201,7 @@ function ai_usage_schema() {
  * Implements hook_uninstall().
  */
 function ai_usage_uninstall() {
-  foreach (['enabled', 'retention_days', 'pricing', 'budget_enabled', 'budget_action', 'user_token_limit', 'user_cost_limit_usd', 'anonymous_token_limit', 'anonymous_cost_limit_usd', 'alert_threshold_percent', 'admin_bypass'] as $key) {
+  foreach (['enabled', 'retention_days', 'pricing', 'budget_enabled', 'budget_action', 'user_token_limit', 'user_cost_limit_usd', 'anonymous_token_limit', 'anonymous_cost_limit_usd', 'alert_threshold_percent', 'admin_bypass', 'economy_default', 'economy_modules'] as $key) {
     config_clear('ai_usage.settings', $key);
   }
   db_drop_table('ai_usage_records');
@@ -209,6 +223,38 @@ function ai_usage_update_10000() {
     }
   }
   return t('Added AI Usage cost tracking fields.');
+}
+
+/**
+ * Add the requested model ledger field.
+ */
+function ai_usage_update_10001() {
+  if (!db_field_exists('ai_usage_records', 'requested_model')) {
+    $schema = ai_usage_schema();
+    db_add_field('ai_usage_records', 'requested_model', $schema['ai_usage_records']['fields']['requested_model']);
+  }
+}
+
+/**
+ * Drop the price table; prices now come from the AI model catalog.
+ */
+function ai_usage_update_10002() {
+  if (db_table_exists('ai_usage_model_prices')) {
+    db_drop_table('ai_usage_model_prices');
+  }
+  state_del('ai_usage_pricing_synced');
+  state_del('ai_usage_pricing_sync_attempted');
+  config_clear('ai_usage.settings', 'pricing_sync');
+}
+
+/**
+ * Add the cache write token ledger field.
+ */
+function ai_usage_update_10003() {
+  if (!db_field_exists('ai_usage_records', 'cache_write_tokens')) {
+    $schema = ai_usage_schema();
+    db_add_field('ai_usage_records', 'cache_write_tokens', $schema['ai_usage_records']['fields']['cache_write_tokens']);
+  }
 }
 
 /**

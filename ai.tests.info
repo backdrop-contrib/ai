@@ -102,3 +102,11 @@ group = AI
 file = tests/ai_tools.test
 backdrop = 1.x
 php = 8.0
+
+[AIModelCatalogTestCase]
+name = AI model catalog
+description = Verifies model catalog parsing, merging, and the hints it gives the API.
+group = AI
+file = tests/ai_model_catalog.test
+backdrop = 1.x
+php = 8.0

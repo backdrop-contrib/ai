@@ -94,7 +94,7 @@ function ai_dblog_settings_form($form, &$form_state) {
   $form['model'] = [
     '#type' => 'select',
     '#title' => t('Model to use'),
-    '#options' => $model_options,
+    '#options' => ai_model_options_with_default($model_options, 'text'),
     '#default_value' => $default_model,
     '#description' => t('Select which model to use to analyze text from any enabled provider. See the <a href="@link">model overview</a> for details.', ['@link' => 'https://platform.ai.com/docs/models/overview']),
   ];

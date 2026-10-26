@@ -18,10 +18,7 @@ if (!function_exists('_ai_translate_get_model')) {
    */
   function _ai_translate_get_model() {
     $config = config('ai_translate.settings');
-    $model = $config->get('model');
-    if (empty($model) && function_exists('ai_default_model')) {
-      $model = ai_default_model('chat');
-    }
+    $model = ai_resolve_model($config->get('model'), 'text');
     return !empty($model) ? $model : FALSE;
   }
 }

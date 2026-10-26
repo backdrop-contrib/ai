@@ -1757,6 +1757,42 @@ function ai_flatten_models(array $grouped) {
 }
 
 /**
+ * Maps a model type to its site default key in ai.settings.
+ *
+ * Types: chat, text, image, vision, embedding, moderation, tts, stt,
+ * tool_calling, thinking.
+ */
+function ai_site_default_model_key($type) {
+  return $type === 'embedding' ? 'embedding_model' : 'default_' . $type . '_model';
+}
+
+/**
+ * Returns the site default model for a type, or '' when none is set.
+ */
+function ai_site_default_model($type) {
+  return trim((string) config_get('ai.settings', ai_site_default_model_key($type)));
+}
+
+/**
+ * Prepends a "Use site default" entry (empty value) to a model options list.
+ */
+function ai_model_options_with_default(array $options, $type) {
+  $default = ai_site_default_model($type);
+  $label = $default !== ''
+    ? t('- Use site default (@model) -', ['@model' => $default])
+    : t('- Use site default -');
+  return ['' => $label] + $options;
+}
+
+/**
+ * Resolves a stored module model setting; empty means the site default.
+ */
+function ai_resolve_model($model, $type) {
+  $model = trim((string) $model);
+  return $model !== '' ? $model : ai_site_default_model($type);
+}
+
+/**
  * Picks the best available default model from a grouped models array.
  */
 function ai_default_model(array $grouped, $preferred = NULL, array $fallbacks = []) {

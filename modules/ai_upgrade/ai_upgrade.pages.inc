@@ -43,7 +43,7 @@ function ai_upgrade_form($form, &$form_state) {
     $on_disk = isset($missing[$module]) ? t('NOT ON DISK') : t('available');
     $options[$module] = t('@label (@module) | AI module: @status | legacy: @legacy | files: @on_disk', [
       '@label' => $candidate['label'],
-      '@module' => $module,
+      '@module' => !empty($candidate['deprecated']) ? t('none') : $candidate['module'],
       '@status' => $status,
       '@legacy' => $legacy,
       '@on_disk' => $on_disk,

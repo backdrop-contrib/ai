@@ -89,7 +89,8 @@ function ai_modules_enabled($modules) {
 /**
  * Implements hook_modules_disabled().
  *
- * Once a legacy module is off, point its placed blocks at the replacement.
+ * Once a legacy module is off, point its placed blocks at the replacement and
+ * run the entry's cut-over conversion.
  */
 function ai_modules_disabled($modules) {
   // An explicit AI upgrade run swaps blocks itself and reports the count.
@@ -97,8 +98,9 @@ function ai_modules_disabled($modules) {
     return;
   }
   foreach (ai_upgrade_registry() as $key => $info) {
-    if (!empty($info['block_map']) && array_intersect($info['legacy_modules'], $modules)) {
+    if ((!empty($info['block_map']) || !empty($info['cut_over_callback'])) && array_intersect($info['legacy_modules'], $modules)) {
       ai_upgrade_migrate_entry_blocks($key);
+      ai_upgrade_run_cut_over($key);
     }
   }
 }

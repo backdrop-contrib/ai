@@ -1,6 +1,7 @@
 name = AI Alt Tools
 description = Tools for AI-powered image alt text generation.
 backdrop = 1.x
+php = 8.2
 type = module
 package = AI
 dependencies[] = ai_tools

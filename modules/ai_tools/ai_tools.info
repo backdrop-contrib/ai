@@ -1,6 +1,7 @@
 name = AI Tools
 description = Function-calling framework for AI providers and integrations.
 backdrop = 1.x
+php = 8.2
 type = module
 package = AI
 dependencies[] = ai

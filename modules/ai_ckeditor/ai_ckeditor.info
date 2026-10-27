@@ -3,4 +3,5 @@ type = module
 description = Adds a plugin for CKEditor 5 to let editors prompt AI for text generation purposes.
 package = AI
 backdrop = 1.x
+php = 8.2
 dependencies[] = ai

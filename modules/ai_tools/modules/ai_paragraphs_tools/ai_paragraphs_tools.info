@@ -1,6 +1,7 @@
 name = AI Paragraphs Tools
 description = Generic AI tools for reading and building Paragraphs content.
 backdrop = 1.x
+php = 8.2
 type = module
 package = AI
 dependencies[] = ai_tools

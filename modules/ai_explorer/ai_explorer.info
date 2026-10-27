@@ -3,5 +3,6 @@ type = module
 description = Combines AI chat, image, audio, and speech test tools into one explorer module.
 package = AI
 backdrop = 1.x
+php = 8.2
 configure = admin/config/ai/explorer
 dependencies[] = ai

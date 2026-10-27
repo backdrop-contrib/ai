@@ -3,5 +3,6 @@ description = Evaluates configured content targets with provider-neutral AI mode
 package = AI
 type = module
 backdrop = 1.x
+php = 8.2
 dependencies[] = ai
 configure = admin/config/ai/ai-moderation

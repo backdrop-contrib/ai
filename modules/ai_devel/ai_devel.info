@@ -3,6 +3,7 @@ type = module
 description = Adds GPT generational capability to Devel generate commands.
 package = AI
 backdrop = 1.x
+php = 8.2
 configure = admin/config/ai/ai-devel
 dependencies[] = ai
 dependencies[] = devel

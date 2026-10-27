@@ -4,7 +4,7 @@ description = Verifies AI Alt helper behavior and low-risk hook entrypoints.
 group = AI Alt
 file = tests/ai_alt.test
 backdrop = 1.x
-php = 8.0
+php = 8.2
 
 [AIAltBulkSrcResolverTestCase]
 name = AI Alt bulk src-to-fid resolver
@@ -12,4 +12,4 @@ description = Database-backed tests for the bulk image URL resolver using an iso
 group = AI Alt
 file = tests/ai_alt.test
 backdrop = 1.x
-php = 8.0
+php = 8.2

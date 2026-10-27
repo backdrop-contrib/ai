@@ -4,4 +4,5 @@ description = Verify webform read tools are registered and dispatch against real
 group = AI Tools
 file = tests/ai_webform_tools.test
 backdrop = 1.x
+php = 8.2
 

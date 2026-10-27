@@ -1,4 +1,4 @@
-# AI Module Suite
+# AI
 
 The Backdrop CMS AI module provides a provider-agnostic foundation for AI
 features in Backdrop CMS. It supports multiple providers, shared APIs, and

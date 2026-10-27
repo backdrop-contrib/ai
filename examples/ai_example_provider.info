@@ -1,6 +1,7 @@
 name = AI Example Provider
 description = Example provider module.
 backdrop = 1.x
+php = 8.2
 type = module
 package = AI (Examples)
 

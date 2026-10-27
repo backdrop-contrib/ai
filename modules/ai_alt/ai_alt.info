@@ -2,6 +2,7 @@ name = AI Alt
 type = module
 description = Provides alt text generation using AI.
 backdrop = 1.x
+php = 8.2
 package = AI
 configure = admin/config/ai/ai-alt
 dependencies[] = ai

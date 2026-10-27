@@ -3,5 +3,6 @@ type = module
 description = Adds assistive tools for different areas of the content editing process for entities.
 package = AI
 backdrop = 1.x
+php = 8.2
 configure = admin/config/ai/ai-content
 dependencies[] = ai

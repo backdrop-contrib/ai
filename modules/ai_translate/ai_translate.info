@@ -1,6 +1,7 @@
 name = AI Translate
 description = Translates node content into other site languages using AI, following Backdrop's node translation sets.
 backdrop = 1.x
+php = 8.2
 type = module
 package = AI
 dependencies[] = ai

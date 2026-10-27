@@ -1,6 +1,7 @@
 name = AI MCP Server
 description = Exposes ai_tools as an MCP-compatible HTTP endpoint.
 backdrop = 1.x
+php = 8.2
 type = module
 package = AI
 configure = admin/config/services/mcp

@@ -7,6 +7,9 @@ search.
 
 ## Requirements
 
+- PHP 8.2 or later
+- [Key](https://backdropcms.org/project/key)
+
 You must configure at least one AI provider before you can use the provided
 services.
 
@@ -117,7 +120,7 @@ replacements.
 
 ## Issues
 
-Bugs and feature requests should be reported in the project issue queue.
+Bugs and feature requests should be reported in the [Issue Queue](https://github.com/backdrop-contrib/ai/issues).
 
 ## Current Maintainer
 

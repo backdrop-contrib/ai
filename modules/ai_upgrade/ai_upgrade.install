@@ -464,13 +464,13 @@ function ai_upgrade_registry() {
       'legacy_modules' => ['search_api_ai_ollama'],
       'project' => 'ai_search_provider_ollama',
     ],
-    'ai_search_milvus' => [
+    'ai_search_provider_milvus' => [
       'label' => 'AI Search Milvus',
       'legacy_modules' => ['search_api_ai_milvus'],
       'project' => 'ai_search_provider_milvus',
       'cut_over_callback' => '_ai_upgrade_milvus_servers',
     ],
-    'ai_search_pinecone' => [
+    'ai_search_provider_pinecone' => [
       'label' => 'AI Search Pinecone',
       'legacy_modules' => ['search_api_ai_pinecone'],
       'project' => 'ai_search_provider_pinecone',
@@ -759,13 +759,13 @@ function _ai_upgrade_ckeditor_formats() {
 }
 
 /**
- * Convert search_api_ai_milvus server options for ai_search_milvus.
+ * Convert search_api_ai_milvus server options for ai_search_provider_milvus.
  *
  * - The legacy service kept the embedding engine on each index
- *   (embedding_settings); ai_search_milvus reads it from the server options.
+ *   (embedding_settings); ai_search_provider_milvus reads it from the server options.
  *   It is copied from the server's first index that has one, with the model
  *   gaining the openai/ prefix.
- * - The legacy service stored the raw API token in api_key; ai_search_milvus
+ * - The legacy service stored the raw API token in api_key; ai_search_provider_milvus
  *   expects a Key ID there. An existing Key holding the same token is reused;
  *   otherwise one is created with the config provider.
  *

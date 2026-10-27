@@ -386,6 +386,7 @@ function ai_upgrade_registry() {
       'permission_map' => [
         'use openai ckeditor' => 'use ai ckeditor',
       ],
+      'cut_over_callback' => '_ai_upgrade_ckeditor_formats',
       'legacy_modules' => ['openai_ckeditor'],
     ],
     'ai_moderation' => [
@@ -467,6 +468,7 @@ function ai_upgrade_registry() {
       'label' => 'AI Search Milvus',
       'legacy_modules' => ['search_api_ai_milvus'],
       'project' => 'ai_search_provider_milvus',
+      'cut_over_callback' => '_ai_upgrade_milvus_servers',
     ],
     'ai_search_pinecone' => [
       'label' => 'AI Search Pinecone',
@@ -606,6 +608,7 @@ function ai_upgrade_module_install($module) {
 
   $permissions = !empty($info['permission_map']) ? ai_upgrade_migrate_permissions($info['permission_map']) : 0;
   $blocks = ai_upgrade_migrate_entry_blocks($module);
+  $migrated += ai_upgrade_run_cut_over($module);
 
   $result = [
     'migrated' => $migrated,
@@ -661,16 +664,188 @@ function ai_upgrade_migrate_entry_blocks($key) {
   if (empty($info['block_map']) || !empty($info['deprecated'])) {
     return 0;
   }
+  if (!_ai_upgrade_entry_cut_over($key, $info)) {
+    return 0;
+  }
+  return ai_upgrade_migrate_blocks($info['block_map']);
+}
+
+/**
+ * Whether a registry entry's replacement is on and every legacy module is off.
+ */
+function _ai_upgrade_entry_cut_over($key, array $info) {
   $replacement = !empty($info['module']) ? $info['module'] : $key;
   if (!module_exists($replacement)) {
-    return 0;
+    return FALSE;
   }
   foreach ($info['legacy_modules'] as $legacy) {
     if (module_exists($legacy)) {
-      return 0;
+      return FALSE;
     }
   }
-  return ai_upgrade_migrate_blocks($info['block_map']);
+  return TRUE;
+}
+
+/**
+ * Run a registry entry's 'cut_over_callback' once the entry is cut over.
+ *
+ * The callback converts stored data the legacy module still reads (so it
+ * cannot run earlier) and must be idempotent.
+ *
+ * @return int
+ *   Number of config objects or records the callback changed.
+ */
+function ai_upgrade_run_cut_over($key) {
+  $info = ai_upgrade_module_info($key);
+  if (empty($info['cut_over_callback']) || !empty($info['deprecated'])) {
+    return 0;
+  }
+  if (!_ai_upgrade_entry_cut_over($key, $info)) {
+    return 0;
+  }
+  return (int) call_user_func($info['cut_over_callback']);
+}
+
+/**
+ * Convert openai_ckeditor text format settings and toolbar buttons.
+ *
+ * editor_settings.openai is copied to editor_settings.ai (legacy key kept,
+ * model gains the openai/ prefix) and the OpenAI toolbar button becomes AI.
+ *
+ * @return int
+ *   Number of text formats changed.
+ */
+function _ai_upgrade_ckeditor_formats() {
+  $changed = 0;
+  foreach (config_get_names_with_prefix('filter.format.') as $name) {
+    $config = config($name);
+    $editor = $config->get('editor_settings');
+    if (!is_array($editor)) {
+      continue;
+    }
+    $original = $editor;
+
+    if (isset($editor['openai']) && is_array($editor['openai']) && !isset($editor['ai'])) {
+      $editor['ai'] = $editor['openai'];
+      if (isset($editor['ai']['model'])) {
+        $editor['ai']['model'] = _ai_upgrade_qualify_model($editor['ai']['model']);
+      }
+    }
+
+    if (!empty($editor['toolbar']) && is_array($editor['toolbar']) && in_array('OpenAI', $editor['toolbar'], TRUE)) {
+      $toolbar = [];
+      foreach ($editor['toolbar'] as $button) {
+        if ($button === 'OpenAI') {
+          if (in_array('AI', $editor['toolbar'], TRUE)) {
+            continue;
+          }
+          $button = 'AI';
+        }
+        $toolbar[] = $button;
+      }
+      $editor['toolbar'] = $toolbar;
+    }
+
+    if ($editor !== $original) {
+      $config->set('editor_settings', $editor);
+      $config->save();
+      $changed++;
+    }
+  }
+  if ($changed) {
+    filter_formats_reset();
+  }
+  return $changed;
+}
+
+/**
+ * Convert search_api_ai_milvus server options for ai_search_milvus.
+ *
+ * - The legacy service kept the embedding engine on each index
+ *   (embedding_settings); ai_search_milvus reads it from the server options.
+ *   It is copied from the server's first index that has one, with the model
+ *   gaining the openai/ prefix.
+ * - The legacy service stored the raw API token in api_key; ai_search_milvus
+ *   expects a Key ID there. An existing Key holding the same token is reused;
+ *   otherwise one is created with the config provider.
+ *
+ * @return int
+ *   Number of servers changed.
+ */
+function _ai_upgrade_milvus_servers() {
+  if (!function_exists('search_api_server_load_multiple')) {
+    return 0;
+  }
+  $changed = 0;
+  foreach (search_api_server_load_multiple(FALSE, ['class' => 'milvus']) as $server) {
+    $options = $server->options;
+
+    if (empty($options['embeddings_engine'])) {
+      foreach (search_api_index_load_multiple(FALSE, ['server' => $server->machine_name]) as $index) {
+        $settings = isset($index->options['embedding_settings']) ? $index->options['embedding_settings'] : [];
+        if (!empty($settings['embeddings_engine'])) {
+          $options['embeddings_engine'] = _ai_upgrade_qualify_model($settings['embeddings_engine']);
+          if (!empty($settings['embeddings_engine_configuration'])) {
+            $options['embeddings_engine_configuration'] = $settings['embeddings_engine_configuration'];
+          }
+          break;
+        }
+      }
+    }
+
+    $key_id = _ai_upgrade_milvus_token_key($server, isset($options['api_key']) ? $options['api_key'] : '');
+    if ($key_id) {
+      $options['api_key'] = $key_id;
+    }
+
+    if ($options !== $server->options) {
+      $server->options = $options;
+      $server->save();
+      $changed++;
+    }
+  }
+  return $changed;
+}
+
+/**
+ * Return the Key ID to store for a raw Milvus token, creating the Key if needed.
+ *
+ * @return string|null
+ *   NULL when the value is empty, already a Key ID, or the Key could not be
+ *   saved.
+ */
+function _ai_upgrade_milvus_token_key($server, $token) {
+  if (!function_exists('key_get_key') || !is_string($token) || $token === '' || key_get_key($token)) {
+    return NULL;
+  }
+
+  foreach (array_keys(key_get_keys()) as $id) {
+    $value = key_get_key_value($id);
+    if (is_string($value) && $value !== '' && hash_equals($value, $token)) {
+      return $id;
+    }
+  }
+
+  $key_id = $base = 'milvus_' . $server->machine_name;
+  for ($i = 2; key_get_key($key_id); $i++) {
+    $key_id = $base . '_' . $i;
+  }
+  $saved = key_save_key([
+    'id' => $key_id,
+    'label' => 'Milvus: ' . $server->name,
+    'description' => 'Migrated from the ' . $server->name . ' Search API server.',
+    'key_type' => 'authentication',
+    'key_type_settings' => [],
+    'key_provider' => 'config',
+    'key_provider_settings' => ['key_value' => $token],
+    'key_input' => 'textarea_field',
+    'key_input_settings' => [],
+  ], [], FALSE);
+  if (!$saved) {
+    watchdog('ai_upgrade', 'Could not create a Key for the Milvus token of Search API server %server.', ['%server' => $server->machine_name], WATCHDOG_ERROR);
+    return NULL;
+  }
+  return $key_id;
 }
 
 /**

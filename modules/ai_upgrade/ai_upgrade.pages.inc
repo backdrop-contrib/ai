@@ -30,7 +30,7 @@ function ai_upgrade_form($form, &$form_state) {
     }
     $form['missing'] = [
       '#markup' => '<div class="messages warning"><strong>'
-        . t('The following replacement modules are not present on disk. Install them before running the upgrade:')
+        . t('The following replacement modules are not present on disk. The upgrade skips them, and any module sharing their legacy modules, until they are installed:')
         . '</strong><pre>' . check_plain(ai_upgrade_format_missing_modules($missing)) . '</pre>'
         . $install_link . '</div>',
     ];
@@ -67,7 +67,7 @@ function ai_upgrade_form($form, &$form_state) {
 }
 
 /**
- * Confirm queuing missing AI replacement projects in Backdrop's installer.
+ * Confirm downloading missing AI replacement projects.
  */
 function ai_upgrade_install_missing_form($form, &$form_state) {
   $candidates = ai_upgrade_get_candidates();
@@ -78,11 +78,35 @@ function ai_upgrade_install_missing_form($form, &$form_state) {
     return [];
   }
 
+  // Show exactly which release, and how stable it is, before downloading.
+  $items = [];
+  $unstable = FALSE;
+  foreach (array_keys(ai_upgrade_get_missing_projects(array_keys($candidates))) as $project_name) {
+    $release = ai_upgrade_get_project_release($project_name);
+    if (!$release) {
+      $items[] = t('@project: no published release, install it manually', ['@project' => $project_name]);
+      continue;
+    }
+    $items[] = t('@project @version (@stability)', [
+      '@project' => $project_name,
+      '@version' => $release['version'],
+      '@stability' => ai_upgrade_release_stability($release),
+    ]);
+    if (!empty($release['version_extra'])) {
+      $unstable = TRUE;
+    }
+  }
+  $description = theme('item_list', ['items' => $items]);
+  if ($unstable) {
+    $description .= '<p><strong>' . t('Some of these are not stable releases. Alpha, beta, release candidate and development versions may change or have bugs; test on a copy of the site first.') . '</strong></p>';
+  }
+  $description .= '<p>' . t('This downloads the newest release of each missing project from backdropcms.org into the modules directory, along with any modules they depend on that are missing. Nothing is enabled until you run the upgrade.') . '</p>';
+
   return confirm_form(
     $form,
-    t('Install the missing AI replacement projects?'),
+    t('Download the missing AI replacement projects?'),
     'admin/config/ai/upgrade',
-    t('This queues the missing projects in Backdrop\'s installer. You can review the selected releases before installation.'),
+    $description,
     t('Install missing modules'),
     t('Cancel')
   );
@@ -93,17 +117,15 @@ function ai_upgrade_install_missing_form($form, &$form_state) {
  */
 function ai_upgrade_install_missing_form_submit($form, &$form_state) {
   $candidates = ai_upgrade_get_candidates();
-  $result = ai_upgrade_queue_missing_projects(array_keys($candidates));
+  $result = ai_upgrade_download_missing_projects(array_keys($candidates));
 
   foreach ($result['errors'] as $error) {
     backdrop_set_message($error, 'error');
   }
-  if (!empty($result['queued'])) {
-    backdrop_set_message(t('Missing AI projects queued for installation: @projects.', [
-      '@projects' => implode(', ', $result['queued']),
+  if (!empty($result['downloaded'])) {
+    backdrop_set_message(t('Downloaded missing AI projects: @projects.', [
+      '@projects' => implode(', ', $result['downloaded']),
     ]));
-    $form_state['redirect'] = 'admin/installer/install/select_versions';
-    return;
   }
 
   $form_state['redirect'] = 'admin/config/ai/upgrade';
@@ -119,20 +141,72 @@ function ai_upgrade_form_submit($form, &$form_state) {
     return;
   }
 
-  $missing = ai_upgrade_find_missing_modules($selected);
-  if (!empty($missing)) {
-    form_set_error('modules', t('AI upgrade aborted. Replacement modules are missing on disk:') . '<br><pre>' . check_plain(ai_upgrade_format_missing_modules($missing)) . '</pre>');
-    return;
-  }
-
   try {
-    $results = ai_upgrade_execute($selected);
+    $plan = ai_upgrade_plan($selected);
   }
   catch (\Throwable $e) {
     form_set_error('modules', t('AI upgrade aborted.') . '<br><pre>' . check_plain($e->getMessage()) . '</pre>');
     return;
   }
+
+  $form_state['redirect'] = 'admin/config/ai/upgrade';
+  if (empty($plan['run'])) {
+    ai_upgrade_batch_finished(TRUE, $plan['skipped'], []);
+    return;
+  }
+
+  // Run one module per batch request so a large upgrade cannot time out.
+  $operations = [];
+  foreach ($plan['run'] as $module) {
+    $operations[] = ['ai_upgrade_batch_module', [$module]];
+  }
+  batch_set([
+    'title' => t('Running AI upgrade'),
+    'operations' => $operations,
+    'finished' => 'ai_upgrade_batch_finished',
+    'file' => backdrop_get_path('module', 'ai_upgrade') . '/ai_upgrade.pages.inc',
+  ]);
+  // Seed the results so skipped modules are reported alongside the rest.
+  $batch = &batch_get();
+  $batch['sets'][count($batch['sets']) - 1]['results'] = $plan['skipped'];
+}
+
+/**
+ * Batch operation: upgrade one AI module.
+ */
+function ai_upgrade_batch_module($module, &$context) {
+  module_load_install('ai_upgrade');
+  $info = ai_upgrade_module_info($module);
+  $label = !empty($info['label']) ? $info['label'] : $module;
+  try {
+    $result = ai_upgrade_execute_module($module);
+  }
+  catch (\Throwable $e) {
+    $result = [
+      'module' => $module,
+      'label' => $label,
+      'skipped' => t('Upgrade failed: @message', ['@message' => $e->getMessage()]),
+    ];
+  }
+  if ($result) {
+    $context['results'][$module] = $result;
+  }
+  $context['message'] = t('Upgraded @label.', ['@label' => $label]);
+}
+
+/**
+ * Batch finished callback: report each module's upgrade result.
+ */
+function ai_upgrade_batch_finished($success, $results, $operations) {
+  module_load_install('ai_upgrade');
+  if (!$success) {
+    backdrop_set_message(t('The AI upgrade did not finish. Rerun it to complete the remaining modules.'), 'error');
+  }
   foreach ($results as $result) {
+    if (!empty($result['skipped'])) {
+      backdrop_set_message(t('@label: skipped.', ['@label' => $result['label']]) . '<pre>' . check_plain($result['skipped']) . '</pre>', 'warning');
+      continue;
+    }
     $message = t('@label: migrated @count config object(s). Disabled legacy modules: @legacy.', [
       '@label' => $result['label'],
       '@count' => $result['migrated'],

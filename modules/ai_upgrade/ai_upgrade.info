@@ -1,4 +1,4 @@
-name = AI Upgrade UI
+name = AI Upgrade
 description = Optional admin UI for migrating legacy openai_* modules to ai_* modules.
 backdrop = 1.x
 php = 8.2

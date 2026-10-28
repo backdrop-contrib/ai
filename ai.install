@@ -14,7 +14,7 @@
  */
 function ai_install() {
   // Copies legacy openai config and logs only; the legacy module stays enabled
-  // until the operator runs the AI Upgrade UI at admin/config/ai/upgrade.
+  // until the operator runs AI Upgrade at admin/config/ai/upgrade.
   if (module_load_install('ai_upgrade')) {
     ai_upgrade_module_install('ai');
   }

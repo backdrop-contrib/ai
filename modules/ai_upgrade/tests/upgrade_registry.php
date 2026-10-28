@@ -18,8 +18,29 @@ function module_disable(array $modules) {
   $GLOBALS['ai_upgrade_test_disabled'] = array_values($modules);
 }
 
+$GLOBALS['ai_upgrade_test_module_data'] = [];
+
 function system_rebuild_module_data() {
-  return [];
+  return $GLOBALS['ai_upgrade_test_module_data'];
+}
+
+function backdrop_static_reset($name = NULL) {
+}
+
+function t($string, array $args = []) {
+  return strtr($string, $args);
+}
+
+function ai_upgrade_test_module($status = 0, array $requires = [], array $required_by = []) {
+  $requires_info = [];
+  foreach ($requires as $name) {
+    $requires_info[$name] = ['name' => $name];
+  }
+  return (object) [
+    'status' => $status,
+    'requires' => $requires_info,
+    'required_by' => array_fill_keys($required_by, []),
+  ];
 }
 
 require_once dirname(__DIR__) . '/ai_upgrade.install';
@@ -81,5 +102,50 @@ ai_upgrade_test_same(
   $disabled,
   'bulk disable follows registry replacements and skips deprecated modules'
 );
+
+// One replacement missing on disk must not block the others.
+$GLOBALS['ai_upgrade_test_enabled'] = ['openai' => TRUE, 'search_api_ai' => TRUE];
+$GLOBALS['ai_upgrade_test_module_data'] = [
+  'ai_provider_openai' => ai_upgrade_test_module(),
+  'openai' => ai_upgrade_test_module(1),
+  'search_api_ai' => ai_upgrade_test_module(1),
+];
+ai_upgrade_test_same(['ai_search'], array_keys(ai_upgrade_find_skipped_modules(['ai_provider_openai', 'ai_search'])), 'missing replacement skips only itself');
+
+// A replacement whose dependency is absent is skipped.
+$GLOBALS['ai_upgrade_test_module_data']['ai_provider_openai'] = ai_upgrade_test_module(0, ['key']);
+ai_upgrade_test_same(['ai_provider_openai'], array_keys(ai_upgrade_find_skipped_modules(['ai_provider_openai'])), 'missing dependency skips the replacement');
+
+// An outside module that still needs the legacy module blocks only its owner.
+$GLOBALS['ai_upgrade_test_module_data']['ai_provider_openai'] = ai_upgrade_test_module();
+$GLOBALS['ai_upgrade_test_module_data']['openai'] = ai_upgrade_test_module(1, [], ['custom_thing']);
+$GLOBALS['ai_upgrade_test_module_data']['custom_thing'] = ai_upgrade_test_module(1);
+$GLOBALS['ai_upgrade_test_module_data']['ai_search'] = ai_upgrade_test_module();
+ai_upgrade_test_same(['ai_provider_openai'], array_keys(ai_upgrade_find_skipped_modules(['ai_provider_openai', 'ai_search'])), 'legacy blocker skips only its owner');
+
+// Modules sharing a legacy module are skipped together: disabling openai
+// for ai must not strand ai_provider_openai's migration.
+$GLOBALS['ai_upgrade_test_enabled'] = ['openai' => TRUE];
+$GLOBALS['ai_upgrade_test_module_data'] = [
+  'ai' => ai_upgrade_test_module(),
+  'openai' => ai_upgrade_test_module(1),
+];
+$skipped = array_keys(ai_upgrade_find_skipped_modules(['ai', 'ai_provider_openai']));
+sort($skipped);
+ai_upgrade_test_same(['ai', 'ai_provider_openai'], $skipped, 'shared legacy owners are skipped together');
+
+// Dependencies of a downloaded project that are not on disk are fetched too;
+// bundled modules resolve to their parent project.
+$GLOBALS['ai_upgrade_test_module_data'] = [
+  'ai_search' => ai_upgrade_test_module(0, ['search_api', 'ai_tools', 'ai']),
+  'ai_search_header' => ai_upgrade_test_module(0, ['ai_search']),
+  'ai' => ai_upgrade_test_module(),
+  'views' => ai_upgrade_test_module(0, ['missing_core_thing']),
+];
+$GLOBALS['ai_upgrade_test_module_data']['ai_search']->uri = 'modules/ai_search/ai_search.module';
+$GLOBALS['ai_upgrade_test_module_data']['ai_search_header']->uri = 'modules/ai_search/modules/ai_search_header/ai_search_header.module';
+$GLOBALS['ai_upgrade_test_module_data']['ai']->uri = 'modules/ai/ai.module';
+$GLOBALS['ai_upgrade_test_module_data']['views']->uri = 'core/modules/views/views.module';
+ai_upgrade_test_same(['search_api', 'ai'], ai_upgrade_find_missing_dependencies('ai_search'), 'missing dependencies of the downloaded project only, bundled ones mapped to their parent');
 
 fwrite(STDOUT, "AI upgrade registry checks passed.\n");

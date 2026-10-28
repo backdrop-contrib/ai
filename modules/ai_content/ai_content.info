@@ -1,4 +1,4 @@
-name = AI Content Editing Tools
+name = AI Content
 type = module
 description = Adds assistive tools for different areas of the content editing process for entities.
 package = AI

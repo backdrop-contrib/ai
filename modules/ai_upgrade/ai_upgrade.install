@@ -91,7 +91,7 @@ function ai_upgrade_install_warning(array $legacy_modules, $new_module_label) {
       'title' => t('@new — legacy module(s) detected', ['@new' => $new_module_label]),
       'value' => implode(', ', $enabled),
       'description' => t(
-        'Installing @new will copy config and data from: @legacy. The legacy module(s) stay enabled until you complete the cutover with the AI Upgrade UI module at admin/config/ai/upgrade.',
+        'Installing @new will copy config and data from: @legacy. The legacy module(s) stay enabled until you complete the cutover with the AI Upgrade module at admin/config/ai/upgrade.',
         [
           '@new' => $new_module_label,
           '@legacy' => implode(', ', $enabled),
@@ -222,14 +222,14 @@ function ai_upgrade_registry() {
       ],
     ],
     'ai_mcp' => [
-      'label' => 'AI MCP Server',
+      'label' => 'AI MCP',
       'permission_map' => [
         'administer openai mcp' => 'administer ai mcp',
       ],
       'legacy_modules' => ['openai_mcp'],
     ],
     'ai_metatag' => [
-      'label' => 'AI Metatag Assistant',
+      'label' => 'AI Metatag',
       'permission_map' => [
         'generate metatags with openai' => 'generate metatags with ai',
       ],
@@ -325,7 +325,7 @@ function ai_upgrade_registry() {
       ],
     ],
     'ai_content' => [
-      'label' => 'AI Content Editing Tools',
+      'label' => 'AI Content',
       'permission_map' => [
         'access openai content tools' => 'access ai content tools',
       ],
@@ -333,7 +333,7 @@ function ai_upgrade_registry() {
       'config_map' => ['openai_content.settings' => 'ai_content.settings'],
     ],
     'ai_dblog' => [
-      'label' => 'AI Error Log Analyzer',
+      'label' => 'AI Dblog',
       'legacy_modules' => ['openai_dblog'],
       'config_map' => ['openai_dblog.settings' => 'ai_dblog.settings'],
       'table_map' => [
@@ -454,34 +454,37 @@ function ai_upgrade_registry() {
       'legacy_modules' => ['search_api_ai'],
       'config_map' => ['search_api_ai.settings' => 'ai_search.settings'],
     ],
+    // Embedding models now come from the regular AI providers, and AI Search
+    // providers are vector backends, so the old embedding modules have no
+    // replacement — just disable them.
     'ai_search_openai' => [
-      'label' => 'AI Search OpenAI',
+      'deprecated' => TRUE,
+      'label' => 'AI Search OpenAI (deprecated, no replacement)',
       'legacy_modules' => ['search_api_ai_openai'],
-      'project' => 'ai_search_provider_openai',
     ],
     'ai_search_ollama' => [
-      'label' => 'AI Search Ollama',
+      'deprecated' => TRUE,
+      'label' => 'AI Search Ollama (deprecated, no replacement)',
       'legacy_modules' => ['search_api_ai_ollama'],
-      'project' => 'ai_search_provider_ollama',
     ],
     'ai_search_provider_milvus' => [
-      'label' => 'AI Search Milvus',
+      'label' => 'AI Search Provider Milvus',
       'legacy_modules' => ['search_api_ai_milvus'],
       'project' => 'ai_search_provider_milvus',
       'cut_over_callback' => '_ai_upgrade_milvus_servers',
     ],
     'ai_search_provider_pinecone' => [
-      'label' => 'AI Search Pinecone',
+      'label' => 'AI Search Provider Pinecone',
       'legacy_modules' => ['search_api_ai_pinecone'],
       'project' => 'ai_search_provider_pinecone',
     ],
     'ai_search_openrouter' => [
-      'label' => 'AI Search OpenRouter',
+      'deprecated' => TRUE,
+      'label' => 'AI Search OpenRouter (deprecated, no replacement)',
       'legacy_modules' => ['search_api_ai_openrouter'],
-      'project' => 'ai_search_provider_openrouter',
     ],
     'ai_search_search_block' => [
-      'label' => 'AI Search Block',
+      'label' => 'AI Search Search Block',
       'block_map' => [
         'search_api_ai_search_block:search_api_ai_search_block' => [
           'plugin' => 'ai_search_search_block:ai_search_search_block',
@@ -493,7 +496,7 @@ function ai_upgrade_registry() {
       'legacy_modules' => ['search_api_ai_search_block'],
     ],
     'ai_search_search_block_log' => [
-      'label' => 'AI Search Block Log',
+      'label' => 'AI Search Search Block Log',
       'legacy_modules' => ['search_api_ai_search_block_log'],
       'config_map' => ['search_api_ai_search_block_log.settings' => 'ai_search_search_block_log.settings'],
       'table_map' => [

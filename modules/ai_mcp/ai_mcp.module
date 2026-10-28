@@ -2,7 +2,7 @@
 
 /**
  * @file
- * AI MCP Server module.
+ * AI MCP module.
  *
  * Exposes the ai_tools registry as an MCP-compatible HTTP endpoint
  * using Streamable HTTP transport and JSON-RPC 2.0 protocol.

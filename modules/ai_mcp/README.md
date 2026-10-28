@@ -1,4 +1,4 @@
-# AI MCP Server
+# AI MCP
 
 Exposes `ai_tools` as an MCP-compatible HTTP endpoint for the Backdrop CMS AI module. Allows external MCP clients (such as Claude Desktop or other AI assistants) to discover and call registered AI tools on your site.
 

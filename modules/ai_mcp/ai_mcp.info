@@ -1,4 +1,4 @@
-name = AI MCP Server
+name = AI MCP
 description = Exposes ai_tools as an MCP-compatible HTTP endpoint.
 backdrop = 1.x
 php = 8.2

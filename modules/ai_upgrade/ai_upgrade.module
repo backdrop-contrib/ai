@@ -256,17 +256,19 @@ function ai_upgrade_get_missing_projects(array $modules) {
 }
 
 /**
- * Queue missing replacement projects in Backdrop's native installer.
+ * Download missing replacement projects into the modules directory.
  *
- * The installer owns release selection, archive verification, file transfer,
- * authorization, dependency installation, and module enabling. This helper
- * only resolves and queues projects; it never writes module files directly.
+ * Each project's newest release from its backdropcms.org release history is
+ * downloaded, verified and copied into place with the installer's helpers.
+ * Dependencies the downloaded modules need that are not on disk are
+ * downloaded the same way. Nothing is enabled; the upgrade form handles that
+ * once modules are on disk.
  *
  * @return array
- *   Queue results with 'queued' and 'errors' lists.
+ *   Download results with 'downloaded' and 'errors' lists.
  */
-function ai_upgrade_queue_missing_projects(array $modules) {
-  $result = ['queued' => [], 'errors' => []];
+function ai_upgrade_download_missing_projects(array $modules) {
+  $result = ['downloaded' => [], 'errors' => []];
   $projects = ai_upgrade_get_missing_projects($modules);
   if (empty($projects)) {
     return $result;
@@ -277,29 +279,136 @@ function ai_upgrade_queue_missing_projects(array $modules) {
     return $result;
   }
 
-  module_load_include('inc', 'installer', 'installer.browser');
-  $version = explode('.', BACKDROP_CORE_COMPATIBILITY);
-  $available = installer_browser_fetch_results([
-    'version' => $version[0],
-    'type' => 'module',
-    'page' => 0,
-    'items_per_page' => 999,
-  ]);
-  $available_projects = !empty($available['projects']) ? $available['projects'] : [];
+  module_load_include('inc', 'installer', 'installer.manager');
 
-  foreach ($projects as $project_name => $project_info) {
-    if (empty($available_projects[$project_name])) {
-      $result['errors'][] = t('@project was not found in the Backdrop project installer.', [
+  // Work through a queue so dependencies found after each download are
+  // fetched as well.
+  $queue = array_keys($projects);
+  $attempted = [];
+  while ($queue) {
+    $project_name = array_shift($queue);
+    if (isset($attempted[$project_name])) {
+      continue;
+    }
+    $attempted[$project_name] = TRUE;
+
+    $release = ai_upgrade_get_project_release($project_name);
+    if (!$release) {
+      $result['errors'][] = t('@project has no published release on backdropcms.org. Install it manually.', [
         '@project' => $project_name,
       ]);
       continue;
     }
 
-    installer_browser_install_queue_add($available_projects[$project_name]);
-    $result['queued'][] = $project_name;
+    $download = installer_manager_download_project(file_create_url($release['download_link']), TRUE);
+    if (empty($download['success'])) {
+      $result['errors'][] = t('@project @version could not be downloaded: @message', [
+        '@project' => $project_name,
+        '@version' => $release['version'],
+        '@message' => strip_tags($download['message']),
+      ]);
+      continue;
+    }
+
+    $result['downloaded'][] = t('@project @version (@stability)', [
+      '@project' => $project_name,
+      '@version' => $release['version'],
+      '@stability' => ai_upgrade_release_stability($release),
+    ]);
+
+    foreach (ai_upgrade_find_missing_dependencies($project_name) as $dependency) {
+      $queue[] = $dependency;
+    }
   }
 
   return $result;
+}
+
+/**
+ * Return projects needed by a downloaded project's modules but not on disk.
+ *
+ * Like Backdrop's installer, a dependency is assumed to be its own project,
+ * except for modules known to ship inside a parent project.
+ *
+ * @return string[]
+ *   Project machine names.
+ */
+function ai_upgrade_find_missing_dependencies($project_name) {
+  // The module list was cached before the download; rescan the disk.
+  backdrop_static_reset('system_rebuild_module_data');
+  $module_data = system_rebuild_module_data();
+  $bundles = ai_upgrade_bundle_map();
+  $projects = [];
+  foreach ($module_data as $module) {
+    if (strpos('/' . dirname($module->uri) . '/', '/' . $project_name . '/') === FALSE) {
+      continue;
+    }
+    foreach ($module->requires as $requires) {
+      $dependency = $requires['name'];
+      if (empty($module_data[$dependency])) {
+        $dependency_project = !empty($bundles[$dependency]) ? $bundles[$dependency] : $dependency;
+        $projects[$dependency_project] = $dependency_project;
+      }
+    }
+  }
+  return array_values($projects);
+}
+
+/**
+ * Return the release that would be downloaded for a project.
+ *
+ * Releases are newest first. The newest stable release is preferred; a
+ * project with no stable release gets its newest alpha, beta, RC or
+ * development release instead.
+ *
+ * @return array|NULL
+ *   The release from the project's backdropcms.org release history, or NULL
+ *   if the project has no published release.
+ */
+function ai_upgrade_get_project_release($project_name) {
+  $releases = &backdrop_static(__FUNCTION__, []);
+  if (!array_key_exists($project_name, $releases)) {
+    module_load_include('inc', 'installer', 'installer.browser');
+    $release_data = installer_browser_get_project_release_data([
+      'name' => $project_name,
+      'type' => 'module',
+      'includes' => [],
+    ]);
+    $releases[$project_name] = NULL;
+    if (!empty($release_data['releases'])) {
+      $releases[$project_name] = reset($release_data['releases']);
+      foreach ($release_data['releases'] as $release) {
+        if (empty($release['version_extra'])) {
+          $releases[$project_name] = $release;
+          break;
+        }
+      }
+    }
+  }
+  return $releases[$project_name];
+}
+
+/**
+ * Describe a release's stability: stable, alpha, beta, RC or development.
+ */
+function ai_upgrade_release_stability(array $release) {
+  $extra = !empty($release['version_extra']) ? strtolower($release['version_extra']) : '';
+  if ($extra === '') {
+    return t('stable');
+  }
+  if (strpos($extra, 'dev') === 0) {
+    return t('development');
+  }
+  if (strpos($extra, 'alpha') === 0) {
+    return t('alpha');
+  }
+  if (strpos($extra, 'beta') === 0) {
+    return t('beta');
+  }
+  if (strpos($extra, 'rc') === 0) {
+    return t('release candidate');
+  }
+  return $extra;
 }
 
 /**
@@ -356,9 +465,113 @@ function ai_upgrade_format_dependent_blockers(array $dependents) {
 }
 
 /**
+ * Find resolved upgrade modules that cannot run, with the reason for each.
+ *
+ * A module is skipped when its replacement or a dependency is not on disk,
+ * when it shares an enabled legacy module with a skipped module, or when an
+ * enabled module outside the upgrade still requires one of its legacy
+ * modules. Skipping repeats until stable so a skipped module never has its
+ * legacy modules disabled by another module in the set.
+ *
+ * @return array
+ *   Reasons keyed by registry module name.
+ */
+function ai_upgrade_find_skipped_modules(array $modules) {
+  $registry = ai_upgrade_registry();
+  $module_data = system_rebuild_module_data();
+  $skipped = [];
+
+  foreach (ai_upgrade_find_missing_modules($modules) as $module => $actual_module) {
+    $skipped[$module] = ai_upgrade_format_missing_modules([$module => $actual_module]);
+  }
+  foreach ($modules as $module) {
+    $actual_module = !empty($registry[$module]['module']) ? $registry[$module]['module'] : $module;
+    if (isset($skipped[$module]) || !empty($registry[$module]['deprecated']) || empty($module_data[$actual_module])) {
+      continue;
+    }
+    $absent = [];
+    foreach ($module_data[$actual_module]->requires as $requires) {
+      if (empty($module_data[$requires['name']])) {
+        $absent[] = $requires['name'];
+      }
+    }
+    if ($absent) {
+      $skipped[$module] = t('@module requires @dependencies, which are not on disk.', [
+        '@module' => $actual_module,
+        '@dependencies' => implode(', ', $absent),
+      ]);
+    }
+  }
+
+  $legacy_owners = [];
+  foreach ($modules as $module) {
+    foreach ($registry[$module]['legacy_modules'] as $legacy_module) {
+      if (module_exists($legacy_module)) {
+        $legacy_owners[$legacy_module][] = $module;
+      }
+    }
+  }
+
+  do {
+    $changed = FALSE;
+    foreach ($legacy_owners as $legacy_module => $owners) {
+      $skipped_owners = array_intersect($owners, array_keys($skipped));
+      if (!$skipped_owners) {
+        continue;
+      }
+      foreach (array_diff($owners, $skipped_owners) as $module) {
+        $skipped[$module] = t('@legacy is shared with @module, which cannot be upgraded yet.', [
+          '@legacy' => $legacy_module,
+          '@module' => reset($skipped_owners),
+        ]);
+        $changed = TRUE;
+      }
+    }
+
+    $active_legacy = [];
+    foreach ($legacy_owners as $legacy_module => $owners) {
+      if (!array_intersect($owners, array_keys($skipped))) {
+        $active_legacy[] = $legacy_module;
+      }
+    }
+    $blockers = ai_upgrade_find_enabled_dependents($active_legacy);
+    foreach ($blockers as $legacy_module => $dependents) {
+      foreach ($legacy_owners[$legacy_module] as $module) {
+        $skipped[$module] = ai_upgrade_format_dependent_blockers([$legacy_module => $dependents]);
+        $changed = TRUE;
+      }
+    }
+  } while ($changed);
+
+  return $skipped;
+}
+
+/**
  * Enable and/or migrate selected AI replacement modules.
+ *
+ * Modules that cannot run are reported with a 'skipped' reason instead of
+ * aborting the rest of the upgrade.
  */
 function ai_upgrade_execute(array $modules) {
+  $plan = ai_upgrade_plan($modules);
+  $results = $plan['skipped'];
+  foreach ($plan['run'] as $module) {
+    $result = ai_upgrade_execute_module($module);
+    if ($result) {
+      $results[$module] = $result;
+    }
+  }
+  return $results;
+}
+
+/**
+ * Work out which selected modules will run, in registry order.
+ *
+ * @return array
+ *   An array with 'run' (module names to execute, in order) and 'skipped'
+ *   (result rows with a 'skipped' reason, keyed by module).
+ */
+function ai_upgrade_plan(array $modules) {
   module_load_install('ai_upgrade');
   $modules = ai_upgrade_resolve_modules($modules);
 
@@ -370,77 +583,86 @@ function ai_upgrade_execute(array $modules) {
     }
   }
 
-  $all_legacy_modules = [];
+  $skipped = ai_upgrade_find_skipped_modules($ordered_modules);
+  $plan = ['run' => [], 'skipped' => []];
+  foreach ($skipped as $module => $reason) {
+    $plan['skipped'][$module] = [
+      'module' => $module,
+      'label' => $registry[$module]['label'],
+      'skipped' => $reason,
+    ];
+  }
   foreach ($ordered_modules as $module) {
-    $info = ai_upgrade_module_info($module);
-    if (empty($info)) {
-      continue;
-    }
-    foreach ($info['legacy_modules'] as $legacy_module) {
-      if (module_exists($legacy_module)) {
-        $all_legacy_modules[$legacy_module] = $legacy_module;
-      }
+    if (!isset($skipped[$module])) {
+      $plan['run'][] = $module;
     }
   }
 
-  $missing_modules = ai_upgrade_find_missing_modules($ordered_modules);
-  if (!empty($missing_modules)) {
-    throw new RuntimeException(ai_upgrade_format_missing_modules($missing_modules));
+  return $plan;
+}
+
+/**
+ * Enable and/or migrate one AI replacement module.
+ *
+ * Each call is self-contained so the upgrade can run one module per request.
+ *
+ * @return array|NULL
+ *   The module's result row, or NULL if it has no registry entry.
+ */
+function ai_upgrade_execute_module($module) {
+  module_load_install('ai_upgrade');
+  $info = ai_upgrade_module_info($module);
+  if (empty($info)) {
+    return NULL;
   }
 
-  $dependent_blockers = ai_upgrade_find_enabled_dependents(array_values($all_legacy_modules));
-  if (!empty($dependent_blockers)) {
-    throw new RuntimeException(ai_upgrade_format_dependent_blockers($dependent_blockers));
-  }
+  $actual_module = !empty($info['module']) ? $info['module'] : $module;
+  $deprecated = !empty($info['deprecated']);
 
-  $results = [];
   ai_upgrade_runtime_active(TRUE);
   try {
-    foreach ($ordered_modules as $module) {
-      $info = ai_upgrade_module_info($module);
-      if (empty($info)) {
-        continue;
+    if (!$deprecated && !module_exists($actual_module)) {
+      module_enable([$actual_module]);
+      // Never migrate or disable legacy modules for a replacement that did
+      // not enable.
+      if (!module_exists($actual_module)) {
+        return [
+          'module' => $actual_module,
+          'label' => $info['label'],
+          'skipped' => t('@module could not be enabled.', ['@module' => $actual_module]),
+        ];
       }
+    }
 
-      $actual_module = !empty($info['module']) ? $info['module'] : $module;
-      $deprecated = !empty($info['deprecated']);
-
-      if (!$deprecated && !module_exists($actual_module)) {
-        module_enable([$actual_module]);
-      }
-
-      // Enabling a replacement can invoke its hook_install() and perform the
-      // migration while the runtime flag is active. Reuse that result rather
-      // than migrating the same config and tables a second time.
-      $result = ai_upgrade_install_result($module);
-      if ($result === NULL) {
-        $result = ai_upgrade_module_install($module);
-      }
-      if ($deprecated && empty($result['disabled'])) {
-        $result['disabled'] = ai_upgrade_disable_legacy($info['legacy_modules'], FALSE);
-      }
-
-      if (empty($result)) {
-        $result = ['migrated' => 0, 'disabled' => [], 'tables' => [], 'permissions' => 0, 'blocks' => 0];
-      }
-
-      $results[$module] = [
-        'module' => $actual_module,
-        'label' => $info['label'],
-        'enabled' => $deprecated ? FALSE : module_exists($actual_module),
-        'migrated' => $result['migrated'],
-        'disabled' => $result['disabled'],
-        'tables' => $result['tables'],
-        'permissions' => isset($result['permissions']) ? $result['permissions'] : 0,
-        'blocks' => isset($result['blocks']) ? $result['blocks'] : 0,
-      ];
+    // Enabling a replacement can invoke its hook_install() and perform the
+    // migration while the runtime flag is active. Reuse that result rather
+    // than migrating the same config and tables a second time.
+    $result = ai_upgrade_install_result($module);
+    if ($result === NULL) {
+      $result = ai_upgrade_module_install($module);
+    }
+    if ($deprecated && empty($result['disabled'])) {
+      $result['disabled'] = ai_upgrade_disable_legacy($info['legacy_modules'], FALSE);
     }
   }
   finally {
     ai_upgrade_runtime_active(FALSE);
+    entity_info_cache_clear();
+    module_implements_reset();
   }
 
-  entity_info_cache_clear();
-  module_implements_reset();
-  return $results;
+  if (empty($result)) {
+    $result = ['migrated' => 0, 'disabled' => [], 'tables' => [], 'permissions' => 0, 'blocks' => 0];
+  }
+
+  return [
+    'module' => $actual_module,
+    'label' => $info['label'],
+    'enabled' => $deprecated ? FALSE : module_exists($actual_module),
+    'migrated' => $result['migrated'],
+    'disabled' => $result['disabled'],
+    'tables' => $result['tables'],
+    'permissions' => isset($result['permissions']) ? $result['permissions'] : 0,
+    'blocks' => isset($result['blocks']) ? $result['blocks'] : 0,
+  ];
 }

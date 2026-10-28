@@ -43,17 +43,6 @@ function bee_ai_upgrade($arguments = [], $options = []) {
     $modules = array_keys($candidates);
   }
 
-  $missing = ai_upgrade_find_missing_modules($modules);
-  if (!empty($missing)) {
-    bee_message(bt('AI upgrade aborted. Replacement modules are missing on disk:'), 'error');
-    foreach (explode("\n", trim(ai_upgrade_format_missing_modules($missing))) as $line) {
-      if ($line !== '') {
-        bee_message($line, 'error');
-      }
-    }
-    return;
-  }
-
   try {
     $results = ai_upgrade_execute($modules);
   }
@@ -67,6 +56,15 @@ function bee_ai_upgrade($arguments = [], $options = []) {
     return;
   }
   foreach ($results as $result) {
+    if (!empty($result['skipped'])) {
+      bee_message(bt('@label: skipped.', ['@label' => $result['label']]), 'warning');
+      foreach (explode("\n", trim($result['skipped'])) as $line) {
+        if ($line !== '') {
+          bee_message($line, 'warning');
+        }
+      }
+      continue;
+    }
     bee_message(bt('@label: migrated @count config object(s); disabled legacy: @legacy; tables: @tables; permission grants: @perms; blocks swapped: @blocks', [
       '@label' => $result['label'],
       '@count' => $result['migrated'],

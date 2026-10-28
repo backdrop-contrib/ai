@@ -1,4 +1,4 @@
-AI Example Provider (ai_example_provider)
+AI Example Provider
 
 This folder contains an example provider module packaged inside the `ai` module at `ai/examples/ai_example_provider/`.
 

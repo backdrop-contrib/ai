@@ -1,4 +1,4 @@
-name = AI Devel Generate
+name = AI Devel
 type = module
 description = Adds GPT generational capability to Devel generate commands.
 package = AI

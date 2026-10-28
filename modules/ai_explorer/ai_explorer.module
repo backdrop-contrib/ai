@@ -142,6 +142,55 @@ function ai_explorer_safe_filename($filename) {
 }
 
 /**
+ * Saves explorer output as a temporary file only its creator can download.
+ *
+ * Output goes to private:// (temporary:// without a private path) under an
+ * unguessable name. Core serves temporary files only to their owner, and cron
+ * removes them once they pass the temporary file age.
+ *
+ * @param string $data
+ *   File contents.
+ * @param string $basename
+ *   Safe base name, without extension.
+ * @param string $extension
+ *   File extension, without the dot.
+ *
+ * @return object|false
+ *   The saved file, or FALSE on failure.
+ */
+function ai_explorer_save_output($data, $basename, $extension) {
+  $scheme = file_stream_wrapper_valid_scheme('private') ? 'private' : 'temporary';
+  $directory = $scheme . '://ai_explorer';
+  if (!file_prepare_directory($directory, FILE_CREATE_DIRECTORY | FILE_MODIFY_PERMISSIONS)) {
+    return FALSE;
+  }
+  $uri = $directory . '/' . $basename . '-' . backdrop_random_key(12) . '.' . $extension;
+  $file = file_save_data($data, $uri, FILE_EXISTS_RENAME);
+  if (!$file) {
+    return FALSE;
+  }
+  $file->status = 0;
+  file_save($file);
+  return $file;
+}
+
+/**
+ * Implements hook_file_download().
+ *
+ * Denies explorer output to users who may not use the explorer. Ownership is
+ * checked by the file module.
+ */
+function ai_explorer_file_download($uri) {
+  if (!in_array(file_uri_scheme($uri), ['private', 'temporary'], TRUE)) {
+    return NULL;
+  }
+  if (strpos(file_uri_target($uri), 'ai_explorer/') !== 0) {
+    return NULL;
+  }
+  return user_access('access ai explorer') ? NULL : -1;
+}
+
+/**
  * Landing page for the explorer.
  */
 function ai_explorer_overview_page() {
@@ -607,8 +656,6 @@ function ai_explorer_image_form_submit($form, &$form_state) {
   $prompt = !empty($form_state['values']['prompt']) ? $form_state['values']['prompt'] : '';
   $storage['prompt'] = $prompt;
   $filename_base = ai_explorer_safe_filename(!empty($form_state['values']['filename']) ? $form_state['values']['filename'] : 'dalle_image');
-  $file_scheme = file_default_scheme();
-  $timestamp = defined('REQUEST_TIME') ? REQUEST_TIME : time();
 
   try {
     $is_gpt_image = (bool) preg_match('/^gpt-image/i', $model);
@@ -629,22 +676,15 @@ function ai_explorer_image_form_submit($form, &$form_state) {
     }
     $image_contents = $validated_image['data'];
     $ext = $validated_image['ext'];
-    $unique_filename = $filename_base . '-' . $timestamp . '.' . $ext;
-    $destination = $file_scheme . '://ai_explorer/' . $unique_filename;
-
-    $directory = backdrop_dirname($destination);
-    file_prepare_directory($directory, FILE_CREATE_DIRECTORY | FILE_MODIFY_PERMISSIONS);
-
-    $file = file_save_data($image_contents, $destination, FILE_EXISTS_RENAME);
+    $file = ai_explorer_save_output($image_contents, $filename_base, $ext);
     if ($file) {
-      file_usage_add($file, 'ai_explorer', 'module', $file->fid);
       $storage['filename'] = $file->filename;
       $storage['filepath'] = file_create_url($file->uri);
       $storage['fid'] = $file->fid;
       backdrop_set_message(t('Image generated and saved successfully!'));
     }
     else {
-      watchdog('ai_explorer', 'file_save_data failed when saving image to @dest', ['@dest' => $destination], WATCHDOG_ERROR);
+      watchdog('ai_explorer', 'Saving the generated image failed.', [], WATCHDOG_ERROR);
       form_set_error('', t('Failed to save the image to the file system.'));
     }
   }
@@ -940,9 +980,6 @@ function ai_explorer_tts_form_submit($form, &$form_state) {
     return $form;
   }
 
-  $file_system = file_default_scheme();
-  $timestamp = REQUEST_TIME;
-
   $text = $form_state['values']['text'];
   $model = $form_state['values']['model'];
   $voice = !empty($form_state['values']['custom_voice']) ? trim($form_state['values']['custom_voice']) : $form_state['values']['voice'];
@@ -953,30 +990,15 @@ function ai_explorer_tts_form_submit($form, &$form_state) {
     return;
   }
 
-  global $user;
-
   try {
     $model_to_use = !empty($stripped_model) ? $stripped_model : $model;
     $response = $api->textToSpeech($model_to_use, $text, $voice, $format);
     if (!is_string($response) || $response === '' || strlen($response) > AI_EXPLORER_MAX_AUDIO_BYTES) {
       throw new Exception(t('The text-to-speech provider returned an invalid audio response.'));
     }
-    $filename = 'tts_result-' . $timestamp . '.' . $format;
-    $file_uri = file_unmanaged_save_data($response, $file_system . '://' . $filename, FILE_EXISTS_REPLACE);
+    $file = ai_explorer_save_output($response, 'tts_result', $format);
 
-    if ($file_uri) {
-      $file = entity_create('file', [
-        'uri' => $file_uri,
-        'filename' => $filename,
-        'filemime' => file_get_mimetype($file_uri),
-        'status' => 1,
-        'uid' => $user->uid,
-        'timestamp' => $timestamp,
-      ]);
-
-      file_save($file);
-      file_usage_add($file, 'ai_explorer', 'module', $file->fid);
-
+    if ($file) {
       $form_state['storage'] = [
         'filepath' => $file->uri,
         'filename' => $file->filename,

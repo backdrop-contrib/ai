@@ -984,62 +984,22 @@ class AIApi {
   }
 
   /**
-   * Build data URI from local file, stream wrapper URI, or readable URL.
+   * Build a data URI from a data URL, a site file or a public https URL.
+   *
+   * @return string|false
+   *   The data URI, or FALSE when the source is refused or not an image.
+   *
+   * @see AIImageHelper::loadInputImage()
    */
   protected function buildImageDataUri(string $imageUrl) {
-    if (strpos($imageUrl, 'data:') === 0) {
-      return $imageUrl;
+    try {
+      // Sniff the bytes rather than trusting the extension: image style
+      // derivatives that change format keep the source file's extension.
+      $image = AIImageHelper::loadInputImage($imageUrl);
     }
-
-    $image_data = FALSE;
-    $mime_type = NULL;
-
-    $candidate_paths = [];
-
-    if (file_stream_wrapper_valid_scheme(file_uri_scheme($imageUrl))) {
-      $candidate_paths[] = backdrop_realpath($imageUrl);
-    }
-    elseif (is_file($imageUrl)) {
-      $candidate_paths[] = $imageUrl;
-    }
-    else {
-      $path = parse_url($imageUrl, PHP_URL_PATH);
-      if (!empty($path)) {
-        $candidate_paths[] = BACKDROP_ROOT . '/' . ltrim($path, '/');
-      }
-    }
-
-    foreach ($candidate_paths as $candidate_path) {
-      if (!empty($candidate_path) && is_file($candidate_path) && is_readable($candidate_path)) {
-        $image_data = file_get_contents($candidate_path);
-        if ($image_data !== FALSE) {
-          break;
-        }
-      }
-    }
-
-    if ($image_data === FALSE) {
-      $image_data = @file_get_contents($imageUrl);
-    }
-
-    if ($image_data === FALSE || $image_data === '') {
+    catch (\InvalidArgumentException $e) {
       return FALSE;
     }
-
-    // Sniff the bytes rather than trusting the extension: image style
-    // derivatives that change format keep the source file's extension.
-    if (empty($mime_type)) {
-      $finfo = finfo_open(FILEINFO_MIME_TYPE);
-      if ($finfo) {
-        $mime_type = finfo_buffer($finfo, $image_data) ?: NULL;
-        finfo_close($finfo);
-      }
-    }
-
-    if (empty($mime_type)) {
-      $mime_type = 'image/jpeg';
-    }
-
-    return 'data:' . $mime_type . ';base64,' . base64_encode($image_data);
+    return 'data:' . $image['mime'] . ';base64,' . base64_encode($image['data']);
   }
 }

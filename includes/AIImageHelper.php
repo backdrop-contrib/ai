@@ -138,6 +138,96 @@ class AIImageHelper {
   }
 
   /**
+   * Load an image a caller wants to send to a model, refusing unsafe sources.
+   *
+   * Accepted sources:
+   * - data:image/...;base64 URLs.
+   * - Backdrop stream URIs (public://, private://, any registered scheme).
+   * - URLs of this site's own files, read from their stream wrapper.
+   * - Other https URLs on public hosts, via download().
+   *
+   * Raw filesystem paths and other schemes (file://, php://, phar://, plain
+   * http) are refused, so a message can never make the server read local
+   * files such as settings.php or fetch internal addresses.
+   *
+   * @param string $source
+   *   The image reference from a chat message or caller.
+   *
+   * @return array
+   *   An array with 'data' (binary image) and 'mime' (image/png, image/jpeg,
+   *   image/gif or image/webp).
+   *
+   * @throws \InvalidArgumentException
+   *   When the source is refused, unreadable or not a supported image.
+   */
+  public static function loadInputImage(string $source): array {
+    if (strpos($source, 'data:') === 0) {
+      $data = static::parseDataUrl($source);
+    }
+    else {
+      $uri = static::siteFileUri($source);
+      if ($uri !== NULL) {
+        $data = @file_get_contents($uri, FALSE, NULL, 0, static::MAX_BYTES + 1);
+      }
+      elseif (parse_url($source, PHP_URL_SCHEME) === 'https') {
+        $data = static::download($source);
+      }
+      else {
+        throw new \InvalidArgumentException('Image sources must be a data URL, a site file or an https URL.');
+      }
+    }
+
+    $mime_types = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+    $mime = is_string($data) && $data !== '' && class_exists('finfo')
+      ? (new finfo(FILEINFO_MIME_TYPE))->buffer($data)
+      : NULL;
+    if (!in_array($mime, $mime_types, TRUE) || strlen($data) > static::MAX_BYTES) {
+      throw new \InvalidArgumentException('The image source is unreadable or not a supported image.');
+    }
+    return ['data' => $data, 'mime' => $mime];
+  }
+
+  /**
+   * Map a stream URI or a URL of this site's files to a stream URI.
+   *
+   * @param string $source
+   *   A stream URI (public://...) or an absolute URL.
+   *
+   * @return string|null
+   *   A stream URI under a registered Backdrop scheme, or NULL when the
+   *   source is not one of this site's files.
+   */
+  protected static function siteFileUri(string $source): ?string {
+    $scheme = file_uri_scheme($source);
+    if ($scheme && $scheme !== 'http' && $scheme !== 'https') {
+      $uri = $source;
+    }
+    else {
+      $uri = NULL;
+      foreach (array_keys(file_get_stream_wrappers(STREAM_WRAPPERS_VISIBLE)) as $wrapper_scheme) {
+        $base = file_create_url($wrapper_scheme . '://');
+        if ($base && strpos($source, $base) === 0) {
+          $target = rawurldecode((string) parse_url(substr($source, strlen($base)), PHP_URL_PATH));
+          $uri = $wrapper_scheme . '://' . $target;
+          break;
+        }
+      }
+      if ($uri === NULL) {
+        return NULL;
+      }
+    }
+    // Only Backdrop-managed schemes; never php://, phar://, file:// or data:.
+    if (!file_stream_wrapper_valid_scheme(file_uri_scheme($uri))) {
+      throw new \InvalidArgumentException('Image sources must use a Backdrop file scheme.');
+    }
+    // Refuse traversal out of the scheme's directory.
+    if (preg_match('#(^|/)\.\.(/|$)#', file_uri_target($uri))) {
+      throw new \InvalidArgumentException('Image sources must not contain "..".');
+    }
+    return $uri;
+  }
+
+  /**
    * Decode a data:image/... URL.
    *
    * @return string|null

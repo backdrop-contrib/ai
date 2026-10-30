@@ -110,3 +110,11 @@ group = AI
 file = tests/ai_model_catalog.test
 backdrop = 1.x
 php = 8.2
+
+[AIImageHelperTestCase]
+name = AI image input loader
+description = Verifies AIImageHelper::loadInputImage() refuses local paths, unsafe schemes and non-images.
+group = AI
+file = tests/ai_image_helper.test
+backdrop = 1.x
+php = 8.2

@@ -1013,7 +1013,6 @@ class AIApi {
       if (!empty($candidate_path) && is_file($candidate_path) && is_readable($candidate_path)) {
         $image_data = file_get_contents($candidate_path);
         if ($image_data !== FALSE) {
-          $mime_type = file_get_mimetype($candidate_path);
           break;
         }
       }
@@ -1027,6 +1026,8 @@ class AIApi {
       return FALSE;
     }
 
+    // Sniff the bytes rather than trusting the extension: image style
+    // derivatives that change format keep the source file's extension.
     if (empty($mime_type)) {
       $finfo = finfo_open(FILEINFO_MIME_TYPE);
       if ($finfo) {

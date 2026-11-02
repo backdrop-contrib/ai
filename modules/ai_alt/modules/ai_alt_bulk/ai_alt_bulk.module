@@ -61,6 +61,33 @@ function ai_alt_bulk_views_query_alter(&$view, &$query) {
     return;
   }
 
+  // Only list files used somewhere that renders to visitors. Files referenced
+  // solely by sources like webform submissions never need alt text.
+  $content_usage = db_select('file_usage', 'fu');
+  $content_usage->fields('fu', ['fid']);
+  foreach (array_values(_ai_alt_bulk_non_content_usages()) as $delta => $usage) {
+    if (isset($usage['type'])) {
+      $content_usage->where("NOT (fu.module = :ai_alt_bulk_module_$delta AND fu.type = :ai_alt_bulk_type_$delta)", [
+        ":ai_alt_bulk_module_$delta" => $usage['module'],
+        ":ai_alt_bulk_type_$delta" => $usage['type'],
+      ]);
+    }
+    else {
+      $content_usage->condition('fu.module', $usage['module'], '<>');
+    }
+  }
+  $query->add_where(0, 'file_managed.fid', $content_usage, 'IN');
+
+  // Leave out S3 files whose object is gone from the bucket; no alt text can
+  // be generated for them. s3fs tracks every bucket object in s3fs_file.
+  // S3 keys are case-sensitive but file_managed.uri is not, so compare as
+  // binary to avoid matching an object that differs only in case.
+  if (module_exists('s3fs') && db_table_exists('s3fs_file')) {
+    $query->add_where_expression(0, 'file_managed.uri NOT LIKE :ai_alt_bulk_s3 OR BINARY file_managed.uri IN (SELECT s3.uri FROM {s3fs_file} s3)', [
+      ':ai_alt_bulk_s3' => db_like('s3://') . '%',
+    ]);
+  }
+
   module_load_include('inc', 'ai_alt_tools', 'includes/alt.tools');
   if (!function_exists('ai_alt_tools_excluded_file_ids')) {
     return;
@@ -72,6 +99,169 @@ function ai_alt_bulk_views_query_alter(&$view, &$query) {
   }
 
   $query->add_where(0, 'file_managed.fid', $excluded_fids, 'NOT IN');
+}
+
+/**
+ * File usages that do not place a file in visitor-facing content.
+ *
+ * @return array
+ *   A list of usages, each with a 'module' key and an optional 'type' key.
+ *   Other modules may change the list with
+ *   hook_ai_alt_bulk_non_content_usages_alter().
+ */
+function _ai_alt_bulk_non_content_usages() {
+  $usages = [
+    ['module' => 'webform', 'type' => 'submission'],
+    ['module' => 'feeds'],
+  ];
+  backdrop_alter('ai_alt_bulk_non_content_usages', $usages);
+  return $usages;
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function ai_alt_bulk_form_alter(&$form, &$form_state, $form_id) {
+  if (strpos($form_id, 'views_form_ai_alt_bulk_') !== 0 || empty($form['#submit'])) {
+    return;
+  }
+
+  // Route the submit through our handler so AI actions can run as a batch.
+  $key = array_search('views_form_views_form_submit', $form['#submit'], TRUE);
+  if ($key !== FALSE) {
+    $form['#submit'][$key] = 'ai_alt_bulk_views_form_submit';
+  }
+}
+
+/**
+ * Actions that call the AI provider and must run in a batch.
+ */
+function _ai_alt_bulk_batch_actions() {
+  return [
+    'ai_alt_bulk_generate_action',
+    'ai_alt_bulk_generate_force_action',
+    'ai_alt_bulk_rename_filename_action',
+  ];
+}
+
+/**
+ * Submit handler for the bulk form.
+ *
+ * AI actions take seconds per file, so running them all in one request times
+ * out. Those run as a batch, one file per request; other actions are handed
+ * to the standard Views submit handler.
+ */
+function ai_alt_bulk_views_form_submit($form, &$form_state) {
+  $action = isset($form_state['values']['action']) ? $form_state['values']['action'] : '';
+  if ($form_state['step'] !== 'views_form_views_form' || !in_array($action, _ai_alt_bulk_batch_actions(), TRUE)) {
+    views_form_views_form_submit($form, $form_state);
+    return;
+  }
+
+  $view = $form_state['build_info']['args'][0];
+  $field = isset($view->field['bulk_form']) ? $view->field['bulk_form'] : NULL;
+  if (!$field) {
+    views_form_views_form_submit($form, $form_state);
+    return;
+  }
+
+  $fids = _ai_alt_bulk_selected_fids($view, $field, $form_state);
+  if (empty($fids)) {
+    backdrop_set_message(t('No items selected.'), 'error');
+    return;
+  }
+
+  $action_info = actions_get_info($action);
+  batch_set([
+    'title' => check_plain($action_info['label']),
+    'operations' => [
+      ['ai_alt_bulk_batch_process', [$action, array_values($fids)]],
+    ],
+    'finished' => 'ai_alt_bulk_batch_finished',
+    'progress_message' => '',
+    'file' => backdrop_get_path('module', 'ai_alt_bulk') . '/ai_alt_bulk.module',
+  ]);
+}
+
+/**
+ * Collect the selected file IDs, including "select all on all pages".
+ */
+function _ai_alt_bulk_selected_fids($view, $field, $form_state) {
+  if (!empty($form_state['values']['select_all_pages']) && ($view->query->pager->has_more_records() || $view->query->pager->get_current_page() > 0)) {
+    $all_view = views_get_view($view->name);
+    $all_view->set_exposed_input($view->get_exposed_input());
+    $all_view->set_arguments($view->args);
+    $all_view->set_display($view->current_display);
+    $all_view->display_handler->set_option('pager', ['type' => 'none', 'options' => []]);
+    $all_view->build();
+    $all_view->execute($view->current_display);
+
+    $fids = [];
+    foreach ($all_view->result as $row) {
+      $fids[] = $row->{$field->real_field};
+    }
+    return $fids;
+  }
+
+  return array_filter($form_state['values'][$field->options['id']]);
+}
+
+/**
+ * Batch operation: apply an action to one file per request.
+ */
+function ai_alt_bulk_batch_process($action, $fids, &$context) {
+  if (!isset($context['sandbox']['position'])) {
+    $context['sandbox']['position'] = 0;
+    $context['results'] += ['processed' => 0, 'messages' => []];
+  }
+
+  $fid = $fids[$context['sandbox']['position']];
+  $file = file_load($fid);
+  if ($file) {
+    $action_context = [];
+    actions_execute($action, $file, $action_context);
+    $context['results']['processed']++;
+  }
+
+  // Keep the per-file messages for the summary instead of letting hundreds
+  // of them pile up in the session.
+  $last = '';
+  foreach (backdrop_get_messages() as $type => $messages) {
+    foreach ($messages as $message) {
+      $context['results']['messages'][$type][] = $message;
+      $last = $message;
+    }
+  }
+
+  $context['sandbox']['position']++;
+  $total = count($fids);
+  $context['finished'] = $context['sandbox']['position'] / $total;
+  $context['message'] = t('Processed @current of @total.', [
+    '@current' => $context['sandbox']['position'],
+    '@total' => $total,
+  ]) . ($last !== '' ? '<br>' . $last : '');
+}
+
+/**
+ * Batch finished callback.
+ */
+function ai_alt_bulk_batch_finished($success, $results, $operations) {
+  if (!$success) {
+    backdrop_set_message(t('The batch did not finish. Files processed before the error were saved.'), 'error');
+  }
+
+  $messages = isset($results['messages']) ? $results['messages'] : [];
+  $count_status = isset($messages['status']) ? count($messages['status']) : 0;
+  backdrop_set_message(format_plural(isset($results['processed']) ? $results['processed'] : 0, 'Processed 1 file.', 'Processed @count files.') . ' ' . format_plural($count_status, '1 succeeded or was skipped.', '@count succeeded or were skipped.'));
+
+  // Surface every problem individually so failures can be followed up.
+  foreach (['error', 'warning'] as $type) {
+    if (!empty($messages[$type])) {
+      foreach ($messages[$type] as $message) {
+        backdrop_set_message($message, $type);
+      }
+    }
+  }
 }
 
 /**
@@ -160,6 +350,15 @@ function ai_alt_bulk_generate_force_action($file, $context = []) {
   $alt_field = _ai_alt_bulk_alt_field_name();
   $lang = LANGUAGE_NONE;
 
+  // Records whose file is gone from storage would only waste an API call.
+  if (!file_exists($file->uri)) {
+    backdrop_set_message(t('Skipped @filename: the file is missing from storage (@uri).', [
+      '@filename' => $file->filename,
+      '@uri' => $file->uri,
+    ]), 'warning');
+    return;
+  }
+
   module_load_include('module', 'ai_alt');
   if (function_exists('ai_alt_generate_from_file')) {
     $alt_text = ai_alt_generate_from_file($file);
@@ -172,7 +371,12 @@ function ai_alt_bulk_generate_force_action($file, $context = []) {
       ]));
     }
     else {
-      backdrop_set_message(t('Could not generate alt text for @filename.', ['@filename' => $file->filename]), 'warning');
+      $reason = function_exists('ai_alt_last_generation_error') ? ai_alt_last_generation_error() : '';
+      backdrop_set_message(t('Could not generate alt text for @filename (file @fid). @reason', [
+        '@filename' => $file->filename,
+        '@fid' => $file->fid,
+        '@reason' => $reason,
+      ]), 'warning');
     }
   }
   else {

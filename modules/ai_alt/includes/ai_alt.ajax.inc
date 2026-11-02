@@ -18,6 +18,17 @@ function _ai_alt_ajax_alert($message) {
 }
 
 /**
+ * Message for a failed generation, including why it failed when known.
+ */
+function _ai_alt_generation_failure_message() {
+  $reason = _ai_alt_generation_error();
+  if ($reason === '') {
+    return t('Failed to generate alt text. Please try again.');
+  }
+  return t('Failed to generate alt text: @reason', ['@reason' => $reason]);
+}
+
+/**
  * Validate a token for a raw JSON generation request.
  */
 function _ai_alt_valid_json_token($token, $path) {
@@ -72,14 +83,14 @@ function ai_alt_generate_alt_text_for_ckeditor($form, array &$form_state) {
       ];
     }
 
-    backdrop_set_message(t('Failed to generate alt text. Please try again.'), 'error');
+    backdrop_set_message(_ai_alt_generation_failure_message(), 'error');
   }
   catch (\Throwable $e) {
     watchdog('ai_alt', 'Error generating alt text: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
     return _ai_alt_ajax_alert(t('An error occurred while generating alt text.'));
   }
 
-  return _ai_alt_ajax_alert(t('Failed to generate alt text. Please try again.'));
+  return _ai_alt_ajax_alert(_ai_alt_generation_failure_message());
 }
 
 /**
@@ -112,7 +123,7 @@ function ai_alt_generate_alt_text_for_ckeditor_autogenerate() {
       return;
     }
 
-    backdrop_json_output(['status' => 'error', 'message' => 'Failed to generate alt text.']);
+    backdrop_json_output(['status' => 'error', 'message' => _ai_alt_generation_failure_message()]);
   }
   catch (\Throwable $e) {
     watchdog('ai_alt', 'Error generating alt text: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
@@ -156,8 +167,9 @@ function ai_alt_generate_alt_text_ajax($form, array &$form_state) {
   }
 
   if (!$generated_alt_text) {
-    backdrop_set_message(t('Failed to generate alt text. Please try again.'), 'error');
-    return _ai_alt_ajax_alert(t('An error occurred while generating alt text. Please try again.'));
+    $message = _ai_alt_generation_failure_message();
+    backdrop_set_message($message, 'error');
+    return _ai_alt_ajax_alert($message);
   }
 
   $model = config_get('ai_alt.settings', 'model') ?: 'unknown';
@@ -201,7 +213,7 @@ function ai_alt_generate_alt_text_callback() {
   }
 
   if (!$generated_alt_text) {
-    return ['status' => 'error', 'message' => 'Alt text generation failed.'];
+    return ['status' => 'error', 'message' => _ai_alt_generation_failure_message()];
   }
 
   return [

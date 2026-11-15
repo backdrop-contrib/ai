@@ -78,6 +78,7 @@ function ai_tools_field_definitions() {
       'module'    => 'ai_tools',
       'category'  => 'field',
       'operation' => 'read',
+      'permission' => 'access content overview',
     ],
     'get_field_storage' => [
       'definition' => [
@@ -309,7 +310,7 @@ function ai_tools_execute_get_entity_field_information(array $args) {
 
 function ai_tools_execute_get_field_values_and_context(array $args) {
   $nid = (int) ($args['node_id'] ?? 0);
-  if (!$nid) {
+  if ($nid <= 0) {
     return ['error' => 'node_id must be a positive integer.'];
   }
   $node = node_load($nid);

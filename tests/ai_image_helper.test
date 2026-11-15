@@ -1,0 +1,72 @@
+<?php
+
+/**
+ * @file
+ * Tests for AIImageHelper::loadInputImage().
+ */
+
+/**
+ * Tests that image inputs cannot read local files or internal addresses.
+ */
+class AIImageHelperTestCase extends BackdropWebTestCase {
+
+  /**
+   * {@inheritdoc}
+   */
+  public function setUp() {
+    parent::setUp('ai');
+  }
+
+  /**
+   * Refuses paths, unsafe schemes, internal hosts and non-images.
+   */
+  public function testRefusedSources() {
+    file_put_contents('public://secret.txt', 'secret text');
+    $sources = [
+      '/etc/passwd',
+      BACKDROP_ROOT . '/settings.php',
+      'settings.php',
+      'file:///etc/passwd',
+      'php://filter/convert.base64-encode/resource=/etc/passwd',
+      'phar:///tmp/archive.phar/image.png',
+      $GLOBALS['base_url'] . '/settings.php',
+      'public://../settings.php',
+      'public://secret.txt',
+      'http://169.254.169.254/latest/meta-data/',
+      'https://169.254.169.254/latest/meta-data/',
+      'https://127.0.0.1/image.png',
+      'http://example.com/image.png',
+      'data:text/plain;base64,' . base64_encode('text'),
+    ];
+    foreach ($sources as $source) {
+      try {
+        AIImageHelper::loadInputImage($source);
+        $this->fail('Accepted unsafe image source: ' . $source);
+      }
+      catch (\InvalidArgumentException $e) {
+        $this->pass('Refused unsafe image source: ' . $source);
+      }
+    }
+  }
+
+  /**
+   * Accepts data URLs, stream URIs and this site's file URLs.
+   */
+  public function testAcceptedSources() {
+    $image = imagecreatetruecolor(4, 4);
+    ob_start();
+    imagepng($image);
+    $png = ob_get_clean();
+    file_put_contents('public://red.png', $png);
+
+    $result = AIImageHelper::loadInputImage('data:image/png;base64,' . base64_encode($png));
+    $this->assertEqual($result['mime'], 'image/png', 'A data URL is accepted.');
+
+    $result = AIImageHelper::loadInputImage('public://red.png');
+    $this->assertIdentical($result['data'], $png, 'A public:// URI is read.');
+
+    $result = AIImageHelper::loadInputImage(file_create_url('public://red.png'));
+    $this->assertIdentical($result['data'], $png, 'A URL of a site file is read from disk.');
+  }
+
+}

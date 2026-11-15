@@ -185,6 +185,17 @@ function ai_alt_generate_from_file($file) {
 }
 
 /**
+ * Public wrapper: why the most recent ai_alt_generate_from_file() failed.
+ *
+ * @return string
+ *   A translated reason, or an empty string if the last attempt succeeded.
+ */
+function ai_alt_last_generation_error() {
+  module_load_include('inc', 'ai_alt', 'includes/ai_alt.generate');
+  return _ai_alt_generation_error();
+}
+
+/**
  * Public wrapper for external callers (e.g. ai_alt_tools).
  */
 function ai_alt_generate_short_filename_for_file($file) {

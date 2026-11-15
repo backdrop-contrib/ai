@@ -159,6 +159,13 @@ function ai_tools_dispatch($name, array $arguments) {
   if (!function_exists($callback)) {
     return json_encode(['error' => "Executor not found for tool: $name"]);
   }
+  // Check the arguments against the tool's declared JSON schema, so a wrong
+  // type is reported to the caller instead of being cast or reaching PHP.
+  $schema = $tool['definition']['function']['parameters'] ?? [];
+  $error = ai_tools_validate_arguments($arguments, is_array($schema) ? $schema : []);
+  if ($error !== NULL) {
+    return json_encode(['error' => $error]);
+  }
   // Merge any static args declared in the tool definition before calling.
   if (!empty($tool['execute_args']) && is_array($tool['execute_args'])) {
     foreach ($tool['execute_args'] as $key => $value) {
@@ -174,8 +181,182 @@ function ai_tools_dispatch($name, array $arguments) {
       '@name' => $name,
       '@msg' => $e->getMessage(),
     ], WATCHDOG_ERROR);
-    return json_encode(['error' => 'Tool execution error: ' . $e->getMessage()]);
+    // The message goes to the log only: it can contain PHP internals.
+    return json_encode(['error' => 'Tool execution error. See the site log for details.']);
   }
+}
+
+/**
+ * Validates tool arguments against the tool's JSON schema.
+ *
+ * Checks the top-level properties for 'required', 'type' and 'enum'.
+ * Conversions that lose nothing are applied in place (for example "5" to 5,
+ * or 3 to "3"), because models often send numbers as strings. Anything else
+ * is rejected. Properties the schema does not declare are left alone.
+ *
+ * @param array $arguments
+ *   Decoded arguments. Converted values are written back.
+ * @param array $schema
+ *   The tool's 'parameters' JSON schema.
+ *
+ * @return string|null
+ *   An error message for the caller, or NULL when the arguments are valid.
+ */
+function ai_tools_validate_arguments(array &$arguments, array $schema) {
+  $properties = isset($schema['properties']) ? (array) $schema['properties'] : [];
+  $required = isset($schema['required']) && is_array($schema['required']) ? $schema['required'] : [];
+
+  foreach ($properties as $name => $property) {
+    if (!array_key_exists($name, $arguments)) {
+      continue;
+    }
+    // Models often send null for an optional argument they mean to omit.
+    if ($arguments[$name] === NULL) {
+      unset($arguments[$name]);
+      continue;
+    }
+    $property = (array) $property;
+    if (!empty($property['type'])) {
+      $value = ai_tools_coerce_argument($arguments[$name], (array) $property['type'], $ok);
+      if (!$ok) {
+        $types = implode(' or ', (array) $property['type']);
+        return "$name: expected $types, got " . ai_tools_json_type($arguments[$name]) . '.';
+      }
+      $arguments[$name] = $value;
+    }
+    if (isset($property['enum']) && is_array($property['enum']) && !in_array($arguments[$name], $property['enum'], TRUE)) {
+      return "$name: must be one of " . implode(', ', array_map('json_encode', $property['enum'])) . '.';
+    }
+  }
+
+  foreach ($required as $name) {
+    if (!isset($arguments[$name])) {
+      return "$name: required.";
+    }
+  }
+
+  return NULL;
+}
+
+/**
+ * Converts a value to one of the given JSON schema types without loss.
+ *
+ * @param mixed $value
+ *   The value to convert.
+ * @param array $types
+ *   Allowed JSON schema type names.
+ * @param bool $ok
+ *   Set to TRUE when the value matches or converts to one of the types.
+ *
+ * @return mixed
+ *   The converted value, or the original value when $ok is FALSE.
+ */
+function ai_tools_coerce_argument($value, array $types, &$ok) {
+  $ok = TRUE;
+  foreach ($types as $type) {
+    switch ($type) {
+      case 'integer':
+        if (is_int($value)) {
+          return $value;
+        }
+        if (is_float($value) && floor($value) == $value && abs($value) <= PHP_INT_MAX) {
+          return (int) $value;
+        }
+        if (is_string($value) && preg_match('/^-?\d+$/', trim($value))) {
+          return (int) trim($value);
+        }
+        break;
+
+      case 'number':
+        if (is_int($value) || is_float($value)) {
+          return $value;
+        }
+        if (is_string($value) && is_numeric(trim($value))) {
+          return trim($value) + 0;
+        }
+        break;
+
+      case 'string':
+        if (is_string($value)) {
+          return $value;
+        }
+        if (is_int($value) || is_float($value)) {
+          return (string) $value;
+        }
+        break;
+
+      case 'boolean':
+        if (is_bool($value)) {
+          return $value;
+        }
+        if ($value === 'true' || $value === 1) {
+          return TRUE;
+        }
+        if ($value === 'false' || $value === 0) {
+          return FALSE;
+        }
+        break;
+
+      case 'array':
+        if (is_array($value) && ai_tools_is_list($value)) {
+          return $value;
+        }
+        break;
+
+      case 'object':
+        if (is_array($value) && ($value === [] || !ai_tools_is_list($value))) {
+          return $value;
+        }
+        break;
+
+      default:
+        // Unknown type keyword: do not block the call.
+        return $value;
+    }
+  }
+  $ok = FALSE;
+  return $value;
+}
+
+/**
+ * Returns the JSON type name of a decoded value, for error messages.
+ */
+function ai_tools_json_type($value) {
+  if (is_bool($value)) {
+    return 'boolean';
+  }
+  if (is_int($value)) {
+    return 'integer';
+  }
+  if (is_float($value)) {
+    return 'number';
+  }
+  if (is_string($value)) {
+    return 'string';
+  }
+  if (is_array($value)) {
+    return ai_tools_is_list($value) ? 'array' : 'object';
+  }
+  return 'null';
+}
+
+/**
+ * Returns TRUE for an array with keys 0..n-1 in order (a JSON array).
+ */
+function ai_tools_is_list(array $value) {
+  return $value === [] || array_keys($value) === range(0, count($value) - 1);
+}
+
+/**
+ * Implements hook_permission().
+ */
+function ai_tools_permission() {
+  return [
+    'use ai image to text tool' => [
+      'title' => t('Use the AI image to text tool'),
+      'description' => t('Run the ai_image_to_text tool. Each call is a paid request to the site\'s AI provider.'),
+    ],
+  ];
 }
 
 // -----------------------------------------------------------------------

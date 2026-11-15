@@ -25,6 +25,7 @@ function ai_tools_views_definitions() {
       'module' => 'ai_tools',
       'category' => 'views',
       'operation' => 'read',
+      'permission' => 'administer views',
     ],
     'get_view_info' => [
       'definition' => [
@@ -48,6 +49,7 @@ function ai_tools_views_definitions() {
       'module' => 'ai_tools',
       'category' => 'views',
       'operation' => 'read',
+      'permission' => 'administer views',
     ],
     'list_views_base_tables' => [
       'definition' => [
@@ -65,6 +67,7 @@ function ai_tools_views_definitions() {
       'module' => 'ai_tools',
       'category' => 'views',
       'operation' => 'read',
+      'permission' => 'administer views',
     ],
     'list_views_handlers' => [
       'definition' => [
@@ -93,6 +96,7 @@ function ai_tools_views_definitions() {
       'module' => 'ai_tools',
       'category' => 'views',
       'operation' => 'read',
+      'permission' => 'administer views',
     ],
     'create_basic_view' => [
       'definition' => [

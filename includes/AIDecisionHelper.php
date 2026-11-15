@@ -105,12 +105,19 @@ class AIDecisionHelper {
       if (isset($state[$name])) {
         throw new \InvalidArgumentException(sprintf('Image name "%s" is reserved.', $name));
       }
+      // The loader refuses raw paths and unsafe schemes, and checks the bytes.
       $formats = ['image/png' => 'png', 'image/jpeg' => 'jpg'];
-      $format = $formats[file_get_mimetype((string) $uri)] ?? NULL;
-      $data = $format ? @file_get_contents((string) $uri) : FALSE;
-      if ($data === FALSE || $data === '') {
+      try {
+        $image = AIImageHelper::loadInputImage((string) $uri);
+      }
+      catch (\InvalidArgumentException $e) {
+        $image = NULL;
+      }
+      $format = $image ? ($formats[$image['mime']] ?? NULL) : NULL;
+      if (!$format) {
         throw new \InvalidArgumentException(sprintf('Image "%s" is not a readable PNG or JPEG file.', $name));
       }
+      $data = $image['data'];
       // References are matched as plain text anywhere in the request, so use
       // one that cannot occur in the input by accident.
       $ref = 'img-' . bin2hex(random_bytes(8));

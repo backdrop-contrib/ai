@@ -190,7 +190,11 @@ function _ai_alt_prepare_image_uri($file_uri, $apply_image_style = TRUE) {
     image_style_create_derivative($style, $file_uri, $styled_uri);
   }
 
-  if (file_exists($styled_uri)) {
+  // Open the derivative rather than trusting file_exists(): remote wrappers
+  // such as s3fs answer from a metadata cache that can outlive the object.
+  $handle = @fopen($styled_uri, 'rb');
+  if ($handle) {
+    fclose($handle);
     return $styled_uri;
   }
 

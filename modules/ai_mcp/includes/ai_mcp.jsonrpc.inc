@@ -152,21 +152,11 @@ function ai_mcp_method_tools_call($id, array $params, array $server) {
   }
 
   // Verify the tool exists in the registry (also enforces user permissions).
+  // Unknown, permission-hidden and server-disallowed tools all get the same
+  // protocol error, so a caller cannot tell which case applies.
   $all_tools = ai_tools_get_tools();
   if (!isset($all_tools[$tool_name])) {
-    return [
-      'jsonrpc' => '2.0',
-      'id'      => $id,
-      'result'  => [
-        'content' => [
-          [
-            'type' => 'text',
-            'text' => 'Unknown or inaccessible tool: ' . $tool_name,
-          ],
-        ],
-        'isError' => TRUE,
-      ],
-    ];
+    return ai_mcp_jsonrpc_error($id, -32602, 'Tool not available on this server');
   }
 
   // Enforce the server's allowlist and its write-tool opt-in. Checked here as
@@ -184,6 +174,10 @@ function ai_mcp_method_tools_call($id, array $params, array $server) {
   // Dispatch and wrap in MCP content envelope.
   try {
     $result_text = ai_tools_dispatch($tool_name, $arguments);
+    // Tools report failure as a top-level 'error' key. MCP expects tool
+    // execution errors to be flagged with isError so clients notice them.
+    $decoded = json_decode($result_text, TRUE);
+    $is_error = is_array($decoded) && array_key_exists('error', $decoded);
     return [
       'jsonrpc' => '2.0',
       'id'      => $id,
@@ -194,7 +188,7 @@ function ai_mcp_method_tools_call($id, array $params, array $server) {
             'text' => $result_text,
           ],
         ],
-        'isError' => FALSE,
+        'isError' => $is_error,
       ],
     ];
   }

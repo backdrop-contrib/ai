@@ -28,10 +28,6 @@ function ai_tools_media_definitions() {
                 'type' => 'string',
                 'description' => 'Optional instructions on what to extract (e.g. "extract all names", "read the table").',
               ],
-              'model' => [
-                'type' => 'string',
-                'description' => 'Optional vision-capable model ID. Defaults to gpt-4o.',
-              ],
             ],
             'required' => ['image_fid'],
           ],
@@ -41,6 +37,8 @@ function ai_tools_media_definitions() {
       'module' => 'ai_tools',
       'category' => 'media',
       'operation' => 'read',
+      // Each call is a paid provider request, so it needs its own permission.
+      'permission' => 'use ai image to text tool',
     ],
   ];
 }
@@ -54,8 +52,9 @@ function ai_tools_execute_image_to_text(array $args) {
     return ['error' => 'image_fid must be a positive integer.'];
   }
   $prompt = !empty($args['prompt']) ? $args['prompt'] : 'Extract all text from the image.';
-  // Default to a known vision model if none provided.
-  $model = !empty($args['model']) ? $args['model'] : (config_get('ai.settings', 'default_vision_model') ?: config_get('ai.settings', 'default_text_model') ?: 'gpt-4o');
+  // Always use the site's configured model. Callers must not pick one, or
+  // they could run the most expensive model on the site's provider key.
+  $model = config_get('ai.settings', 'default_vision_model') ?: config_get('ai.settings', 'default_text_model') ?: 'gpt-4o';
 
   $file = file_load($fid);
   if (!$file || empty($file->uri)) {

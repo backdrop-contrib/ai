@@ -23,6 +23,7 @@ function ai_tools_taxonomy_definitions() {
       ],
       'execute'  => 'ai_tools_execute_get_vocabularies',
       'operation' => 'read',
+      'permission' => 'access content overview',
       'module'   => 'ai_tools',
       'category' => 'taxonomy',
     ],
@@ -196,7 +197,7 @@ function ai_tools_execute_get_taxonomy_terms(array $args) {
 
 function ai_tools_execute_get_term_info(array $args) {
   $tid = (int) ($args['tid'] ?? 0);
-  if (!$tid) {
+  if ($tid <= 0) {
     return ['error' => 'tid must be a positive integer.'];
   }
   $term = taxonomy_term_load($tid);

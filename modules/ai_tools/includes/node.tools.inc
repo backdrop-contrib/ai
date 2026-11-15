@@ -196,7 +196,7 @@ function ai_tools_node_definitions() {
 
 function ai_tools_execute_get_node_info(array $args) {
   $nid = (int) ($args['node_id'] ?? 0);
-  if (!$nid) {
+  if ($nid <= 0) {
     return ['error' => 'node_id must be a positive integer.'];
   }
   $node = node_load($nid);
@@ -353,7 +353,7 @@ function ai_tools_execute_create_node(array $args) {
 
 function ai_tools_execute_set_node_published(array $args) {
   $nid = (int) ($args['node_id'] ?? 0);
-  if (!$nid) {
+  if ($nid <= 0) {
     return ['error' => 'node_id must be a positive integer.'];
   }
   if (!isset($args['published'])) {

@@ -140,6 +140,12 @@ unset($_SERVER['HTTP_AUTHORIZATION']);
 // ---------------------------------------------------------------------------
 print "\n--- 4. Testing JSON-RPC Method Dispatching ---\n";
 
+// Run as the server's configured user, as the HTTP handler does, so that
+// permission-gated tools are visible.
+$original_user = $GLOBALS['user'];
+$GLOBALS['user'] = user_load($loaded['uid']);
+backdrop_static_reset('user_access');
+
 // 4.1. Handshake initialize
 $init_req = [
   'jsonrpc' => '2.0',
@@ -255,6 +261,58 @@ $unknown_req = [
 ];
 $unknown_res = ai_mcp_jsonrpc_dispatch($unknown_req, $loaded);
 test_assert(isset($unknown_res['error']) && $unknown_res['error']['code'] === -32601, 'Unknown method returns -32601 (Method not found)');
+
+// 4.8. Tool errors are flagged with isError, and arguments are checked
+// against the tool's inputSchema before the executor runs.
+$open_read_server = $loaded;
+$open_read_server['tools'] = [];
+$err_res = ai_mcp_method_tools_call('req-err-1', ['name' => 'get_node_info', 'arguments' => []], $open_read_server);
+test_assert(!empty($err_res['result']['isError']), 'Tool error result is returned with isError: TRUE');
+$err_text = json_decode($err_res['result']['content'][0]['text'], TRUE);
+test_assert(isset($err_text['error']) && strpos($err_text['error'], 'node_id') === 0, 'Missing required argument is named in the error');
+$bad_args = [
+  ['get_node_info', ['node_id' => '6 OR 1=1'], 'node_id: expected integer, got string.'],
+  ['get_recent_nodes', ['limit' => 'abc'], 'limit: expected integer, got string.'],
+  ['get_user_nodes', ['uid' => 2.9], 'uid: expected integer, got number.'],
+  ['search_nodes', ['query' => ['a']], 'query: expected string, got array.'],
+];
+foreach ($bad_args as $case) {
+  $res = ai_mcp_method_tools_call('req-bad', ['name' => $case[0], 'arguments' => $case[1]], $open_read_server);
+  $text = json_decode($res['result']['content'][0]['text'] ?? '', TRUE);
+  test_assert(!empty($res['result']['isError']) && ($text['error'] ?? '') === $case[2], "{$case[0]} rejects bad argument: {$case[2]}");
+}
+$neg_res = ai_mcp_method_tools_call('req-neg', ['name' => 'get_node_info', 'arguments' => ['node_id' => -1]], $open_read_server);
+$neg_text = json_decode($neg_res['result']['content'][0]['text'], TRUE);
+test_assert(($neg_text['error'] ?? '') === 'node_id must be a positive integer.', 'Negative node_id is rejected as not positive');
+$args = ['node_id' => '5', 'unused' => NULL];
+test_assert(ai_tools_validate_arguments($args, ['type' => 'object', 'properties' => ['node_id' => ['type' => 'integer'], 'unused' => ['type' => 'string']]]) === NULL && $args === ['node_id' => 5], 'Numeric string converts to integer and null optional is dropped');
+$args = ['mode' => 'x'];
+test_assert(ai_tools_validate_arguments($args, ['type' => 'object', 'properties' => ['mode' => ['type' => 'string', 'enum' => ['a', 'b']]]]) === 'mode: must be one of "a", "b".', 'enum is enforced');
+
+// 4.9. Unknown and permission-hidden tools get the same protocol error.
+$unknown_tool = ai_mcp_method_tools_call('req-unk', ['name' => 'no_such_tool_xyz', 'arguments' => []], $open_read_server);
+test_assert(isset($unknown_tool['error']) && $unknown_tool['error']['code'] === -32602 && $unknown_tool['error']['message'] === 'Tool not available on this server', 'Unknown tool returns JSON-RPC -32602');
+
+// 4.10. Tools that leak site configuration or spend provider credit need
+// a permission, and user lookups do not reveal which accounts exist.
+$GLOBALS['user'] = backdrop_anonymous_user();
+backdrop_static_reset('user_access');
+$anon_tools = ai_tools_get_tools();
+foreach (['list_views', 'get_view_info', 'list_views_base_tables', 'list_views_handlers', 'list_content_types', 'get_content_type_info', 'get_vocabularies', 'list_field_types', 'get_user_info', 'ai_image_to_text'] as $gated) {
+  test_assert(!isset($anon_tools[$gated]) || user_access($anon_tools[$gated]['permission']), "$gated requires a permission");
+}
+module_load_include('inc', 'ai_tools', 'includes/media.tools');
+$media_tools = ai_tools_media_definitions();
+test_assert(!isset($media_tools['ai_image_to_text']['definition']['function']['parameters']['properties']['model']), 'ai_image_to_text does not let the caller choose a model');
+module_load_include('inc', 'ai_tools', 'includes/user.tools');
+if (!user_access('access user profiles')) {
+  $a = ai_tools_execute_get_user_info(['name' => 'no-such-user-' . mt_rand()]);
+  $b = ai_tools_execute_get_user_info(['uid' => 1]);
+  test_assert($a === $b, 'get_user_info gives the same answer for missing and existing users without access');
+}
+
+$GLOBALS['user'] = $original_user;
+backdrop_static_reset('user_access');
 
 // ---------------------------------------------------------------------------
 // 5. End-to-End Live HTTP Endpoint Tests

@@ -25,6 +25,7 @@ function ai_tools_content_type_definitions() {
       'module'    => 'ai_tools',
       'category'  => 'content_type',
       'operation' => 'read',
+      'permission' => 'access content overview',
     ],
     'get_content_type_info' => [
       'definition' => [
@@ -48,6 +49,7 @@ function ai_tools_content_type_definitions() {
       'module'    => 'ai_tools',
       'category'  => 'content_type',
       'operation' => 'read',
+      'permission' => 'access content overview',
     ],
     'create_content_type' => [
       'definition' => [

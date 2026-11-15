@@ -31,6 +31,7 @@ function ai_tools_user_definitions() {
       ],
       'execute'  => 'ai_tools_execute_get_user_info',
       'operation' => 'read',
+      'permission' => 'access user profiles',
       'module'   => 'ai_tools',
       'category' => 'user',
     ],
@@ -65,6 +66,12 @@ function ai_tools_user_definitions() {
 }
 
 function ai_tools_execute_get_user_info(array $args) {
+  // Check access before loading, so the reply does not reveal whether a
+  // username or uid exists.
+  if (!user_access('access user profiles')) {
+    return ['error' => 'Access denied for user profiles.'];
+  }
+
   $account = NULL;
 
   if (!empty($args['uid'])) {
@@ -78,10 +85,6 @@ function ai_tools_execute_get_user_info(array $args) {
     return ['error' => 'User not found.'];
   }
 
-  if (!user_access('access user profiles')) {
-    return ['error' => 'Access denied for user profiles.'];
-  }
-
   // Return only non-sensitive fields.
   return [
     'uid'     => (int) $account->uid,
@@ -93,7 +96,7 @@ function ai_tools_execute_get_user_info(array $args) {
 
 function ai_tools_execute_get_user_nodes(array $args) {
   $uid = (int) ($args['uid'] ?? 0);
-  if (!$uid) {
+  if ($uid <= 0) {
     return ['error' => 'uid must be a positive integer.'];
   }
   $limit = min(max(1, (int) ($args['limit'] ?? 10)), 25);

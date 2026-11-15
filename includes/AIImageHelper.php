@@ -110,18 +110,28 @@ class AIImageHelper {
         return FALSE;
       }
     }
+    // Connect to the address that was just checked rather than to the host
+    // name, so a second DNS lookup cannot return a different (internal)
+    // address. The host name is still sent for SNI, certificate verification
+    // and the Host header.
+    $parts = parse_url($url);
+    $port = isset($parts['port']) ? ':' . $parts['port'] : '';
+    $pinned_url = 'https://' . $addresses[0] . $port . ($parts['path'] ?? '/')
+      . (isset($parts['query']) ? '?' . $parts['query'] : '');
     $context = stream_context_create([
       'http' => [
         'timeout' => 15,
         'follow_location' => 0,
         'max_redirects' => 0,
+        'header' => 'Host: ' . $host . $port,
       ],
       'ssl' => [
         'verify_peer' => TRUE,
         'verify_peer_name' => TRUE,
+        'peer_name' => $host,
       ],
     ]);
-    $handle = @fopen($url, 'rb', FALSE, $context);
+    $handle = @fopen($pinned_url, 'rb', FALSE, $context);
     if (!$handle) {
       return FALSE;
     }
@@ -178,6 +188,8 @@ class AIImageHelper {
     }
 
     $mime_types = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+    // Sniff the bytes rather than trusting the extension: image style
+    // derivatives that change format keep the source file's extension.
     $mime = is_string($data) && $data !== '' && class_exists('finfo')
       ? (new finfo(FILEINFO_MIME_TYPE))->buffer($data)
       : NULL;

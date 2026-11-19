@@ -1,34 +1,17 @@
 # HTML-to-Markdown Conversion for AI Context
 
-## Background
+Use Markdown to preserve headings, lists, and inline formatting when turning
+HTML into text for an AI prompt. The shared extractor removes tags that add
+little textual context and keeps readable text.
 
-Every module that sends content to an AI provider needs to convert node/entity
-content from raw HTML into something an AI model can consume efficiently. Before
-this work, each module solved this independently — typically with `strip_tags()`
-and a whitespace-collapsing regex — losing all semantic structure in the process.
-
-Markdown is the right target format for AI context because:
-
-- Language models are trained heavily on Markdown (GitHub, Stack Overflow,
-  documentation sites) and parse its structure natively.
-- It preserves semantic information — `## Heading`, `- list item`, `**bold**` —
-  that `strip_tags()` discards entirely.
-- It is far more token-efficient than raw HTML (no tag noise).
-- Images, figures, audio and video are stripped entirely since they carry no
-  useful text context for summarization or retrieval tasks.
-- Link URLs are dropped; only link text is kept. URLs add token noise without
-  contributing meaning for AI tasks.
-
-## The Canonical Method
+## Shared converter
 
 `AIContentExtractor::htmlToMarkdown(string $html): string`
 
-Location: `modules/contrib/ai/includes/AIContentExtractor.php`
+See [AIContentExtractor.php](../includes/AIContentExtractor.php).
 
-`AIContentExtractor` is autoloaded by every `ai_*` submodule via the base `ai`
-module's `hook_autoload_info()`, so no additional include or dependency
-declaration is required to call it from any module in the ai/search_api_ai
-namespace.
+`AIContentExtractor` is autoloaded by the base `ai` module. Declare a
+dependency on `ai` when an integration uses this class.
 
 ### What it converts
 
@@ -65,63 +48,19 @@ For use with a length limit (e.g. before inserting into a prompt):
 $context = mb_substr(AIContentExtractor::htmlToMarkdown($html), 0, 6000);
 ```
 
-## Where it is used
+## Examples from integrating modules
 
-### Base method (canonical implementation)
-
-| File | Notes |
+| Module | Usage |
 |---|---|
-| `modules/contrib/ai/includes/AIContentExtractor.php` | Static method — single source of truth |
+| `ai_field_automator` | `AIFieldAutomatorBase.inc` converts selected field values for prompts. |
+| `ai_content` | `ai_content.module` converts field text for editorial tools, including tone adjustment, summarization, and title suggestions. |
+| `ai_related_content` | `ai_related_content.module` uses `extractEntityText()` to collect node text. |
+| `ai_content_lifecycle` | `AIContentLifecycleAnalyzer.inc` uses `extractEntityText()` to collect content for analysis. |
+| `ai_search` | `ai_search.module` uses the shared extractor for entity text. The AI Search Block submodule also converts retrieved text for prompt context. |
 
-### ai_field_automator (contrib)
-
-| File | Usage |
-|---|---|
-| `modules/contrib/ai_field_automator/includes/AIFieldAutomatorBase.inc` | `renderEntityToText()` and the unsaved-entity preview path call `AIContentExtractor::htmlToMarkdown()` directly |
-
-### ai_content (contrib submodule of ai)
-
-| File | Usage |
-|---|---|
-| `modules/contrib/ai/modules/ai_content/ai_content.module` | 4 prompt-building calls: tone adjustment, summarization, title suggestion, taxonomy classification. Replaced `StringHelper::prepareText()` which stripped `$` and other common characters via an aggressive character-class regex. |
-
-### ai_related_content (contrib)
-
-| File | Usage |
-|---|---|
-| `modules/contrib/ai_related_content/ai_related_content.module` | Full entity render path (replaces block-tag regex + `html_entity_decode(strip_tags(...))`), paragraph render path, and field-item text extraction |
-
-### ai_content_lifecycle (contrib)
-
-| File | Usage |
-|---|---|
-| `modules/contrib/ai_content_lifecycle/includes/AIContentLifecycleAnalyzer.inc` | Field value collection loop that assembles entity text for lifecycle AI analysis |
-
-### search_api_ai (contrib)
-
-| File | Usage |
-|---|---|
-| `modules/contrib/search_api_ai/search_api_ai.module` | `search_api_ai_render_entity_text()` — renders entity to HTML then converts for embedding/indexing context |
-| `modules/contrib/search_api_ai/modules/search_api_ai_search_block/search_api_ai_search_block.module` | Entity render → AI prompt context path |
-| `modules/contrib/search_api_ai/modules/search_api_ai_simple_chatbot/search_api_ai_simple_chatbot.module` | Vector search result chunk content used as chatbot context |
-
-## Intentional exceptions
-
-### search_api_ai — embedding pipeline
-
-`search_api_ai.module` lines that call `StringHelper::prepareText()` before
-generating vector embeddings are left unchanged. Vector embeddings benefit from
-clean plain text; introducing Markdown syntax markers (`##`, `**`, `-`) would
-shift the embedding space in unpredictable ways and could degrade similarity
-search quality.
-
-### ai_seo_advisor
-
-`ai_seo_advisor` deliberately passes full rendered HTML to the AI. Its system
-prompt instructs the model to act as "an SEO analysis expert specialized in
-evaluating HTML content from an SEO perspective" — heading hierarchy, tag
-structure, and nesting are part of what the AI is asked to analyse. Converting to
-Markdown would remove that structural information before the analysis runs.
+The AI Search embedding path uses `AIStringHelper::prepareText()` to prepare
+plain text before requesting embeddings. AI SEO Advisor can pass rendered
+HTML when the model needs to inspect heading hierarchy, tags, and nesting.
 
 ## When to use `htmlToMarkdown` vs `prepareText`
 
@@ -129,7 +68,7 @@ Markdown would remove that structural information before the analysis runs.
 |---|---|
 | Building a prompt from entity/field content | `AIContentExtractor::htmlToMarkdown()` |
 | Rendering an entity to provide context to AI | `AIContentExtractor::htmlToMarkdown(backdrop_render(entity_view(...)))` |
-| Generating vector embeddings for similarity search | `StringHelper::prepareText()` (plain text, no Markdown) |
+| Generating vector embeddings for similarity search | `AIStringHelper::prepareText()` (plain text, no Markdown) |
 | Sanitising AI output for display | Neither — use `filter_xss()` or `check_plain()` |
 | SEO / HTML-structure analysis | Pass raw HTML directly |
 

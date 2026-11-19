@@ -42,8 +42,8 @@ maintenance, or environments where no external AI calls should ever be made
 ### 2. Per content-type opt-out
 
 Each content type's edit form gains an "AI Privacy" fieldset with an
-"Allow external AI processing" checkbox. Unchecking it blocks all AI calls
-for nodes of that type — on save, via the "Generate with AI" widget buttons,
+"Allow external AI processing" checkbox. Unchecking it blocks supported integrations
+from making AI calls for nodes of that type — on save, via the "Generate with AI" widget buttons,
 and via background async jobs.
 
 Individual field automator configurations are preserved; only execution is
@@ -59,10 +59,18 @@ triggering account also belongs to a denied role.
 Typical use: block AI processing for content submitted by the `anonymous` role
 or a `contributor` role that has not been vetted.
 
-### 4. Log content redaction
+### 4. Field exclusions
 
-The existing `ai_log` table stores the full request and response JSON for
-every AI call, including complete prompt text. When log redaction is enabled,
+Use **Field-level privacy exclusions** or the **AI Privacy** fieldset on a
+content type to exclude specific fields from supported content extraction.
+`AIContentExtractor` reads these settings when the caller supplies no
+explicit exclusion list. Integrating modules can query them through
+`ai_privacy_get_excluded_fields($entity_type, $bundle)`.
+
+### 5. Log content redaction
+
+When API logging is enabled, the `ai_log` table can hold request and response
+content, including prompt text. When log redaction is enabled,
 `request_data` and `response_data` are replaced with `[redacted]` before the
 row is written. Metadata (module, operation, model, provider, duration, status,
 uid) is still stored for audit purposes.
@@ -73,7 +81,7 @@ retroactively modified.
 
 ## Configuration
 
-Admin UI: **Admin > Config > AI > Privacy & Data Handling**
+Open **AI Privacy** at `admin/config/ai/ai-privacy` with `administer site configuration`.
 
 Per-content-type: **Admin > Structure > Content types > [type] > Edit**,
 collapse the "AI Privacy" fieldset.
@@ -85,6 +93,7 @@ collapse the "AI Privacy" fieldset.
   "global_enabled": true,
   "denied_entity_bundles": {},
   "denied_roles": [],
+  "excluded_fields": {},
   "log_redact_content": false
 }
 ```
@@ -96,6 +105,7 @@ collapse the "AI Privacy" fieldset.
   "global_enabled": true,
   "denied_entity_bundles": {"node": ["confidential"]},
   "denied_roles": [],
+  "excluded_fields": {},
   "log_redact_content": false
 }
 ```
@@ -104,7 +114,7 @@ This is set via the content type edit form, not directly in the JSON.
 
 ## Enforcement points
 
-The privacy check fires at every point where content could be sent externally:
+These integrations and methods apply the privacy settings:
 
 | Location | What is blocked |
 |---|---|
@@ -186,18 +196,15 @@ be called from other modules.
 | Modules calling AIApi directly without entity context | Partial — call `ai_privacy_entity_allowed()` manually |
 | Content already sent before module was enabled | No — only new requests are affected |
 | Retroactive redaction of existing log entries | No — only new log entries are redacted |
-| Per-field granularity (allow body, deny title) | No — opt-out is per bundle, not per field |
+| Exclude named fields from supported extraction | Yes, through field exclusions |
 
 ## Relationship to the AI log
 
-The existing `ai_log` (enabled at **Admin > Config > AI > Settings**)
-records every AI API call including the full prompt sent and response received.
-This is the primary audit trail for what content was sent to which provider.
+Enable API logging and set retention at `admin/config/ai/settings/logging`.
+Open `admin/reports/ai` to inspect log entries.
 
 `ai_privacy` complements the log:
 - The log tells you **what was sent** (retrospective audit).
 - `ai_privacy` controls **whether it is sent** (prospective enforcement).
 - Log redaction lets you keep the audit trail's metadata while dropping the
   content itself when retention of prompt text is a compliance issue.
-
-Both should be enabled for sites with data handling obligations.

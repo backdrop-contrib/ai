@@ -1,5 +1,9 @@
 # AI Async — Background Job Processing
 
+AI Async is a [separate module](https://github.com/backdrop-contrib/ai_async)
+that depends on AI. Install it through the official
+[Backdrop CMS instructions](https://backdropcms.org/user-guide/modules).
+
 ## Background
 
 AI inference calls typically take 1–10 seconds per request. When triggered from
@@ -36,9 +40,8 @@ The module is a top-level AI module and declares `dependencies[] = ai` in its
 
 ## What it is
 
-Although `ai_async` currently ships inside the AI module set, the
-module itself is generic background job infrastructure rather than
-AI-specific business logic.
+`ai_async` supplies background job infrastructure. The module that submits a
+job implements the callback and handles its result.
 
 It provides:
 
@@ -52,18 +55,18 @@ It provides:
 That makes it useful anywhere a Backdrop module needs a fire-and-forget pattern
 for slow work, not just AI inference.
 
-## How `ai_agent` Uses It
+## How `ai_agents` Uses It
 
-`ai_agent` is the part that owns the actual agent run. It loads the agent
+`ai_agents` is the part that owns the actual agent run. It loads the agent
 config, executes the tool loop, handles approval pauses, and returns the final
 result.
 
 When a caller passes `options['async'] = TRUE` and the `ai_async` module is
-enabled, `ai_agent_run()` does not execute the loop inline. Instead it calls
-`ai_async_submit('ai_agent_async_run', ...)` and returns the job id.
+enabled, `ai_agents_run()` does not execute the loop inline. Instead it calls
+`ai_async_submit('ai_agents_async_run', ...)` and returns the job id.
 
-Later, the async worker calls `ai_agent_async_run()`, which simply strips
-the async flag and re-enters `ai_agent_run()`. The agent logic is the same
+Later, the async worker calls `ai_agents_async_run()`, which simply strips
+the async flag and re-enters `ai_agents_run()`. The agent logic is the same
 in both paths; only the execution context changes.
 
 That gives the site two modes:
@@ -95,8 +98,9 @@ $job_id = ai_async_submit('mymodule_my_callback', array(
 ));
 ```
 
-Returns a UUID string on success, or `FALSE` if the callback is not registered.
-The job begins processing immediately in the background.
+Returns a UUID string on success or `FALSE` for an unregistered callback or
+object values inside the data array. The loopback worker can start immediately.
+Cron can pick up pending work if the trigger fails.
 
 ### Checking job status (PHP)
 
@@ -177,7 +181,8 @@ catch exceptions in your callback unless you want to suppress the error.
   invoked via `call_user_func()` with the registered string name.
 - The callback runs in a separate HTTP request with its own bootstrap. It has
   full access to the Backdrop API but **no access to the original `$form_state`**
-  or session of the triggering request.
+  or session of the triggering request. The worker executes as the submitting
+  account and fails the job if that account is blocked or has been deleted.
 - Only saved entities (those with a database ID) can be loaded in the background.
   Unsaved/new entities must use a synchronous path.
 - The callback result is `json_encode()`d and stored in the database. Keep it
@@ -195,7 +200,7 @@ submitted → pending → processing → complete
 | `pending` | Inserted; self-HTTP trigger fired but worker not yet started |
 | `processing` | Worker claimed the job (atomic DB transition prevents double-processing) |
 | `complete` | Callback returned successfully; result stored |
-| `error` | Callback threw an exception or token was invalid |
+| `error` | Callback failed, submitting account unavailable, or worker timed out |
 
 `hook_cron()` performs three maintenance tasks:
 
@@ -281,6 +286,7 @@ Backdrop.behaviors.mymoduleAsync = {
 | Module | Callback | Trigger |
 |---|---|---|
 | `ai_field_automator` | `ai_field_automator_async_generate` | "Generate with AI" widget button on saved entities |
+| `ai_agents` | `ai_agents_async_run` | Agent run with the async option |
 
 ## Candidates for future integration
 
@@ -289,4 +295,4 @@ Any module that makes blocking AI calls during a page request is a candidate:
 - **`ai_content`** — sidebar generation buttons (summarize, tone adjust, suggest title, classify taxonomy)
 - **`ai_content_lifecycle`** — content analysis run on node save
 - **`ai_related_content`** — related content generation on node save
-- **`search_api_ai`** — embedding generation during Search API indexing batches
+- **`ai_search`** — embedding generation during Search API indexing batches

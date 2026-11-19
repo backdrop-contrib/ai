@@ -1,9 +1,8 @@
 # AI
 
-The Backdrop CMS AI module provides a provider-agnostic foundation for AI
-features in Backdrop CMS. It supports multiple providers, shared APIs, and
-feature modules for text generation, embeddings, moderation, assistants, and
-search.
+AI connects Backdrop CMS to AI providers. Configure a provider once and share
+its models with modules that generate text, describe images, moderate content,
+or power assistants and search.
 
 ## Requirements
 
@@ -15,14 +14,24 @@ services.
 
 ## Documentation
 
-Please review the bundled documentation in this module family and the project
-issue queue for updates.
+Find setup, examples, and troubleshooting in the [project wiki](https://github.com/backdrop-contrib/ai/wiki).
+Developer documentation is available in [docs/](docs/).
 
 ## Installation
 
 - Install this module using the official [Backdrop CMS instructions](https://backdropcms.org/user-guide/modules).
 
 - Enable the core `ai` module and the feature modules that meet your needs.
+
+## First setup
+
+1. Install and enable a provider module for the service you want to use.
+2. In **Configuration → AI → Settings** (`admin/config/ai/settings`), open
+   **Providers**. Enable the provider and select a Key entry if it requires
+   credentials.
+3. Under **Default Models**, select a model for each operation your site uses.
+4. Enable the feature modules you need. To test a provider, try a short prompt
+   with AI Explorer.
 
 ## Model capability assignments
 
@@ -77,7 +86,8 @@ When models.dev fails the previous catalog is kept; a LiteLLM failure only skips
 ## Included Submodules
 
 ### **ai_alt**
-Generates alt text for images using AI.
+Generates alt text for images using AI. AI Alt Bulk generates global alt text
+for multiple image files.
 
 ### **ai_ckeditor**
 Adds an AI prompt action to CKEditor editing workflows.
@@ -96,27 +106,41 @@ Adds AI-powered realistic content generation to Devel Generate commands.
 Interactive UI for testing chat, image, audio, and speech AI capabilities.
 
 ### **ai_guardrails**
-Active input and output guardrails that block prompt injection attacks, PII
-leakage, and configurable content violations.
+Checks supported AI inputs and outputs for configured patterns, including
+potential prompt injection and personal information. Rules can block or
+redact matches.
+
+### **ai_mcp**
+Makes registered AI tools available to configured Model Context Protocol clients.
 
 ### **ai_moderation**
-Interface for testing AI content moderation with model selection.
+Evaluates configured content against policy profiles and queues verdicts for review.
 
 ### **ai_privacy**
-Controls which content types, bundles, and roles may send content to external
-AI providers. Includes log redaction to prevent prompt and response storage.
+Lets integrations apply content-type and role restrictions before sending
+content to AI providers. Optional redaction removes prompt and response
+content from newly written AI log entries.
 
 ### **ai_rate_limit**
-Enforces per-provider request rate limits to prevent runaway costs and respect
-upstream provider limits.
+Enforces request limits for the site, specific providers, and individual users.
+
+### **ai_site_context**
+Adds shared site context to AI requests that use it.
 
 ### **ai_tools**
 Function-calling framework used by agents and integrations to register and
-dispatch tools to AI providers.
+dispatch tools to AI providers. Add AI Alt Tools, AI Paragraphs Tools, or AI
+Webform Tools to register tools for those features.
+
+### **ai_translate**
+Creates AI-assisted translations of nodes in Backdrop’s node translation sets.
 
 ### **ai_upgrade**
 Optional admin UI for migrating legacy `openai_*` modules to their `ai_*`
 replacements.
+
+### **ai_usage**
+Records operation usage and estimated cost, with reporting and optional budgets.
 
 ## Issues
 

@@ -43,7 +43,7 @@ small.
 
 ## Configuration
 
-Admin UI: **Admin > Config > AI > Rate Limiting**
+Open **AI Rate Limit** at `admin/config/ai/ai-rate-limit` with `administer site configuration`.
 
 ### Enable rate limiting
 
@@ -53,7 +53,7 @@ When checked, the global limit is active immediately using the configured values
 
 ### Global limit
 
-Counts all provider calls combined. Useful as an absolute cost cap.
+Counts requests across all providers. Use AI Usage to set token or cost budgets.
 Enabling rate limiting turns this on immediately using the default
 `60 requests / 60 seconds` unless you change it.
 
@@ -80,8 +80,15 @@ Each provider row has:
 - `Request limit`
 - `Window (seconds)`
 
-If the provider-specific checkbox is off, that provider falls back to the
-global limit. If it is on, the provider uses its own bucket instead.
+A provider-specific limit adds a check for that provider. The global limit
+still covers these requests.
+
+### Per-user limit
+
+Set a maximum request count and window for each user account across providers.
+Anonymous requests are counted together. Set the request limit to zero to
+disable this check. Users with `bypass ai rate limit` skip enforcement when
+signed in.
 
 ### Default config (no limits active)
 
@@ -90,6 +97,8 @@ global limit. If it is on, the provider uses its own bucket instead.
   "enabled": false,
   "global_limit": 60,
   "global_window": 60,
+  "user_limit": 0,
+  "user_window": 60,
   "provider_limits": {}
 }
 ```
@@ -104,6 +113,8 @@ The module defaults to disabled. When you enable it, the global default is
   "enabled": true,
   "global_limit": 60,
   "global_window": 60,
+  "user_limit": 0,
+  "user_window": 60,
   "provider_limits": {}
 }
 ```
@@ -117,6 +128,8 @@ This allows up to 60 requests across all enabled providers within 60 seconds.
   "enabled": true,
   "global_limit": 60,
   "global_window": 60,
+  "user_limit": 0,
+  "user_window": 60,
   "provider_limits": {
     "provider_name": {"limit": 20, "window": 60}
   }
@@ -136,7 +149,8 @@ provider bucket.
 
 | Method | Operation name |
 |---|---|
-| `AIApi::chat()` | `chat` |
+| `AIApi::chat()`, `AIApi::chatWithTools()` | `chat` |
+| `AIApi::decide()` | `decision` |
 | `AIApi::completions()` | `completions` |
 | `AIApi::images()` | `images` |
 | `AIApi::textToSpeech()` | `text_to_speech` |
@@ -185,10 +199,9 @@ Useful for admin dashboards or status pages.
    marks the background job as error.
 5. No API call is made to the external provider.
 
-The rate limit is per-server, not per-user. A single busy background process
-can exhaust the limit for all users. If you need per-user limiting, implement
-`hook_ai_rate_limit_check()` (not yet built) or add a custom check using
-Backdrop's flood control before calling `AIApi`.
+Use current usage on the configuration page to check which request window
+is full. Watchdog identifies the global, provider, or user scope that blocked
+a request.
 
 ## Database table
 

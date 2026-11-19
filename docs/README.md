@@ -1,28 +1,23 @@
 # AI Module Documentation
 
-This directory contains documentation for the AI module and its various provider integrations.
+AI connects Backdrop features to separately installed provider modules. A
+provider supplies one or more models. Each model supports specific operations,
+such as chat, image generation, vision, or embeddings. The provider's PHP
+adapter translates shared API requests into that service's format.
 
-## Contents
+Start with the [AI README](../README.md) to connect a provider and select
+default models. The [project wiki](https://github.com/backdrop-contrib/ai/wiki)
+covers setup and use of the bundled features.
 
-- [**PROVIDERS.md**](./PROVIDERS.md): Detailed information on the pluggable provider architecture, how it works, and how to develop new provider integrations.
+## Admin and developer references
 
-## Overview
+- [Provider architecture](PROVIDERS.md)
+- [Privacy and data handling](privacy.md)
+- [Rate limiting](rate-limiting.md)
+- [Shared site context](site-context.md)
+- [HTML to Markdown for AI context](html-to-markdown.md)
+- [Background jobs with AI Async](ai-async.md)
+- [Coding style](AI_STYLE.md)
 
-The AI module for Backdrop CMS has been designed to be provider-agnostic. While it started as a direct integration with AI's API, it now supports a unified interface that can talk to many different AI services:
-
-- **Anthropic (Claude)**
-- **Google Gemini**
-- **Groq**
-- **Ollama (Local AI)**
-- **OpenRouter**
-
-Each of these is implemented as a separate submodule (e.g., `ai_anthropic`) that provides an adapter class implementing the `AIClientInterface`.
-
-## Key Concepts
-
-- **Provider**: A service that provides AI capabilities (e.g., Anthropic).
-- **Adapter**: A PHP class that translates between the AI module's internal calls and the provider's specific API.
-- **Model**: A specific AI model offered by a provider (e.g., `claude-3-5-sonnet-20240620`).
-- **Capability**: What a model can do (text generation, image generation, vision, embeddings, etc.).
-
-For developers looking to extend this module, please see [PROVIDERS.md](./PROVIDERS.md).
+The [example provider](../examples/README.md) demonstrates registration,
+configuration, model discovery, and adapter behavior with local sample data.

@@ -1,6 +1,6 @@
 # AI Module Style Guide
 
-Use this guide for `ai`, `ai_*`, `ai_tools`, `ai_field_automator`, and `search_api_ai` provider integration work. Goal: new code should look like one maintained system, even when modules have older mixed style.
+Use this guide for `ai` and modules that integrate with the Backdrop AI API. Goal: new code should look like one maintained system, even when modules have older mixed style.
 
 This guide extends the official Backdrop PHP coding standards:
 https://docs.backdropcms.org/php-standards
@@ -12,7 +12,7 @@ https://docs.backdropcms.org/php-standards
 - Begin PHP files with `<?php` followed by a blank line and the `/** @file */` docblock.
 - Use short array syntax `[]` for arrays. These AI modules require PHP 8.2, so prefer modern PHP syntax even where older Backdrop-era examples still show `array()`.
 - Keep procedural `.module` and `.inc` hooks procedural. Use classes for adapters, service-like helpers, and plugins.
-- Namespaces are encouraged for coherent class families that are loaded together, such as field automator base classes and plugins. Keep standalone Backdrop hook files and current provider adapters in the global namespace unless the module has a clear autoload/registry path for namespaced classes. Existing Drupal-style port namespaces in `ai_eca` and `search_api_ai_pgvector/src` may stay isolated until those modules are intentionally ported or replaced.
+- Namespaces are encouraged for coherent class families that are loaded together, such as field automator base classes and plugins. Keep standalone Backdrop hook files and current provider adapters in the global namespace unless the module has a clear autoload/registry path for namespaced classes. Existing Drupal-style port namespaces in `ai_eca` and `ai_search_provider_pgvector` may stay isolated until those modules are intentionally ported or replaced.
 - Always use curly braces for control structures. Use `elseif`, not `else if`.
 - Do not wrap control-structure conditions across multiple lines; split complex conditions into named variables first.
 - Do not introduce unrelated refactors while fixing behavior.
@@ -21,7 +21,7 @@ https://docs.backdropcms.org/php-standards
 ## Naming
 
 - Provider IDs must match config and router keys:
-  - `ai`
+  - `openai`
   - `anthropic`
   - `google_gemini`
   - `aws_bedrock`
@@ -32,7 +32,7 @@ https://docs.backdropcms.org/php-standards
   - `ollama`
   - `openrouter`
   - `mistral`
-- Watchdog channels should match module machine names, e.g. `ai_google_gemini`, `ai_field_automator`.
+- Watchdog channels should match module machine names, e.g. `ai_provider_google_gemini`, `ai_field_automator`.
 - Functions and local variables should use snake_case: `$api_key`, `$base_url`, `$provider_id`, `$field_name`.
 - Class names should use UpperCamelCase.
 - Class methods and properties should use lowerCamelCase: `$baseUrl`, `$realApiKey`, `getModelsByCapability()`.
@@ -46,7 +46,7 @@ https://docs.backdropcms.org/php-standards
 ## Provider Adapters
 
 - REST-native adapters should extend `AIAdapterBase`.
-- AI-compatible SDK adapters should implement `AIClientInterface` and use `AICompatibleTrait`.
+- OpenAI-compatible adapters can use `AICompatibleTrait`. All adapters use the `AIProviderClient` contract.
 - Constructors should accept `($api_key, ?AIApi $api = NULL)` when practical.
 - Always expose the full capability surface, even when a provider does not support an operation (return `[]`):
   - `getModels()`
@@ -60,7 +60,7 @@ https://docs.backdropcms.org/php-standards
 - Keep AI-format inputs at router boundary. Convert inside adapter only:
   - AI text block: `['type' => 'text', 'text' => $text]`
   - AI image block: `['type' => 'image_url', 'image_url' => ['url' => $data_uri]]`
-- Unsupported operations should log `WATCHDOG_WARNING` and return an empty value compatible with caller expectations, not fatal.
+- Throw for unsupported operations or provider failures so `AIApi` can normalize the error. Model-discovery helpers return an empty list for unsupported capabilities.
 
 ## Streaming Responses
 
@@ -152,28 +152,27 @@ When normalizing existing code, work in this order:
 
 Keep each patch behavior-focused and test with `php -l` plus a no-network registry/load check where possible.
 
-## Compliance Status
+## Historical style audit
 
-### Provider Adapters — Complete
+### Adapter audit notes
 
-All ten provider adapters listed below have been brought into style compliance with this guide. "Complete" here means *style* (naming, error handling, casing, capability helpers) — not feature completeness.
+This table records changes from an earlier style pass. Consult current adapter code when verifying behavior.
 
 | Adapter | Module | Notes |
 |---|---|---|
-| `OpenRouterAdapter` | `ai_openrouter` | Watchdog channels, `searchForImageInResponse`, `FALSE`/`TRUE`, retry named vars, `CURLOPT_TIMEOUT` |
-| `BrowserAdapter` | `ai_browser` | Unsupported ops → `WATCHDOG_WARNING` + empty return |
-| `OllamaAdapter` | `ai_ollama` | Symfony import removed, anonymous streaming class, unsupported ops warned |
-| `CowFartAdapter` | `ai_cowfart_provider` (custom, not contrib) | `$api_key` param, emojis removed from watchdog, capability helpers added |
-| `GroqAdapter` | `ai_groq` | One-liner methods expanded, unused `$start_time` removed, indentation fixed |
-| `LiteLLMAdapter` | `ai_litellm` | `getModelsByCapability()` added, full capability helper set added |
-| `AnthropicAdapter` | `ai_anthropic` | `_underscore` methods renamed to camelCase, full capability helper set added |
-| `GoogleGeminiAdapter` | `ai_google_gemini` | `_underscore` methods renamed, `null` → `NULL`, `t()` removed from adapter logic |
-| `BedrockAdapter` | `ai_aws_bedrock` | Named condition vars, `??` null coalescing, docblock ordering fixed, `$ok` → `$is_match` |
-| `ElevenLabsAdapter` | `ai_elevenlabs` | Extends `AIAdapterBase`, uses `backdrop_http_request`, detailed error mapping |
+| `OpenRouterAdapter` | `ai_provider_openrouter` | Watchdog channels, `searchForImageInResponse`, `FALSE`/`TRUE`, retry named vars, `CURLOPT_TIMEOUT` |
+| `BrowserAdapter` | `ai_provider_browser` | Unsupported ops → `WATCHDOG_WARNING` + empty return |
+| `OllamaAdapter` | `ai_provider_ollama` | Symfony import removed, anonymous streaming class, unsupported ops warned |
+| `GroqAdapter` | `ai_provider_groq` | One-liner methods expanded, unused `$start_time` removed, indentation fixed |
+| `LiteLLMAdapter` | `ai_provider_litellm` | `getModelsByCapability()` added, full capability helper set added |
+| `AnthropicAdapter` | `ai_provider_anthropic` | `_underscore` methods renamed to camelCase, full capability helper set added |
+| `GoogleGeminiAdapter` | `ai_provider_google_gemini` | `_underscore` methods renamed, `null` → `NULL`, `t()` removed from adapter logic |
+| `BedrockAdapter` | `ai_provider_aws_bedrock` | Named condition vars, `??` null coalescing, docblock ordering fixed, `$ok` → `$is_match` |
+| `ElevenLabsAdapter` | `ai_provider_elevenlabs` | Extends `AIAdapterBase`, uses `backdrop_http_request`, detailed error mapping |
 
 ### Not Yet Audited
 
-Modules present in the repo that fall outside the adapter matrix above. They either ship no provider adapter or layer features on top of `ai`. Style-audit status is listed for each — code-level feature status is tracked in `docs/proposals/`, not here.
+Modules present in the repo that fall outside the adapter matrix above. They either ship no provider adapter or layer features on top of `ai`. Style-audit status below reflects the earlier pass.
 
 | Module | Type | Style audit |
 |---|---|---|
@@ -185,14 +184,9 @@ Modules present in the repo that fall outside the adapter matrix above. They eit
 | `ai_seo_advisor` | SEO feature | Pending (no adapter) |
 | `ai_tools` | Tool registry | Pending — executors follow "Tool And Agent Integrations" rules |
 | `ai_field_automator` | Field plugin base | Pending — plugins follow "Field Automator" rules |
-| `ai_agent` + submodules (`ai_assistant`, `ai_agent_content_audit`, `ai_agent_maintenance`, `ai_async`) | Agent runtime | Pending |
+| `ai_agents`, `ai_assistants`, `ai_agents_maintenance`, and `ai_async` | Agent runtime | Pending |
 | `ai_mcp` | MCP bridge | Pending |
-| `search_api_ai` | RAG integration | Pending |
+| `ai_search` | RAG integration | Pending |
 
-### Remaining Work
-
-Adapter style compliance is done. For non-adapter modules above, open a targeted audit before landing large changes in them. Feature work (new tools, new agents) tracked in `docs/proposals/` — not this guide.
-
-### Conclusion
-
-The codebase is now significantly more cohesive. By centralizing logic in base classes and traits and enforcing a unified style guide for naming, error handling, and capability mapping, the adapter layer operates as a single, predictable system rather than a collection of disparate integrations. New code should adhere strictly to the patterns established here to maintain this uniformity.
+Before landing a large change outside the adapter layer, review the affected
+module against the rules above.

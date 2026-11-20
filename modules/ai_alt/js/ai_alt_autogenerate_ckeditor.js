@@ -28,7 +28,8 @@
         return;
       }
 
-      $(document).once('ai-alt-ckeditor-handlers').each(function () {
+      // Core's class-based once() cannot mark document, so mark body.
+      $('body').once('ai-alt-ckeditor-handlers').each(function () {
         var existingAlt = $('input[name="attributes[alt]"]').val();
         var existingFid = $('input[name="fid[fid]"]').val();
         if (!existingAlt && existingFid && existingFid !== '0') {

@@ -149,7 +149,8 @@ function ai_mcp_server_form(array $form, array &$form_state, $server = NULL) {
     '#type'          => 'checkboxes',
     '#title'         => t('Allowed tools'),
     '#options'       => $tool_options,
-    '#default_value' => array_keys(array_filter($current_tools, function($v) { return (bool) $v; })),
+    // Tools are saved as a list of tool keys, so use the values.
+    '#default_value' => array_values($current_tools),
     '#description'   => t('Leave all unchecked to allow every tool in the registry. Check specific tools to restrict this server to that subset.'),
   ];
 

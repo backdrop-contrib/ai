@@ -192,6 +192,27 @@ class AIMcpTestCase extends BackdropWebTestCase {
   }
 
   // ---------------------------------------------------------------------------
+  // testServerFormDefaultTools
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Tests that the server edit form pre-checks the saved allowed tools.
+   */
+  public function testServerFormDefaultTools() {
+    module_load_include('inc', 'ai_mcp', 'includes/ai_mcp.admin');
+    $server = [
+      'id'            => 'test_form_tools',
+      'label'         => 'Test Form Tools',
+      'auth_key_hash' => ai_mcp_hash_token('test-form-token'),
+      'tools'         => ['get_node_info', 'list_nodes'],
+      'oauth_enabled' => FALSE,
+    ];
+    $form_state = [];
+    $form = ai_mcp_server_form([], $form_state, $server);
+    $this->assertEqual(['get_node_info', 'list_nodes'], $form['tools']['#default_value'], 'Allowed tools checkboxes default to the saved tool keys.');
+  }
+
+  // ---------------------------------------------------------------------------
   // testAuthenticateRequestFailsWithNoToken
   // ---------------------------------------------------------------------------
 

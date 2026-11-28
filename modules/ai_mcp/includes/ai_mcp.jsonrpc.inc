@@ -126,8 +126,9 @@ function ai_mcp_method_tools_list($id, array $params, array $server) {
 /**
  * Handles the MCP 'tools/call' method.
  *
- * Dispatches the named tool via ai_tools_dispatch() and wraps the result
- * in the MCP content envelope.
+ * Dispatches the named tool via ai_tools_dispatch_content() and wraps the
+ * result in the MCP content envelope. Tools that return content items (for
+ * example images) are passed through; other results become one text item.
  *
  * @param mixed $id
  *   JSON-RPC request id.
@@ -173,21 +174,20 @@ function ai_mcp_method_tools_call($id, array $params, array $server) {
 
   // Dispatch and wrap in MCP content envelope.
   try {
-    $result_text = ai_tools_dispatch($tool_name, $arguments);
+    // Content items pass through as they are, so a tool can return images.
+    $content = ai_tools_dispatch_content($tool_name, $arguments);
     // Tools report failure as a top-level 'error' key. MCP expects tool
     // execution errors to be flagged with isError so clients notice them.
-    $decoded = json_decode($result_text, TRUE);
-    $is_error = is_array($decoded) && array_key_exists('error', $decoded);
+    $is_error = FALSE;
+    if (count($content) === 1 && $content[0]['type'] === 'text') {
+      $decoded = json_decode($content[0]['text'], TRUE);
+      $is_error = is_array($decoded) && array_key_exists('error', $decoded);
+    }
     return [
       'jsonrpc' => '2.0',
       'id'      => $id,
       'result'  => [
-        'content' => [
-          [
-            'type' => 'text',
-            'text' => $result_text,
-          ],
-        ],
+        'content' => $content,
         'isError' => $is_error,
       ],
     ];

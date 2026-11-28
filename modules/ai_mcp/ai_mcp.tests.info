@@ -5,3 +5,11 @@ group = AI
 file = tests/ai_mcp.test
 backdrop = 1.x
 php = 8.2
+
+[AIMcpContentResultTestCase]
+name = AI MCP content results
+description = tools/call passes image and other content items through.
+group = AI
+file = tests/ai_mcp.test
+backdrop = 1.x
+php = 8.2

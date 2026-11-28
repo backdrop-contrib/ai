@@ -29,6 +29,40 @@ class AIToolsRegistryTestCase extends BackdropWebTestCase {
     $this->assertEqual('hello', $decoded['echo'], 'Tool dispatch returned expected payload.');
   }
 
+  /**
+   * Tests content results through both dispatchers.
+   */
+  public function testContentResultDispatch() {
+    // An ordinary tool becomes one text item holding the usual string.
+    $content = ai_tools_dispatch_content('test_echo_message', ['message' => 'hello']);
+    $this->assertEqual(1, count($content), 'Plain result gives one content item.');
+    $this->assertEqual('text', $content[0]['type'], 'Plain result is a text item.');
+    $this->assertEqual(ai_tools_dispatch('test_echo_message', ['message' => 'hello']), $content[0]['text'], 'Text item matches ai_tools_dispatch().');
+
+    // A content result passes through with the image intact.
+    $content = ai_tools_dispatch_content('test_image_content', []);
+    $this->assertEqual(2, count($content), 'Content result keeps both items.');
+    $this->assertEqual('A tiny test image.', $content[0]['text'], 'Text item kept.');
+    $this->assertEqual('image', $content[1]['type'], 'Image item kept.');
+    $this->assertEqual('image/png', $content[1]['mimeType'], 'Image MIME type kept.');
+    $this->assertEqual(ai_agent_test_png_bytes(), base64_decode($content[1]['data']), 'Image data is the base64 of the original bytes.');
+
+    // Text-only callers get the text and a placeholder, never the base64.
+    $text = ai_tools_dispatch('test_image_content', []);
+    $this->assertTrue(strpos($text, 'A tiny test image.') !== FALSE, 'Text fallback keeps the text item.');
+    $this->assertTrue(strpos($text, '[image (image/png') !== FALSE, 'Text fallback has an image placeholder.');
+    $this->assertTrue(strpos($text, $content[1]['data']) === FALSE, 'Text fallback leaves out the image data.');
+
+    // Malformed items are dropped; with nothing left, an error is returned.
+    $content = ai_tools_dispatch_content('test_image_content', ['malformed' => TRUE]);
+    $this->assertEqual(1, count($content), 'Malformed result gives one item.');
+    $decoded = json_decode($content[0]['text'], TRUE);
+    $this->assertTrue(isset($decoded['error']), 'Malformed result becomes an error.');
+
+    // Errors still come back as the same JSON as before.
+    $this->assertEqual(json_encode(['error' => 'Unknown tool: no_such_tool_xyz']), ai_tools_dispatch('no_such_tool_xyz', []), 'Unknown tool error unchanged.');
+  }
+
   public function testToolExplorerLoadsWithModels() {
     $admin = $this->backdropCreateUser(['administer site configuration']);
     $this->backdropLogin($admin);

@@ -26,7 +26,10 @@
  *   - execute: (required) Name of a function that receives the decoded
  *     arguments array and returns a JSON-encodable value or a JSON string.
  *     Return ['error' => '...'] on failure; exceptions are caught and
- *     returned to the model as an error.
+ *     returned to the model as an error. To return an image (or a mix of
+ *     text and images), return ai_tools_content_result() with items built by
+ *     ai_tools_image_content(). MCP clients receive the image itself; callers
+ *     that only accept text get the text items and a placeholder.
  *   - operation: What the tool does. Agents run 'read' and 'propose' tools
  *     without approval; MCP also treats 'explain' and 'transform' as
  *     read-only. Any other value, or a missing one, is treated as 'write' and

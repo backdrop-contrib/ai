@@ -187,7 +187,53 @@ function ai_agent_test_ai_tools() {
       'operation' => 'write',
       'destructive' => FALSE,
     ],
+    'test_image_content' => [
+      'definition' => [
+        'type' => 'function',
+        'function' => [
+          'name' => 'test_image_content',
+          'description' => 'Return a caption and a tiny PNG for content result tests.',
+          'parameters' => [
+            'type' => 'object',
+            'properties' => [
+              'malformed' => [
+                'type' => 'boolean',
+                'description' => 'Return only malformed content items.',
+              ],
+            ],
+          ],
+        ],
+      ],
+      'execute' => 'ai_agent_test_execute_test_image_content',
+      'module' => 'ai_agent_test',
+      'category' => 'test',
+      'operation' => 'read',
+      'destructive' => FALSE,
+    ],
   ];
+}
+
+/**
+ * Returns the bytes of a 1x1 transparent PNG for content result tests.
+ */
+function ai_agent_test_png_bytes() {
+  return base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==');
+}
+
+/**
+ * Tool executor returning a content result with text and an image.
+ */
+function ai_agent_test_execute_test_image_content(array $args) {
+  if (!empty($args['malformed'])) {
+    return ai_tools_content_result([
+      ['type' => 'image'],
+      'not an item',
+    ]);
+  }
+  return ai_tools_content_result([
+    ['type' => 'text', 'text' => 'A tiny test image.'],
+    ai_tools_image_content(ai_agent_test_png_bytes(), 'image/png'),
+  ]);
 }
 
 /**

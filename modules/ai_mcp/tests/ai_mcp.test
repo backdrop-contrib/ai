@@ -284,3 +284,46 @@ class AIMcpTestCase extends BackdropWebTestCase {
     $this->assertTrue($response['result']['isError'], 'isError is TRUE for unknown tool.');
   }
 }
+
+/**
+ * Tests that tools/call passes content results (such as images) through.
+ */
+class AIMcpContentResultTestCase extends BackdropWebTestCase {
+
+  /**
+   * {@inheritdoc}
+   */
+  public function setUp() {
+    parent::setUp(['ai', 'ai_tools', 'ai_mcp', 'ai_agent_test']);
+    module_load_include('inc', 'ai_mcp', 'includes/ai_mcp.tools');
+    module_load_include('inc', 'ai_mcp', 'includes/ai_mcp.jsonrpc');
+    module_load_include('inc', 'ai_mcp', 'includes/ai_mcp.auth');
+  }
+
+  /**
+   * Tests image content, plain results and errors through tools/call.
+   */
+  public function testToolsCallContent() {
+    $server = ['id' => 'test', 'label' => 'Test', 'tools' => [], 'auth_key_hash' => ai_mcp_hash_token('x')];
+
+    $response = ai_mcp_method_tools_call('1', ['name' => 'test_image_content', 'arguments' => []], $server);
+    $content = $response['result']['content'];
+    $this->assertEqual(2, count($content), 'Both content items returned.');
+    $this->assertEqual('text', $content[0]['type'], 'First item is text.');
+    $this->assertEqual('image', $content[1]['type'], 'Second item is an image.');
+    $this->assertEqual('image/png', $content[1]['mimeType'], 'Image has its MIME type.');
+    $this->assertEqual(ai_agent_test_png_bytes(), base64_decode($content[1]['data']), 'Image data round-trips.');
+    $this->assertFalse($response['result']['isError'], 'Image result is not an error.');
+
+    $response = ai_mcp_method_tools_call('2', ['name' => 'test_echo_message', 'arguments' => ['message' => 'hi']], $server);
+    $content = $response['result']['content'];
+    $this->assertEqual(1, count($content), 'Plain result is one item.');
+    $this->assertEqual('text', $content[0]['type'], 'Plain result is text.');
+    $decoded = json_decode($content[0]['text'], TRUE);
+    $this->assertEqual('hi', $decoded['echo'], 'Plain result text unchanged.');
+    $this->assertFalse($response['result']['isError'], 'Plain result is not an error.');
+
+    $response = ai_mcp_method_tools_call('3', ['name' => 'test_image_content', 'arguments' => ['malformed' => TRUE]], $server);
+    $this->assertTrue($response['result']['isError'], 'Malformed content result is flagged as an error.');
+  }
+}

@@ -141,6 +141,11 @@ function ai_tools_requirements_met($requirements) {
 /**
  * Dispatches a tool call by name and returns a JSON-encoded result string.
  *
+ * Use this for callers that can only pass text back to a model, such as
+ * chat tool messages. A tool that returns content items (see
+ * ai_tools_content_result()) is rendered as text: text items are kept and
+ * images or audio are replaced by a short placeholder.
+ *
  * @param string $name
  *   Tool name matching the 'name' key in its function definition.
  * @param array $arguments
@@ -148,23 +153,202 @@ function ai_tools_requirements_met($requirements) {
  *
  * @return string
  *   JSON-encoded result suitable for returning as a tool message.
+ *
+ * @see ai_tools_dispatch_content()
  */
 function ai_tools_dispatch($name, array $arguments) {
+  $result = _ai_tools_execute($name, $arguments);
+  if (ai_tools_is_content_result($result)) {
+    return ai_tools_content_to_text(ai_tools_content_items($result, $name));
+  }
+  return is_string($result) ? $result : json_encode($result);
+}
+
+/**
+ * Dispatches a tool call by name and returns MCP-style content items.
+ *
+ * Use this for callers that can pass images or other non-text content to the
+ * model, such as an MCP server. A tool that returns an ordinary value gets a
+ * single text item holding the same string ai_tools_dispatch() returns.
+ *
+ * @param string $name
+ *   Tool name matching the 'name' key in its function definition.
+ * @param array $arguments
+ *   Decoded arguments from the model.
+ *
+ * @return array
+ *   A list of content items, each with a 'type' key: 'text' items hold
+ *   'text'; 'image' and 'audio' items hold base64 'data' and 'mimeType'.
+ *
+ * @see ai_tools_content_result()
+ */
+function ai_tools_dispatch_content($name, array $arguments) {
+  $result = _ai_tools_execute($name, $arguments);
+  if (ai_tools_is_content_result($result)) {
+    return ai_tools_content_items($result, $name);
+  }
+  return [
+    [
+      'type' => 'text',
+      'text' => is_string($result) ? $result : json_encode($result),
+    ],
+  ];
+}
+
+/**
+ * Wraps content items as a tool result.
+ *
+ * Return this from a tool executor to hand back images or a mix of text and
+ * images. Build image items with ai_tools_image_content().
+ *
+ * @code
+ * return ai_tools_content_result([
+ *   ['type' => 'text', 'text' => json_encode(['fid' => $file->fid])],
+ *   ai_tools_image_content(file_get_contents($file->uri), $file->filemime),
+ * ]);
+ * @endcode
+ *
+ * @param array $items
+ *   Content items. Each needs a 'type': 'text' with a 'text' string, or
+ *   'image' or 'audio' with base64 'data' and a 'mimeType'.
+ *
+ * @return array
+ *   A tool result that ai_tools_dispatch_content() passes through as content.
+ */
+function ai_tools_content_result(array $items) {
+  return ['#ai_tools_content' => array_values($items)];
+}
+
+/**
+ * Builds an image content item from raw image bytes.
+ *
+ * @param string $data
+ *   The raw (not yet encoded) image bytes.
+ * @param string $mime_type
+ *   The image MIME type, for example 'image/png'.
+ *
+ * @return array
+ *   A content item for ai_tools_content_result().
+ */
+function ai_tools_image_content($data, $mime_type) {
+  return [
+    'type' => 'image',
+    'data' => base64_encode($data),
+    'mimeType' => $mime_type,
+  ];
+}
+
+/**
+ * Checks whether a tool result is a content result.
+ *
+ * @param mixed $result
+ *   A value returned by a tool executor.
+ *
+ * @return bool
+ *   TRUE when the result was built with ai_tools_content_result().
+ */
+function ai_tools_is_content_result($result) {
+  return is_array($result) && isset($result['#ai_tools_content']) && is_array($result['#ai_tools_content']);
+}
+
+/**
+ * Returns the valid content items of a content result.
+ *
+ * Malformed items are dropped and logged. If nothing valid is left, a single
+ * text item holding an error is returned, so callers always get content.
+ *
+ * @param array $result
+ *   A result built with ai_tools_content_result().
+ * @param string $name
+ *   The tool name, for the log message.
+ *
+ * @return array
+ *   A list of content items.
+ */
+function ai_tools_content_items(array $result, $name = '') {
+  $items = [];
+  foreach ($result['#ai_tools_content'] as $item) {
+    $type = is_array($item) && isset($item['type']) ? $item['type'] : NULL;
+    if ($type === 'text' && isset($item['text']) && is_string($item['text'])) {
+      $items[] = ['type' => 'text', 'text' => $item['text']];
+    }
+    elseif (($type === 'image' || $type === 'audio') && !empty($item['data']) && is_string($item['data']) && !empty($item['mimeType']) && is_string($item['mimeType'])) {
+      $items[] = [
+        'type' => $type,
+        'data' => $item['data'],
+        'mimeType' => $item['mimeType'],
+      ];
+    }
+    else {
+      watchdog('ai_tools', 'Tool @name returned a malformed content item; it was dropped.', [
+        '@name' => $name,
+      ], WATCHDOG_WARNING);
+    }
+  }
+  if (empty($items)) {
+    $items[] = [
+      'type' => 'text',
+      'text' => json_encode(['error' => 'Tool returned no valid content.']),
+    ];
+  }
+  return $items;
+}
+
+/**
+ * Renders content items as text for callers that only accept text.
+ *
+ * @param array $items
+ *   Content items from ai_tools_content_items().
+ *
+ * @return string
+ *   Text items joined by blank lines, with a placeholder for each image or
+ *   audio item.
+ */
+function ai_tools_content_to_text(array $items) {
+  $parts = [];
+  foreach ($items as $item) {
+    if ($item['type'] === 'text') {
+      $parts[] = $item['text'];
+    }
+    else {
+      // Base64 is about 4/3 of the raw size.
+      $bytes = (int) floor(strlen($item['data']) * 3 / 4);
+      $parts[] = '[' . $item['type'] . ' (' . $item['mimeType'] . ', ' . format_size($bytes) . ') not included: this caller only accepts text]';
+    }
+  }
+  return implode("\n\n", $parts);
+}
+
+/**
+ * Runs a tool executor and returns its raw result.
+ *
+ * Shared by ai_tools_dispatch() and ai_tools_dispatch_content(). Failures are
+ * returned as ['error' => '...'].
+ *
+ * @param string $name
+ *   Tool name matching the 'name' key in its function definition.
+ * @param array $arguments
+ *   Decoded arguments from the model.
+ *
+ * @return mixed
+ *   Whatever the executor returned, or an error array.
+ */
+function _ai_tools_execute($name, array $arguments) {
   $tools = ai_tools_get_tools();
   if (!isset($tools[$name])) {
-    return json_encode(['error' => "Unknown tool: $name"]);
+    return ['error' => "Unknown tool: $name"];
   }
   $tool = $tools[$name];
   $callback = $tool['execute'];
   if (!function_exists($callback)) {
-    return json_encode(['error' => "Executor not found for tool: $name"]);
+    return ['error' => "Executor not found for tool: $name"];
   }
   // Check the arguments against the tool's declared JSON schema, so a wrong
   // type is reported to the caller instead of being cast or reaching PHP.
   $schema = $tool['definition']['function']['parameters'] ?? [];
   $error = ai_tools_validate_arguments($arguments, is_array($schema) ? $schema : []);
   if ($error !== NULL) {
-    return json_encode(['error' => $error]);
+    return ['error' => $error];
   }
   // Merge any static args declared in the tool definition before calling.
   if (!empty($tool['execute_args']) && is_array($tool['execute_args'])) {
@@ -173,8 +357,7 @@ function ai_tools_dispatch($name, array $arguments) {
     }
   }
   try {
-    $result = $callback($arguments);
-    return is_string($result) ? $result : json_encode($result);
+    return $callback($arguments);
   }
   catch (\Throwable $e) {
     watchdog('ai_tools', 'Error executing tool @name: @msg', [
@@ -182,7 +365,7 @@ function ai_tools_dispatch($name, array $arguments) {
       '@msg' => $e->getMessage(),
     ], WATCHDOG_ERROR);
     // The message goes to the log only: it can contain PHP internals.
-    return json_encode(['error' => 'Tool execution error. See the site log for details.']);
+    return ['error' => 'Tool execution error. See the site log for details.'];
   }
 }
 
